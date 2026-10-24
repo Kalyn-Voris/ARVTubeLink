@@ -1,0 +1,47 @@
+[versions]
+agp = "9.4.1"
+coreKtx = "1.10.1"
+junit = "4.13.2"
+junitVersion = "1.1.5"
+espressoCore = "3.5.1"
+appcompat = "1.6.1"
+material = "1.10.0"
+constraintlayout = "2.1.4"
+activityKtx = "1.8.0"
+navigationFragmentKtx = "2.6.0"
+navigationUiKtx = "2.6.0"
+# Compose 相关。composePlugin 必须与 Kotlin 版本完全一致。本项目 Kotlin=2.2.10，
+# 由 AGP 9.4.1 内置（kotlin-stdlib:2.2.10），项目未声明 kotlin-android 插件。
+composeBom = "2026.09.00"
+composePlugin = "2.2.10"
+activityCompose = "1.13.0"
+lifecycleRuntimeCompose = "2.11.0"
+
+[libraries]
+androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
+junit = { group = "junit", name = "junit", version.ref = "junit" }
+androidx-junit = { group = "androidx.test.ext", name = "junit", version.ref = "junitVersion" }
+androidx-espresso-core = { group = "androidx.test.espresso", name = "espresso-core", version.ref = "espressoCore" }
+androidx-appcompat = { group = "androidx.appcompat", name = "appcompat", version.ref = "appcompat" }
+material = { group = "com.google.android.material", name = "material", version.ref = "material" }
+androidx-constraintlayout = { group = "androidx.constraintlayout", name = "constraintlayout", version.ref = "constraintlayout" }
+androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", version.ref = "activityKtx" }
+androidx-navigation-fragment-ktx = { group = "androidx.navigation", name = "navigation-fragment-ktx", version.ref = "navigationFragmentKtx" }
+androidx-navigation-ui-ktx = { group = "androidx.navigation", name = "navigation-ui-ktx", version.ref = "navigationUiKtx" }
+# Compose：ui/material3/tooling 版本由 BOM 管理（BOM 2026.09.00 -> ui 1.12.1 / material3 1.4.0，
+# aar-metadata 实测 minCompileSdk=37 / minAGP=9.1.0，本项目 compileSdk=37 + AGP 9.4.1 满足）
+androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
+androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
+androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
+# 顶栏 info 图标用（Icons.Filled.Info 在 core 集）；m3 1.4.0 不传递暴露 icons，需显式声明，版本由 BOM 管理
+androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
+androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
+androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
+# activity / lifecycle 不受 Compose BOM 管理，显式指定版本（Google Maven latest stable）
+androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
+androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeCompose" }
+
+[plugins]
+android-application = { id = "com.android.application", version.ref = "agp" }
+kotlin-compose = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "composePlugin" }
+

@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      XML 层深色板：系统深色时覆盖 values/ 同名条目，
+      服务 themes.xml 的窗口首帧 / splash / statusBar / navigationBar。
+      与 values/colors.xml 同名成对（改一处必改另一处）。Compose 色板见 colors_compose.xml。
+    -->
+    <color name="colorBackground">#121317</color>
+    <color name="colorTopBar">#292A2E</color>
+    <color name="colorSurfaceContainer">#1F1F23</color>
+</resources>

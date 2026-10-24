@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      Android 12+ 启动页底色（windowSplashScreenBackground 的唯一生效值）。
+      与 values-night/ 刻意解耦：splash 在 startActivity 时刻由系统静态解析，
+      App 内的 ForceDark overlay 覆盖不到它（见 values/themes.xml 注释），
+      所以这里无条件取深色 #121317 = colorBackgroundDark，保证 splash → Compose
+      首帧零跳色。代价：「系统浅色 + 未开强制深色」时 splash 深色、随后进浅色 UI。
+    -->
+    <color name="colorSplashBackground">#121317</color>
+</resources>

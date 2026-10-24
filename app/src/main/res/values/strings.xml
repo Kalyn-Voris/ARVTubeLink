@@ -1,0 +1,111 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">ARVTubeLink</string>
+
+    <!-- ===== 主界面按钮 ===== -->
+    <string name="action_check_ar">检查 AR Engine</string>
+    <string name="action_start_tracking">开始追踪</string>
+    <string name="action_stop_tracking">停止追踪</string>
+    <string name="action_connect_vts">连接 VTS</string>
+    <string name="action_clear_token">清除 Token</string>
+    <string name="token_clear_confirm_message">将删除本机保存的 VTS Token，下次连接需在电脑端重新点「允许」授权。确定清除？</string>
+
+    <!-- ===== 设置页 ===== -->
+    <string name="action_calibrate">校准（弹出对准视图）</string>
+    <string name="action_reset_calibration">重置校准</string>
+    <string name="switch_debug_logs">开启详细日志</string>
+    <string name="switch_one_euro_filter">开启 1€ 滤波器（关闭则原始直传）</string>
+    <string name="settings_stream_frequency">推流频率</string>
+    <string name="settings_stream_frequency_desc">发送给 VTS 的节流频率</string>
+
+    <!-- ===== 设置对话框 ===== -->
+    <string name="settings_calibration_intro">校准：弹出全屏对准视图，网格对准后点击「确认校准」，\n以该瞬间的姿态/表情作为映射零点（灵敏度范围 0.10x ~ 3.00x）</string>
+    <string name="settings_calib_status_calibrated">校准状态：已校准（以校准瞬间的姿态/表情为零点）</string>
+    <string name="settings_calib_status_uncalibrated">校准状态：未校准（原始值直传，中性默认）</string>
+    <string name="sensitivity_head">头部灵敏度（FaceAngle）</string>
+    <string name="sensitivity_expression">表情灵敏度</string>
+    <string name="sensitivity_position">位置灵敏度（FacePosition）</string>
+    <string name="toast_calibration_reset">校准已重置为默认零点</string>
+    <string name="toast_debug_logs_on">详细日志已开启</string>
+    <string name="toast_debug_logs_off">详细日志已关闭</string>
+    <string name="toast_one_euro_on">1€ 滤波器已开启</string>
+    <string name="toast_one_euro_off">1€ 滤波器已关闭（原始直传）</string>
+
+    <!-- ===== 校准对准视图 ===== -->
+    <string name="action_confirm_calibration">确认校准</string>
+    <string name="action_cancel">取消</string>
+    <string name="calib_detecting">正在检测人脸…</string>
+    <string name="calib_status_detected">已检测到人脸：标记点与十字重合后点击「确认校准」</string>
+    <string name="calib_status_not_detected">未检测到人脸：请将脸移入对准框</string>
+    <string name="calib_hint">将脸移入暖白对准框并正视屏幕：浅青色线框为面部网格，\n浅青色标记点与中心白色十字重合即为对准</string>
+
+    <!-- ===== 输入框提示 ===== -->
+    <string name="hint_vts_ip">VTS 所在电脑 IP</string>
+    <string name="hint_port">端口</string>
+
+    <!-- ===== Tab 与顶栏 ===== -->
+    <string name="tab_home">首页</string>
+    <string name="tab_settings">设置</string>
+    <string name="tab_log">日志</string>
+
+    <!-- ===== 设置页卡片标题（SettingsCard） ===== -->
+    <string name="settings_card_calibration">校准与灵敏度</string>
+    <string name="settings_card_smoothing">推流</string>
+    <string name="settings_card_theme">主题</string>
+    <string name="settings_card_developer">开发者</string>
+    <string name="settings_card_about">关于</string>
+    <string name="theme_follow_system">跟随系统（关闭默认深色）</string>
+    <string name="theme_amoled_black">AMOLED 黑色主题</string>
+    <string name="theme_amoled_black_desc">深色模式下的纯黑背景</string>
+    <string name="about_app_intro">ARVTubeLink 通过华为 AR Engine 捕捉人脸表情与头姿，实时映射并注入 VTube Studio，让 Live2D 模型跟随你的脸动作。</string>
+    <string name="about_github_url" translatable="false">https://github.com/Kalyn-Voris/ARVTubeLink</string>
+
+    <!-- ===== 日志页 ===== -->
+    <string name="log_count_format">运行日志（%1$d 条，最多 500）</string>
+    <string name="log_copy_all">复制全部</string>
+    <string name="log_clear">清空</string>
+    <string name="toast_copied_logs">已复制 %1$d 条日志</string>
+
+    <!-- ===== 开屏协议弹窗 ===== -->
+    <string name="agreement_title">欢迎使用 ARVTubeLink</string>
+    <string name="agreement_summary">应用完全本地运行，不收集您任何个人数据\n相机权限仅用于本地人脸追踪，不上云\n您可以个人非商业使用本应用（含个人 VTuber 直播、视频创作者 所得收益）\n商业用途需授权\n如果您为使用本软件支付了任何费用，说明您遭遇了诈骗，请立即要求退款并维护自身合法权益\n\n使用即同意用户协议与隐私声明全部条款。</string>
+    <string name="agreement_view_full">查看完整条款</string>
+    <string name="action_disagree">不同意</string>
+    <string name="action_agree">同意</string>
+    <string name="license_title">用户协议与隐私声明</string>
+    <string name="action_close">关闭</string>
+    <string name="view_polyform">PolyForm Noncommercial 1.0.0条款</string>
+    <string name="polyform_title">PolyForm Noncommercial 1.0.0</string>
+
+    <!-- ===== OLED 防烧屏遮罩 ===== -->
+    <string name="burn_in_mask_label">推流中</string>
+
+    <!-- ===== 参数自适应（进度 (x/7, 已跳过 n) 动态拼接，留在代码里） ===== -->
+    <string name="adaptation_running_first">正在自适应模型参数…</string>
+    <string name="adaptation_running_switch">模型更改，正在重新适应…</string>
+    <string name="adaptation_done">自适应完成，已保存（重启后仍生效）</string>
+    <string name="adaptation_failed">自适应失败，使用默认映射</string>
+
+    <!-- ===== 参数自适应开关 + 手动映射范围（设置页推流卡） ===== -->
+    <string name="adaptation_switch_label">参数自适应</string>
+    <string name="adaptation_switch_desc">根据模型自动校准映射范围</string>
+    <string name="adaptation_manual_title">手动映射范围</string>
+    <string name="adaptation_manual_disabled_hint">自适应生效中</string>
+    <string name="adaptation_manual_mouth_smile">MouthSmile 中性点</string>
+    <string name="adaptation_manual_brow_sens">眉毛灵敏度</string>
+    <string name="adaptation_manual_mouth_open">MouthOpen 说话灵敏度</string>
+    <string name="adaptation_manual_reset">恢复默认</string>
+
+    <!-- ===== 脸部镜像（设置页推流卡，「参数自适应」下方） ===== -->
+    <string name="face_mirror_label">脸部镜像</string>
+    <string name="face_mirror_desc">左右翻转人脸参数</string>
+
+    <!-- ===== 首页首次校准引导卡 ===== -->
+    <string name="calib_guide_title">首次使用请先完成校准</string>
+    <string name="calib_guide_body">校准会用你当前的表情与头部姿态作为零点。不校准的话，模型会带着初始偏移，追踪看起来「不准」。全程约 10 秒。</string>
+    <string name="calib_guide_action_start">开始校准</string>
+    <string name="calib_guide_action_later">稍后</string>
+    <string name="calib_guide_dismiss_desc">暂时隐藏校准引导（下次启动仍会出现）</string>
+    <!-- 未追踪时点「开始校准」：自动开追踪 + 拉起对准视图，提示用户稍候 -->
+    <string name="calib_guide_starting">正在启动追踪并进入校准…</string>
+</resources>
