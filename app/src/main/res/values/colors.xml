@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      XML 层专用：仅服务 themes.xml 的窗口首帧 / splash /
+      statusBar / navigationBar，经 values-night/ 同名条目跟随系统深浅。
+      Compose 色板见 values/colors_compose.xml（双前缀显式，Compose 侧禁止引用本文件条目）。
+      本文件条目须与 values-night/colors.xml 同名成对（改一处必改另一处）。
+    -->
+    <color name="colorBackground">#F8F9FF</color>
+    <color name="colorTopBar">#E7E8EE</color>
+    <color name="colorSurfaceContainer">#EDEDF3</color>
+    <!-- scrim 用（Theme.kt；无深浅之分，单条即可，无 values-night 覆盖） -->
+    <color name="black">#FF000000</color>
+    <!--
+      Android 12+ 启动页底色。生效值在 values-v31/colors.xml（同为 #121317）。
+      这里必须再声明一条默认值：themes.xml 在 values/（默认配置）里引用本资源，
+      AAPT2 链接按默认配置校验引用，只写在 values-v31 会链接失败。
+      API<31 运行时忽略 windowSplashScreenBackground，故本条不改变任何可见行为。
+    -->
+    <color name="colorSplashBackground">#121317</color>
+</resources>

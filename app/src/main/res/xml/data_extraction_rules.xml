@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Data extraction rules（Android 12+ / API 31+）：控制云备份与设备迁移各带走哪些数据。
+   See https://developer.android.com/about/versions/12/backup-restore#xml-changes
+
+   项目约定：VTS Token（sharedpref「vts_client.xml」内的 auth_token）绝不离机，
+   故 <cloud-backup> 与 <device-transfer> 两处均排除——与 .gitignore「安全敏感」
+   （vts_token.txt 等）同一立场：Token 只在申请它的那台设备上有效。
+   排除后换机/恢复出厂需重新在 VTS 端弹窗授权一次（重新走 AuthenticationTokenRequest）。
+-->
+<data-extraction-rules>
+    <cloud-backup>
+        <!-- 云备份排除 VTS Token：见 VtsWsClient.KEY_TOKEN。 -->
+        <exclude domain="sharedpref" path="vts_client.xml"/>
+    </cloud-backup>
+    <device-transfer>
+        <!-- 设备迁移同样排除 Token：Token 不随备份迁移到新机。 -->
+        <exclude domain="sharedpref" path="vts_client.xml"/>
+    </device-transfer>
+</data-extraction-rules>

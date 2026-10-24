@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><!--
+   Auto Backup 规则（API 31 以下生效；API 31+ 见 data_extraction_rules.xml）。
+   See https://developer.android.com/guide/topics/data/autobackup
+
+   项目约定：VTS Token（sharedpref「vts_client.xml」内的 auth_token）绝不离机，
+   故此处同样排除，与 data_extraction_rules.xml 保持同一条规则。
+-->
+<full-backup-content>
+    <!-- 排除 VTS Token：见 VtsWsClient.KEY_TOKEN。 -->
+    <exclude domain="sharedpref" path="vts_client.xml"/>
+</full-backup-content>

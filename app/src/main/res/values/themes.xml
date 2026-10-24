@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!--
+      DayNight 父主题只承担启动闪屏与窗口首帧——windowBackground / statusBar /
+      navigationBar 经 values/（浅）与 values-night/（深）限定符跟随系统深浅；
+      强制深色时 MainActivity 在 super.onCreate 前 applyStyle ForceDark overlay
+      无条件覆盖为深（见本文件下方 overlay）。UI 色板见 values/colors_compose.xml。
+      splash 三属性：Android 12+ 系统启动页（API<31 编译保留、运行时忽略）。
+      底色取 colorSplashBackground 而非 colorBackground。splash 在 startActivity 时刻
+      静态解析，早于任何 App 代码，ForceDark overlay 覆盖不到它。跟随 night 限定符
+      会在「系统浅色 + 强制深色」时闪一帧近白。改成无条件深色后与 Compose 深色首帧
+      零跳色，代价是系统浅色时 splash 深、随后进浅色 UI。
+    -->
+    <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="android:colorBackground">@color/colorBackground</item>
+        <item name="android:statusBarColor">@color/colorTopBar</item>
+        <item name="android:navigationBarColor">@color/colorSurfaceContainer</item>
+        <item name="android:windowBackground">@color/colorBackground</item>
+        <!--
+          splash 三件套：
+          - background：无条件深色，见上方注释；
+          - animatedIcon：显式指向去底后的 launcher 前景图（透明底、只有白色 ARV 字标，
+            已落在 66dp 安全区内）。显式声明后系统不再回落 adaptive icon。回落到
+            adaptive icon 时，图标自带底板再被系统套一层遮罩，Logo 外就会出现一圈方块；
+          - iconBackgroundColor：透明，确保系统不补任何图标底板色。
+        -->
+        <item name="android:windowSplashScreenBackground">@color/colorSplashBackground</item>
+        <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
+        <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
+    </style>
+
+    <!--
+      强制深色 overlay（prefs=OFF 时 MainActivity 在 super.onCreate 前 applyStyle，force=true）：
+      引用 colors_compose.xml 的 *Dark 条目。无条件深色，不随 night 限定符漂移，
+      与 Compose 深色板单一来源，调色只改 colors_compose.xml 一处。
+    -->
+    <style name="ThemeOverlay.ARVTubeLink.ForceDark" parent="">
+        <item name="android:windowBackground">@color/colorBackgroundDark</item>
+        <item name="android:statusBarColor">@color/colorSurfaceContainerHighDark</item>
+        <item name="android:navigationBarColor">@color/colorSurfaceContainerDark</item>
+    </style>
+</resources>
