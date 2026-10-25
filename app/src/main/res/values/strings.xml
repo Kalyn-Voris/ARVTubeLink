@@ -60,22 +60,72 @@
     <string name="about_app_intro">ARVTubeLink 通过华为 AR Engine 捕捉人脸表情与头姿，实时映射并注入 VTube Studio，让 Live2D 模型跟随你的脸动作。</string>
     <string name="about_github_url" translatable="false">https://github.com/Kalyn-Voris/ARVTubeLink</string>
 
+    <!-- ===== 设置页语言卡（语言选择） =====
+         语言名一律用「自称」（简体中文 / English），不随界面语言变化 → translatable="false" -->
+    <string name="settings_card_language">语言</string>
+    <string name="settings_language_label">应用语言</string>
+    <string name="language_dialog_title">选择语言</string>
+    <string name="language_system">跟随系统</string>
+    <string name="language_zh" translatable="false">简体中文</string>
+    <string name="language_en" translatable="false">English</string>
+
     <!-- ===== 日志页 ===== -->
     <string name="log_count_format">运行日志（%1$d 条，最多 500）</string>
     <string name="log_copy_all">复制全部</string>
     <string name="log_clear">清空</string>
     <string name="toast_copied_logs">已复制 %1$d 条日志</string>
 
-    <!-- ===== 开屏协议弹窗 ===== -->
-    <string name="agreement_title">欢迎使用 ARVTubeLink</string>
-    <string name="agreement_summary">应用完全本地运行，不收集您任何个人数据\n相机权限仅用于本地人脸追踪，不上云\n您可以个人非商业使用本应用（含个人 VTuber 直播、视频创作者 所得收益）\n商业用途需授权\n如果您为使用本软件支付了任何费用，说明您遭遇了诈骗，请立即要求退款并维护自身合法权益\n\n使用即同意用户协议与隐私声明全部条款。</string>
-    <string name="agreement_view_full">查看完整条款</string>
-    <string name="action_disagree">不同意</string>
-    <string name="action_agree">同意</string>
-    <string name="license_title">用户协议与隐私声明</string>
-    <string name="action_close">关闭</string>
-    <string name="view_polyform">PolyForm Noncommercial 1.0.0条款</string>
-    <string name="polyform_title">PolyForm Noncommercial 1.0.0</string>
+    <!-- ===== 开屏协议弹窗（★禁译：法律文本，必须与 res/raw/agreement.txt、license.txt 原文一致，
+         不随语言切换；translatable="false" 同时豁免 lint 的 MissingTranslation 检查） ===== -->
+    <string name="agreement_title" translatable="false">欢迎使用 ARVTubeLink</string>
+    <string name="agreement_summary" translatable="false">应用完全本地运行，不收集您任何个人数据\n相机权限仅用于本地人脸追踪，不上云\n您可以个人非商业使用本应用（含个人 VTuber 直播、视频创作者 所得收益）\n商业用途需授权\n如果您为使用本软件支付了任何费用，说明您遭遇了诈骗，请立即要求退款并维护自身合法权益\n\n使用即同意用户协议与隐私声明全部条款。</string>
+    <string name="agreement_view_full" translatable="false">查看完整条款</string>
+    <string name="action_disagree" translatable="false">不同意</string>
+    <string name="action_agree" translatable="false">同意</string>
+    <string name="license_title" translatable="false">用户协议与隐私声明</string>
+    <string name="action_close" translatable="false">关闭</string>
+    <string name="view_polyform" translatable="false">PolyForm Noncommercial 1.0.0条款</string>
+    <string name="polyform_title" translatable="false">PolyForm Noncommercial 1.0.0</string>
+
+    <!-- ===== 首页状态栏（MainActivity 拼装 arStatusState / vtsStatusState） ===== -->
+    <string name="ar_status_not_detected">未检测</string>
+    <string name="ar_status_checking">检测中…</string>
+    <!-- %1$s = AR Engine 状态文案，%2$s = 相机权限文案；整串成型避免首尾空格被 aapt 裁掉 -->
+    <string name="ar_status_format">AR Engine：%1$s\n相机权限：%2$s</string>
+    <string name="ar_engine_available">Available（已就绪）</string>
+    <string name="ar_engine_not_installed">NotInstalled（未安装/过旧）</string>
+    <string name="ar_engine_unsupported">Unsupported（设备不支持）</string>
+    <string name="camera_permission_granted">已授权</string>
+    <string name="camera_permission_denied">未授权</string>
+    <string name="ar_status_create_session_failed">创建 AR 会话失败（见 Logcat）</string>
+    <string name="ar_status_resume_session_failed">恢复会话失败（相机被占用？）</string>
+    <string name="ar_status_tracking_sending">追踪中…（数据发送中，%1$dHz）</string>
+    <string name="ar_status_tracking_local_only">追踪中…（VTS 未连接，仅本地映射）</string>
+    <string name="ar_status_stopped">已停止</string>
+    <string name="ar_status_permission_granted">相机权限已授权，开始追踪…</string>
+    <string name="ar_status_permission_denied">相机权限被拒绝</string>
+
+    <!-- ===== VTS 连接状态（MainActivity.vtsStateLabel / connectVts） ===== -->
+    <string name="vts_status_disconnected">VTS：未连接</string>
+    <string name="vts_status_connecting">VTS：连接中…</string>
+    <string name="vts_status_waiting_approval">VTS：等待电脑端弹窗授权…（不会超时，可慢慢确认）</string>
+    <string name="vts_status_authenticating">VTS：认证中…</string>
+    <string name="vts_status_auth_failed">VTS：认证失败（已清 Token，自动重试中）</string>
+    <string name="vts_status_authenticated">VTS：已连接（已认证，可注入参数）</string>
+    <string name="vts_status_reconnecting">VTS：断线，第 %1$d 次重连中…</string>
+    <string name="vts_status_error">VTS：错误 - %1$s</string>
+
+    <!-- ===== MainActivity 内的 Toast 提示 ===== -->
+    <string name="toast_token_cleared">已清除本地 Token，下次连接将重新弹窗授权</string>
+    <string name="toast_calibrate_requires_tracking">请先开始追踪，再进行校准</string>
+    <string name="toast_calibrate_no_face">未检测到人脸：请将脸部对准对准框</string>
+    <string name="toast_calibrate_no_frame">暂无人脸帧：请保持人脸在画面中</string>
+    <string name="toast_calibrate_saved">校准完成，已保存（重启后仍生效）</string>
+    <string name="toast_enter_ip">请输入电脑 IP</string>
+    <string name="toast_invalid_port">端口无效</string>
+    <string name="toast_create_session_failed">创建 AR 会话失败</string>
+    <string name="toast_camera_permission_required">需要相机权限</string>
+    <string name="toast_resume_session_failed">回前台恢复会话失败（相机被占用？），已停止追踪</string>
 
     <!-- ===== OLED 防烧屏遮罩 ===== -->
     <string name="burn_in_mask_label">推流中</string>
@@ -83,6 +133,7 @@
     <!-- ===== 参数自适应（进度 (x/7, 已跳过 n) 动态拼接，留在代码里） ===== -->
     <string name="adaptation_running_first">正在自适应模型参数…</string>
     <string name="adaptation_running_switch">模型更改，正在重新适应…</string>
+    <string name="adaptation_running_progress">(%1$d/%2$d，已跳过 %3$d)</string>
     <string name="adaptation_done">自适应完成，已保存（重启后仍生效）</string>
     <string name="adaptation_failed">自适应失败，使用默认映射</string>
 

@@ -4,16 +4,19 @@ import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
 import android.opengl.GLSurfaceView
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.widget.Toast
 import androidx.activity.compose.setContent
+import androidx.appcompat.app.AppCompatDelegate
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
+import androidx.core.os.LocaleListCompat
 import androidx.lifecycle.lifecycleScope
 import com.exarry.arvtubelink.adapt.AdaptationController
 import com.exarry.arvtubelink.adapt.AdaptationState
@@ -30,6 +33,7 @@ import com.exarry.arvtubelink.network.VtsWsClient
 import com.exarry.arvtubelink.ui.AppRoot
 import com.exarry.arvtubelink.ui.CalibrationOverlay
 import com.exarry.arvtubelink.ui.DEFAULT_SEND_FREQUENCY_HZ
+import com.exarry.arvtubelink.ui.KEY_APP_LANGUAGE
 import com.exarry.arvtubelink.ui.KEY_ENABLE_ADAPTATION
 import com.exarry.arvtubelink.ui.KEY_ENABLE_DEBUG_LOGS
 import com.exarry.arvtubelink.ui.KEY_ENABLE_ONE_EURO_FILTER
@@ -37,6 +41,7 @@ import com.exarry.arvtubelink.ui.KEY_FACE_MIRROR
 import com.exarry.arvtubelink.ui.KEY_MANUAL_BROW_SENSITIVITY
 import com.exarry.arvtubelink.ui.KEY_MANUAL_MOUTHOPEN_SENSITIVITY
 import com.exarry.arvtubelink.ui.KEY_MANUAL_MOUTHSMILE_NEUTRAL
+import com.exarry.arvtubelink.ui.LANGUAGE_SYSTEM
 import com.exarry.arvtubelink.ui.MANUAL_BROW_DEVICE_BASELINE
 import com.exarry.arvtubelink.ui.MANUAL_MOUTHOPEN_DEVICE_BASELINE
 import com.exarry.arvtubelink.ui.KEY_SEND_FREQUENCY_HZ
@@ -104,7 +109,9 @@ class MainActivity : AppCompatActivity() {
                 runOnUiThread { vtsStatusState.value = vtsStateLabel(state) }
             },
             onError = { message ->
-                runOnUiThread { vtsStatusState.value = "VTS：错误 - $message" }
+                runOnUiThread {
+                    vtsStatusState.value = getString(R.string.vts_status_error, message)
+                }
             },
             // 模型身份（认证后 InputParameterListResponse / 追踪中 ModelLoadedEvent 推送，
             // OkHttp 线程）：参数自适应触发链入口（未开追踪也可适应——连接即适应）
@@ -164,8 +171,11 @@ class MainActivity : AppCompatActivity() {
     private val attemptedModelIds = mutableSetOf<String>()
 
     // ---------- Compose UI 状态（AppRoot 以 State<T> 只读消费） ----------
-    private val arStatusState = mutableStateOf("未检测")
-    private val vtsStatusState = mutableStateOf("VTS：未连接")
+    // 初值给空串而非中文：字段初始化早于 attachBaseContext/onCreate，此时 getString 拿到的
+    // 是默认资源（未必是用户所选语言）；onCreate 里用 getString 回填正确文案（见 onCreate
+    // 中「状态栏初值回填」）。首帧前回填完成，UI 不会看到空串。
+    private val arStatusState = mutableStateOf("")
+    private val vtsStatusState = mutableStateOf("")
     private val trackingState = mutableStateOf(false)
     private val surfaceFullscreenState = mutableStateOf(false)
 
@@ -241,6 +251,55 @@ class MainActivity : AppCompatActivity() {
     // 校准对准视图状态（calibrationActive/calibrationDialog/calibFaceStatusText/
     // lastCalibFacePresent）在 ui/CalibrationOverlay.kt
 
+    /**
+     * 应用语言回放（API < 33）。
+     *
+     * 背景：AppCompat 1.6.1 只有在 manifest 声明了 `AppLocalesMetadataHolderService`
+     * （`autoStoreLocales=true`）时才会自动持久化/恢复 app locale；本工程没声明该 service，
+     * 所以 API < 33 上必须自己从 prefs 读回并在 attachBaseContext 里回放。
+     *
+     * 时机为什么必须是 attachBaseContext（而非 onCreate）：
+     *  - `AppCompatActivity.attachBaseContext` → `getDelegate().attachBaseContext2(newBase)`
+     *    → `calculateApplicationLocales()` 读的是静态 `sRequestedAppLocales`，并在这一步
+     *    通过 `applyOverrideConfiguration` 把 locale 注入 Configuration；
+     *  - 必须在 `super.attachBaseContext` **之前** 调 `setApplicationLocales`，静态值才赶得上；
+     *  - 此时 Activity 尚未 attach base context，`getSharedPreferences` 不可用 → 用 `newBase`。
+     *
+     * API 33+ 不走这里：locales 由系统 `LocaleManager` 按包名持久化并自动应用，
+     * AppCompat 的 `calculateApplicationLocales` 在 33+ 直接返回 null（不接管）；
+     * 且此刻 delegate 还没注册进 `sActivityDelegates`，
+     * `AppCompatDelegate.getLocaleManagerForApplication()` 会返回 null 而静默失效。
+     */
+    override fun attachBaseContext(newBase: Context) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            val tag = newBase.getSharedPreferences(PREFS_APP, Context.MODE_PRIVATE)
+                .getString(KEY_APP_LANGUAGE, LANGUAGE_SYSTEM) ?: LANGUAGE_SYSTEM
+            AppCompatDelegate.setApplicationLocales(localesFor(tag))
+        }
+        super.attachBaseContext(newBase)
+    }
+
+    /**
+     * 应用语言切换（设置页语言卡）。
+     *
+     * 落盘 + 交给 AppCompat 应用：API 33+ 走系统 LocaleManager（系统会持久化，重启自动生效）；
+     * API < 33 写静态 sRequestedAppLocales 并 `applyLocalesToActiveDelegates()`。
+     *
+     * 两条路径都会因 locale 变化触发 Activity recreate（manifest 的 `configChanges` 只声明了
+     * `uiMode`，不含 `locale` → `CONFIG_LOCALE` 未被 Activity 处理 → AppCompat 判定需重建）——
+     * 这正是期望行为：重建后 attachBaseContext/系统会按新语言重新解析资源，整棵 UI 换语言。
+     * 代价是一次重建（GL/AR 会话随 onDestroy→onCreate 重建），与切语言这种低频操作相称。
+     */
+    private fun applyAppLanguage(tag: String) {
+        appPrefs.edit().putString(KEY_APP_LANGUAGE, tag).apply()
+        AppCompatDelegate.setApplicationLocales(localesFor(tag))
+    }
+
+    /** language tag → LocaleListCompat；空串 = 空列表 = 清除 app locale 覆盖（跟随系统）。 */
+    private fun localesFor(tag: String): LocaleListCompat =
+        if (tag.isEmpty()) LocaleListCompat.getEmptyLocaleList()
+        else LocaleListCompat.forLanguageTags(tag)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // 主题初始化：顺序写死——先读 prefs（显式触发 appPrefs lazy 初始化，此时 baseContext
         // 已 attach）→ 强制深色时应用 ForceDark overlay（覆盖 windowBackground/statusBar
@@ -262,6 +321,11 @@ class MainActivity : AppCompatActivity() {
 
         // 首启协议判定：字段初始化不读 prefs（appPrefs lazy 依赖 baseContext attach），此处回填
         agreementAcceptedState.value = appPrefs.getBoolean(KEY_AGREEMENT_ACCEPTED, false)
+
+        // 状态栏初值回填（字段初始化时是空串，见 arStatusState 注释）：此刻 getString 已按
+        // 用户所选语言解析，回填后首帧即显示正确文案，不会闪空
+        arStatusState.value = getString(R.string.ar_status_not_detected)
+        vtsStatusState.value = getString(R.string.vts_status_disconnected)
 
         // 首页校准引导的「稍后」标记：本次启动周期内忽略，下次冷启动重现。
         //  - 点「稍后」写入 appPrefs（KEY_CALIBRATION_GUIDE_DISMISSED = true）；
@@ -332,9 +396,7 @@ class MainActivity : AppCompatActivity() {
                 onConnectVts = { ip, portText -> connectVts(ip, portText) },
                 onClearToken = {
                     vtsClient.clearSavedToken()
-                    Toast.makeText(
-                        this, "已清除本地 Token，下次连接将重新弹窗授权", Toast.LENGTH_SHORT
-                    ).show()
+                    Toast.makeText(this, R.string.toast_token_cleared, Toast.LENGTH_SHORT).show()
                 },
                 onSelectTab = { tabIndexState.value = it },
                 onOpenAbout = {
@@ -389,6 +451,7 @@ class MainActivity : AppCompatActivity() {
                     probeOverridesActiveState.value = false
                     mapper.updateOverrides(overrides)
                 },
+                onLanguageChange = { tag -> applyAppLanguage(tag) },
             )
         }
 
@@ -455,7 +518,7 @@ class MainActivity : AppCompatActivity() {
     private fun enterCalibrationMode() {
         if (calibrationActiveState.value) return
         if (!trackingState.value) {
-            Toast.makeText(this, "请先开始追踪，再进行校准", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_calibrate_requires_tracking, Toast.LENGTH_SHORT).show()
             return
         }
         faceRenderer.setCalibrationMode(true)
@@ -488,13 +551,13 @@ class MainActivity : AppCompatActivity() {
     /** 确认校准（主线程）：拦截过期快照 -> 捕获当前帧零点 -> 持久化 -> 收起对准视图。 */
     private fun onConfirmCalibration() {
         if (calibFacePresentState.value != true) {
-            Toast.makeText(this, "未检测到人脸：请将脸部对准对准框", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_calibrate_no_face, Toast.LENGTH_SHORT).show()
             return
         }
         // 回调渲染链路取当前帧原始数据：mapper 每帧缓存最新 VTS 域原始值快照
         val snapshot = mapper.latestRawSnapshot()
         if (snapshot == null) {
-            Toast.makeText(this, "暂无人脸帧：请保持人脸在画面中", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_calibrate_no_frame, Toast.LENGTH_SHORT).show()
             return
         }
         val newCalibration = mapper.captureCurrentAsBase(snapshot)
@@ -502,7 +565,7 @@ class MainActivity : AppCompatActivity() {
         lifecycleScope.launch { calibrationStorage.save(newCalibration) }
         // 首页引导卡永久消失（本进程 + 后续启动都经持久化校准数据判定为已校准）
         calibrationDoneState.value = true
-        Toast.makeText(this, "校准完成，已保存（重启后仍生效）", Toast.LENGTH_SHORT).show()
+        Toast.makeText(this, R.string.toast_calibrate_saved, Toast.LENGTH_SHORT).show()
         closeCalibration()
     }
 
@@ -550,21 +613,24 @@ class MainActivity : AppCompatActivity() {
 
     // ---------- AR Engine 可用性检测 ----------
     private fun checkArEngine() {
-        arStatusState.value = "检测中…"
+        arStatusState.value = getString(R.string.ar_status_checking)
         lifecycleScope.launch {
             val state = arSessionManager.checkAvailability()
-            arStatusState.value = buildString {
-                append("AR Engine：")
-                append(
-                    when (state) {
-                        ArEngineState.Available -> "Available（已就绪）"
-                        ArEngineState.NotInstalled -> "NotInstalled（未安装/过旧）"
-                        ArEngineState.Unsupported -> "Unsupported（设备不支持）"
-                    }
-                )
-                append("\n相机权限：")
-                append(if (arSessionManager.hasCameraPermission()) "已授权" else "未授权")
-            }
+            val engineText = getString(
+                when (state) {
+                    ArEngineState.Available -> R.string.ar_engine_available
+                    ArEngineState.NotInstalled -> R.string.ar_engine_not_installed
+                    ArEngineState.Unsupported -> R.string.ar_engine_unsupported
+                }
+            )
+            val permissionText = getString(
+                if (arSessionManager.hasCameraPermission()) {
+                    R.string.camera_permission_granted
+                } else {
+                    R.string.camera_permission_denied
+                }
+            )
+            arStatusState.value = getString(R.string.ar_status_format, engineText, permissionText)
         }
     }
 
@@ -573,27 +639,27 @@ class MainActivity : AppCompatActivity() {
         val ipTrimmed = ip.trim()
         val port = portText.trim().toIntOrNull()
         if (ipTrimmed.isEmpty()) {
-            Toast.makeText(this, "请输入电脑 IP", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_enter_ip, Toast.LENGTH_SHORT).show()
             return
         }
         if (port == null || port !in 1..65535) {
-            Toast.makeText(this, "端口无效", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, R.string.toast_invalid_port, Toast.LENGTH_SHORT).show()
             return
         }
         // connect 为异步（OkHttp 后台建连）；首次连接电脑端会弹授权窗，
         // 此处只置「连接中」，后续状态全部由 onVtsStateChanged 回调驱动，UI 不阻塞等待。
-        vtsStatusState.value = "VTS：连接中…"
+        vtsStatusState.value = getString(R.string.vts_status_connecting)
         vtsClient.connect(ipTrimmed, port, token = null)
     }
 
     private fun vtsStateLabel(state: VtsState): String = when (state) {
-        VtsState.Disconnected -> "VTS：未连接"
-        VtsState.Connecting -> "VTS：连接中…"
-        VtsState.WaitingForTokenApproval -> "VTS：等待电脑端弹窗授权…（不会超时，可慢慢确认）"
-        VtsState.Authenticating -> "VTS：认证中…"
-        VtsState.AuthenticationFailed -> "VTS：认证失败（已清 Token，自动重试中）"
-        VtsState.Authenticated -> "VTS：已连接（已认证，可注入参数）"
-        is VtsState.Reconnecting -> "VTS：断线，第 ${state.attempt} 次重连中…"
+        VtsState.Disconnected -> getString(R.string.vts_status_disconnected)
+        VtsState.Connecting -> getString(R.string.vts_status_connecting)
+        VtsState.WaitingForTokenApproval -> getString(R.string.vts_status_waiting_approval)
+        VtsState.Authenticating -> getString(R.string.vts_status_authenticating)
+        VtsState.AuthenticationFailed -> getString(R.string.vts_status_auth_failed)
+        VtsState.Authenticated -> getString(R.string.vts_status_authenticated)
+        is VtsState.Reconnecting -> getString(R.string.vts_status_reconnecting, state.attempt)
     }
 
     // ---------- 参数自适应：触发链 + 状态副作用 ----------
@@ -670,9 +736,15 @@ class MainActivity : AppCompatActivity() {
                     }
                     Toast.makeText(this, getString(textRes), Toast.LENGTH_SHORT).show()
                 }
-                // 进度格式动态拼接（(x/7, 已跳过 n)），前缀统一用「正在自适应」文案
-                adaptationStatusState.value = getString(R.string.adaptation_running_first) +
-                    " (${state.index}/${state.total}，已跳过 ${state.skipped})"
+                // 进度格式动态拼接（x/7，已跳过 n），前缀统一用「正在自适应」文案
+                adaptationStatusState.value =
+                    getString(R.string.adaptation_running_first) + " " +
+                        getString(
+                            R.string.adaptation_running_progress,
+                            state.index,
+                            state.total,
+                            state.skipped
+                        )
             }
             is AdaptationState.Done -> {
                 faceRenderer.setStreamingPaused(false)
@@ -773,12 +845,12 @@ class MainActivity : AppCompatActivity() {
         // FaceRenderer 内部 injectParameters 在未认证时自动静默丢弃
         val session = arSessionManager.createArSession()
         if (session == null) {
-            arStatusState.value = "创建 AR 会话失败（见 Logcat）"
-            Toast.makeText(this, "创建 AR 会话失败", Toast.LENGTH_SHORT).show()
+            arStatusState.value = getString(R.string.ar_status_create_session_failed)
+            Toast.makeText(this, R.string.toast_create_session_failed, Toast.LENGTH_SHORT).show()
             return
         }
         if (!arSessionManager.resumeSession()) {
-            arStatusState.value = "恢复会话失败（相机被占用？）"
+            arStatusState.value = getString(R.string.ar_status_resume_session_failed)
             return
         }
         // 追踪重启：清空 EMA 历史，避免上一会话的值拖拽新序列
@@ -796,8 +868,11 @@ class MainActivity : AppCompatActivity() {
         // 显示的是设置值（prefs），非实际发送率（实际率受采集帧率封顶）；已知限制：
         // 追踪中改频率不实时刷新，下次 beginTracking 才生效
         val sendHz = appPrefs.getInt(KEY_SEND_FREQUENCY_HZ, DEFAULT_SEND_FREQUENCY_HZ)
-        arStatusState.value =
-            if (sending) "追踪中…（数据发送中，${sendHz}Hz）" else "追踪中…（VTS 未连接，仅本地映射）"
+        arStatusState.value = if (sending) {
+            getString(R.string.ar_status_tracking_sending, sendHz)
+        } else {
+            getString(R.string.ar_status_tracking_local_only)
+        }
     }
 
     private fun stopTracking() {
@@ -818,7 +893,7 @@ class MainActivity : AppCompatActivity() {
         // 停止追踪的同时断开 VTS 连接
         vtsClient.disconnect()
         trackingState.value = false
-        arStatusState.value = "已停止"
+        arStatusState.value = getString(R.string.ar_status_stopped)
     }
 
     // ---------- OLED 防烧屏：遮罩控制 ----------
@@ -857,7 +932,7 @@ class MainActivity : AppCompatActivity() {
         val granted = grantResults.isNotEmpty() &&
             grantResults[0] == PackageManager.PERMISSION_GRANTED
         if (granted) {
-            arStatusState.value = "相机权限已授权，开始追踪…"
+            arStatusState.value = getString(R.string.ar_status_permission_granted)
             beginTracking()
             // 权限是从首页引导卡「开始校准」触发的：授权后自动续上校准，用户不必再点一次
             if (pendingCalibrationFromHome) {
@@ -868,8 +943,8 @@ class MainActivity : AppCompatActivity() {
             }
         } else {
             pendingCalibrationFromHome = false
-            arStatusState.value = "相机权限被拒绝"
-            Toast.makeText(this, "需要相机权限", Toast.LENGTH_SHORT).show()
+            arStatusState.value = getString(R.string.ar_status_permission_denied)
+            Toast.makeText(this, R.string.toast_camera_permission_required, Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -884,9 +959,7 @@ class MainActivity : AppCompatActivity() {
         // 「已停止」，用户重开即可），super 仍必须执行。
         if (trackingState.value && !arSessionManager.resumeSession()) {
             stopTracking()
-            Toast.makeText(
-                this, "回前台恢复会话失败（相机被占用？），已停止追踪", Toast.LENGTH_SHORT
-            ).show()
+            Toast.makeText(this, R.string.toast_resume_session_failed, Toast.LENGTH_SHORT).show()
         }
         super.onResume()
         // 追踪中回前台：onPause 已清倒计时并收遮罩，若此后用户不再触摸，

@@ -510,8 +510,8 @@ class BlendShapeMapper(
         // 绝对值分别整形再回贴符号（与 MouthSmile 同模式）。已知取舍：0.5 中性在 akari
         // 上约有 +0.098 常驻抬眉（OUT 线性假设下 BrowForm 零点在 v≈0.44），v1 不加偏移
         // 参数，可见时走 VTS 端「重设中性锚点」（与 MouthSmile 同流程）。
-        // TODO: deviceMax=1.0 恒等——仅 BrowOuterUpLeft 有实测峰 ~0.46，其余 6 键
-        //       （含 BrowDown 双键）无数据，待补实测后调；左右方向语义（前置摄像头镜像）
+        // deviceMax=1.0 为恒等取值——仅 BrowOuterUpLeft 有实测峰 ~0.46，其余 6 键
+        //       （含 BrowDown 双键）无数据，待补实测后调整；左右方向语义（前置摄像头镜像）
         //       随眼球方向一并确认。
         // 归一化分母可被覆盖（手动「眉毛灵敏度」倍率经此换算；三通道共用同一分母；
         // 防御性钳制防损坏输入产生超界增益）
@@ -655,18 +655,18 @@ class BlendShapeMapper(
         // 换算后的 VTS 域原始值（未校准）：同时缓存进快照，供「校准」捕获当前帧头姿
         val angleRaw = linkedMapOf(
             // 绕 +Y 正旋转（右手法则，拇指沿 Y+ 向上）使脸的朝向(+Z)转向 +X(左) ＝ 向左看；
-            // 假设 VTS FaceAngleX+ = 向左转。TODO: 符号未经确认，反了改为 -rotYDeg
+            // 假设 VTS FaceAngleX+ = 向左转。注：符号未经真机确认，若方向相反需在此处改为 -rotYDeg
             "FaceAngleX" to rotYDeg * ANGLE_SCALE,
             // 绕 +X 正旋转（拇指沿 X+ 向左）使视线转向 -Y(下) ＝ 低头；
-            // 假设 VTS FaceAngleY+ = 抬头。TODO: 符号未经确认，反了改为 +rotXDeg
+            // 假设 VTS FaceAngleY+ = 抬头。注：符号未经真机确认，若方向相反需在此处改为 +rotXDeg
             "FaceAngleY" to -rotXDeg * ANGLE_SCALE,
             // 绕 +Z 正旋转（拇指沿 Z+ 朝摄像头）使头顶(+Y)偏向 -X；前置摄像头是镜像视角，
-            // VTS 又是「照镜子」语义，此符号最不可靠。TODO: 符号未经确认，反了改为 +rotZDeg
+            // VTS 又是「照镜子」语义，此符号最不可靠。注：符号未经真机确认，若方向相反需在此处改为 +rotZDeg
             "FaceAngleZ" to -rotZDeg * ANGLE_SCALE
         )
         val positionRaw = linkedMapOf(
             // 平移是世界系原点（会话启动时的相机位姿）起的绝对量，含初始距离/偏移；
-            // 校准基准（basePositions）即实现「基线归零」。TODO: 符号与各轴 SCALE 未经确认
+            // 校准基准（basePositions）即实现「基线归零」。注：符号与各轴 SCALE 未经真机确认
             "FacePositionX" to translation[0] * POSITION_SCALE_XY,
             "FacePositionY" to translation[1] * POSITION_SCALE_XY,
             // Z 取负：AR 的 Z+ 指向用户（远离摄像头），靠近时 translation[2] 变小，
@@ -776,7 +776,7 @@ class BlendShapeMapper(
             "Animoji_Cheek_Puff" to "CheekPuff"
 
         )
-        // TODO: 以下 AR 系数暂未映射，待核对所用 VTS 模型的输入参数绑定后补充：
+        // 以下 AR 系数暂未映射，待核对所用 VTS 模型的输入参数绑定后补充：
         //  Mouth_Roll_Lower/Upper, Mouth_Shrug_Lower/Upper, Mouth_Upper_Up, Mouth_Lower_Down,
         //  Mouth_Left/Right(下颌左右), Jaw_Forward, Cheek_Squint_L/R, Tongue_*,
         //  Frown_Nose_Mouth_Up, HealthParameter 项
@@ -843,7 +843,7 @@ class BlendShapeMapper(
          *    Brows 输入为左右 combined 均值，共用 BROW_DEVICE_MAX），
          *    deadZone/饱和锚点留在此处（静息眉毛若微抖，参照 WIDE_BOOST_SHAPE
          *    先例给三通道加 deadZone=0.10）；
-         *  - TODO: 0.5 / 0.22 / 0.30 / 0.15 / 0.85 为单机实测推断，
+         *  - 目前取值 0.5 / 0.22 / 0.30 / 0.15 / 0.85 为单机实测推断，
          *    满幅校准落地后由校准数据覆盖。
          */
         private val channelConfigs: Map<String, ExpressionConfig> = linkedMapOf(
@@ -921,7 +921,7 @@ class BlendShapeMapper(
          * 合成输入的归一化分母（恒等 1.0）：Mouth_Left/Right 在探针 11 项之外、
          * 无实测峰值；眉毛仅 BrowOuterUpLeft 有实测峰 ~0.46（logcat），
          * 其余 6 键（含 BrowDown 双键）无数据。
-         * TODO: 补测后调（EyeSmile 取 0.1 致 2.2 倍过冲）。
+         * 待补测后调整（EyeSmile 取 0.1 会致 2.2 倍过冲）。
          */
         private const val MOUTH_X_DEVICE_MAX = 1.0f
         private const val BROW_DEVICE_MAX = 1.0f
@@ -1051,7 +1051,7 @@ class BlendShapeMapper(
          * Z 取负：AR 的 Z+ 指向用户（远离摄像头），靠近时 translation[2] 变小，
          * 而 VTS 期望「靠近 = 正」——方向翻转在换算系数符号里完成。
          * Z 符号与校准基线域相反时基线失效：需重新校准一次，否则 Z 恒钳在边界。
-         * TODO: 微调（VTS 官方 wiki 未给出 FacePosition 的量纲，需看模型实际位移幅度）
+         * 若模型实际位移幅度不符可在此微调（VTS 官方 wiki 未给出 FacePosition 的量纲）。
          */
         private const val POSITION_SCALE_XY = 100f
         private const val POSITION_SCALE_Z = -100f

@@ -48,7 +48,8 @@ import com.exarry.arvtubelink.R
 
 /**
  * 「图标+文字」按钮内容的视觉补偿：图标在左时文字视觉重心偏右，整体左移微调。
- * TODO(真机微调)：仍偏右改 -3/-4，过偏左改 -1/0。只动绘制坐标，不影响布局/触摸区域。
+ * 目前取值 -2dp 为真机目测结果：若仍偏右改为 -3/-4，过偏左改为 -1/0。
+ * 只动绘制坐标，不影响布局/触摸区域。
  */
 private val ButtonContentOffset = (-2).dp
 
@@ -390,7 +391,8 @@ private fun IconTextContent(
  * 自动继承深色色板。
  * 布局：icon 居中（m3 icon 槽天然居中）+ 标题/正文居中（TextAlign.Center + fillMaxWidth，
  * m3 默认左对齐）+ 按钮右下（m3 默认）。
- * 确认按钮 colorError 表达危险操作（colors.xml 单一来源）；TODO(真机)：刺眼/看不清 → 换 colorPrimary。
+ * 确认按钮 colorError 表达危险操作（colors.xml 单一来源）；若真机上刺眼/看不清，
+ * 可在此处换成 colorPrimary。
  */
 @Composable
 private fun ClearTokenConfirmDialog(

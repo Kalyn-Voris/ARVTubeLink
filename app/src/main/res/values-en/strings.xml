@@ -1,0 +1,148 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- English (en) translations for ARVTubeLink.
+     Strings marked translatable="false" in values/strings.xml (legal agreement text,
+     language self-names, GitHub URL) are intentionally absent here. -->
+<resources>
+    <string name="app_name">ARVTubeLink</string>
+
+    <!-- ===== Main screen buttons ===== -->
+    <string name="action_check_ar">Check AR Engine</string>
+    <string name="action_start_tracking">Start tracking</string>
+    <string name="action_stop_tracking">Stop tracking</string>
+    <string name="action_connect_vts">Connect VTS</string>
+    <string name="action_clear_token">Clear token</string>
+    <string name="token_clear_confirm_message">This deletes the VTS token stored on this device. You will need to tap \"Allow\" on your computer again next time. Clear it?</string>
+
+    <!-- ===== Settings screen ===== -->
+    <string name="action_calibrate">Calibrate (opens alignment view)</string>
+    <string name="action_reset_calibration">Reset calibration</string>
+    <string name="switch_debug_logs">Enable verbose logs</string>
+    <string name="switch_one_euro_filter">Enable 1€ filter (off = raw pass-through)</string>
+    <string name="settings_stream_frequency">Stream rate</string>
+    <string name="settings_stream_frequency_desc">Throttle rate for data sent to VTS</string>
+
+    <!-- ===== Settings dialogs ===== -->
+    <string name="settings_calibration_intro">Calibration opens a full-screen alignment view. Align the mesh, then tap \"Confirm calibration\";\nthe pose and expression at that moment become the mapping zero point (sensitivity 0.10x ~ 3.00x)</string>
+    <string name="settings_calib_status_calibrated">Calibration: calibrated (the pose and expression at calibration time are the zero point)</string>
+    <string name="settings_calib_status_uncalibrated">Calibration: not calibrated (raw values passed through, neutral default)</string>
+    <string name="sensitivity_head">Head sensitivity (FaceAngle)</string>
+    <string name="sensitivity_expression">Expression sensitivity</string>
+    <string name="sensitivity_position">Position sensitivity (FacePosition)</string>
+    <string name="toast_calibration_reset">Calibration reset to the default zero point</string>
+    <string name="toast_debug_logs_on">Verbose logs enabled</string>
+    <string name="toast_debug_logs_off">Verbose logs disabled</string>
+    <string name="toast_one_euro_on">1€ filter enabled</string>
+    <string name="toast_one_euro_off">1€ filter disabled (raw pass-through)</string>
+
+    <!-- ===== Calibration alignment view ===== -->
+    <string name="action_confirm_calibration">Confirm calibration</string>
+    <string name="action_cancel">Cancel</string>
+    <string name="calib_detecting">Detecting face…</string>
+    <string name="calib_status_detected">Face detected: line the markers up with the crosshair, then tap \"Confirm calibration\"</string>
+    <string name="calib_status_not_detected">No face detected: move your face into the alignment frame</string>
+    <string name="calib_hint">Move your face into the warm-white frame and look straight at the screen. The pale cyan wireframe is the face mesh;\nwhen the pale cyan markers overlap the white crosshair in the center, you are aligned</string>
+
+    <!-- ===== Text field hints ===== -->
+    <string name="hint_vts_ip">IP of the PC running VTS</string>
+    <string name="hint_port">Port</string>
+
+    <!-- ===== Tabs and top bar ===== -->
+    <string name="tab_home">Home</string>
+    <string name="tab_settings">Settings</string>
+    <string name="tab_log">Log</string>
+
+    <!-- ===== Settings card titles ===== -->
+    <string name="settings_card_calibration">Calibration &amp; sensitivity</string>
+    <string name="settings_card_smoothing">Streaming</string>
+    <string name="settings_card_theme">Theme</string>
+    <string name="settings_card_developer">Developer</string>
+    <string name="settings_card_about">About</string>
+    <string name="theme_follow_system">Follow system (off = always dark)</string>
+    <string name="theme_amoled_black">AMOLED black theme</string>
+    <string name="theme_amoled_black_desc">Pure black background in dark mode</string>
+    <string name="about_app_intro">ARVTubeLink uses Huawei AR Engine to capture facial expressions and head pose, mapping them in real time into VTube Studio so your Live2D model follows your face.</string>
+
+    <!-- ===== Language card ===== -->
+    <string name="settings_card_language">Language</string>
+    <string name="settings_language_label">App language</string>
+    <string name="language_dialog_title">Choose language</string>
+    <string name="language_system">Follow system</string>
+
+    <!-- ===== Log screen ===== -->
+    <string name="log_count_format">Runtime log (%1$d entries, max 500)</string>
+    <string name="log_copy_all">Copy all</string>
+    <string name="log_clear">Clear</string>
+    <string name="toast_copied_logs">Copied %1$d log entries</string>
+
+    <!-- ===== Home screen status bar ===== -->
+    <string name="ar_status_not_detected">Not checked</string>
+    <string name="ar_status_checking">Checking…</string>
+    <!-- %1$s = AR Engine status text, %2$s = camera permission text -->
+    <string name="ar_status_format">AR Engine: %1$s\nCamera permission: %2$s</string>
+    <string name="ar_engine_available">Available (ready)</string>
+    <string name="ar_engine_not_installed">NotInstalled (missing or outdated)</string>
+    <string name="ar_engine_unsupported">Unsupported (device not supported)</string>
+    <string name="camera_permission_granted">Granted</string>
+    <string name="camera_permission_denied">Denied</string>
+    <string name="ar_status_create_session_failed">Failed to create AR session (see Logcat)</string>
+    <string name="ar_status_resume_session_failed">Failed to resume session (camera in use?)</string>
+    <string name="ar_status_tracking_sending">Tracking… (streaming at %1$dHz)</string>
+    <string name="ar_status_tracking_local_only">Tracking… (VTS not connected, local mapping only)</string>
+    <string name="ar_status_stopped">Stopped</string>
+    <string name="ar_status_permission_granted">Camera permission granted, starting tracking…</string>
+    <string name="ar_status_permission_denied">Camera permission denied</string>
+
+    <!-- ===== VTS connection status ===== -->
+    <string name="vts_status_disconnected">VTS: not connected</string>
+    <string name="vts_status_connecting">VTS: connecting…</string>
+    <string name="vts_status_waiting_approval">VTS: waiting for approval on your computer… (no timeout, take your time)</string>
+    <string name="vts_status_authenticating">VTS: authenticating…</string>
+    <string name="vts_status_auth_failed">VTS: authentication failed (token cleared, retrying automatically)</string>
+    <string name="vts_status_authenticated">VTS: connected (authenticated, injecting parameters)</string>
+    <string name="vts_status_reconnecting">VTS: disconnected, reconnecting (attempt %1$d)…</string>
+    <string name="vts_status_error">VTS: error - %1$s</string>
+
+    <!-- ===== Toasts raised from MainActivity ===== -->
+    <string name="toast_token_cleared">Local token cleared. You will be asked to approve again on your next connection.</string>
+    <string name="toast_calibrate_requires_tracking">Start tracking before calibrating</string>
+    <string name="toast_calibrate_no_face">No face detected: align your face with the frame</string>
+    <string name="toast_calibrate_no_frame">No face frame yet: keep your face in view</string>
+    <string name="toast_calibrate_saved">Calibration saved (persists after restart)</string>
+    <string name="toast_enter_ip">Enter the computer IP address</string>
+    <string name="toast_invalid_port">Invalid port</string>
+    <string name="toast_create_session_failed">Failed to create AR session</string>
+    <string name="toast_camera_permission_required">Camera permission required</string>
+    <string name="toast_resume_session_failed">Failed to resume session after returning to the foreground (camera in use?). Tracking stopped.</string>
+
+    <!-- ===== OLED burn-in mask ===== -->
+    <string name="burn_in_mask_label">Streaming</string>
+
+    <!-- ===== Parameter adaptation ===== -->
+    <string name="adaptation_running_first">Adapting model parameters…</string>
+    <string name="adaptation_running_switch">Model changed, re-adapting…</string>
+    <string name="adaptation_running_progress">(%1$d/%2$d, skipped %3$d)</string>
+    <string name="adaptation_done">Adaptation complete and saved (persists after restart)</string>
+    <string name="adaptation_failed">Adaptation failed, using the default mapping</string>
+
+    <!-- ===== Adaptation switch + manual mapping ranges ===== -->
+    <string name="adaptation_switch_label">Parameter adaptation</string>
+    <string name="adaptation_switch_desc">Auto-calibrate mapping ranges per model</string>
+    <string name="adaptation_manual_title">Manual mapping ranges</string>
+    <string name="adaptation_manual_disabled_hint">Adaptation is active</string>
+    <string name="adaptation_manual_mouth_smile">MouthSmile neutral point</string>
+    <string name="adaptation_manual_brow_sens">Brow sensitivity</string>
+    <string name="adaptation_manual_mouth_open">MouthOpen speaking sensitivity</string>
+    <string name="adaptation_manual_reset">Restore defaults</string>
+
+    <!-- ===== Face mirroring ===== -->
+    <string name="face_mirror_label">Mirror face</string>
+    <string name="face_mirror_desc">Flip face parameters horizontally</string>
+
+    <!-- ===== First-run calibration guide card ===== -->
+    <string name="calib_guide_title">Calibrate before first use</string>
+    <string name="calib_guide_body">Calibration uses your current expression and head pose as the zero point. Without it the model keeps an initial offset and tracking looks off. Takes about 10 seconds.</string>
+    <string name="calib_guide_action_start">Start calibration</string>
+    <string name="calib_guide_action_later">Later</string>
+    <string name="calib_guide_dismiss_desc">Hide the calibration guide for now (it returns on the next launch)</string>
+    <string name="calib_guide_starting">Starting tracking and entering calibration…</string>
+</resources>
