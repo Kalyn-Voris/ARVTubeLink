@@ -152,6 +152,8 @@ fun AppRoot(
     onAdaptationToggle: (Boolean) -> Unit,
     /** 手动映射值写透（拖动中即时调用，成品 MapperOverrides，MainActivity 直写 mapper）。 */
     onManualOverridesChange: (MapperOverrides) -> Unit,
+    /** 应用语言切换（MainActivity 写 prefs + AppCompatDelegate.setApplicationLocales）。 */
+    onLanguageChange: (String) -> Unit,
 ) {
     // ip/port 输入框状态：AppRoot 级 remember——Tab 互切不清空；Activity 重建随新组合
     // 以 defaultIp/defaultPort 重新初始化（MainActivity 已从 prefs 恢复上次输入）
@@ -327,6 +329,7 @@ fun AppRoot(
                                         adaptationProbeActive = adaptationProbeActive.value,
                                         onAdaptationToggle = onAdaptationToggle,
                                         onManualOverridesChange = onManualOverridesChange,
+                                        onLanguageChange = onLanguageChange,
                                     )
                                     TAB_LOG -> LogContent()
                                 }

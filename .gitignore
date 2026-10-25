@@ -2,36 +2,38 @@
 #  ARVTubeLink — .gitignore
 # ============================================================
 
-# ---- 构建产物 ----
+# 构建产物
 .gradle/
 .kotlin/
 build/
 /captures
 .externalNativeBuild
 .cxx
+# AGP 打包产物目录（含 app-release.apk 与 output-metadata.json）
+app/release/
 *.apk
 *.aab
 *.ap_
 *.dex
 *.class
 
-# ---- 本地配置（含 SDK 路径，绝不提交）----
+# 本地配置（含 SDK 路径，绝不提交）
 local.properties
 local_debug/
 
-# ---- IDE ----
+# IDE
 .idea/
 *.iml
 *.hprof
 *.log
 
-# ---- 操作系统 ----
+# 操作系统
 .DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# ---- 安全敏感（P0）----
+# 安全敏感（P0）
 # VTS 插件 Token：绝不允许进入版本库
 vts_token.txt
 .arvtubelink_probe_token
@@ -41,7 +43,7 @@ vts_token.txt
 raw_probe.txt
 smile_probe.txt
 
-# ---- 签名密钥（绝不提交）----
+# 签名密钥（绝不提交）
 *.jks
 *.keystore
 *.p12
@@ -49,51 +51,46 @@ smile_probe.txt
 *.pem
 *.key
 
-# ---- Python（tools/ 探针脚本）----
+# Python（tools/ 探针脚本）
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 
-# ---- tools/ 开发脚手架（临时产物，不入库）----
+# tools/ 开发脚手架（临时产物，不入库）
 # 下划线前缀是开发期脚本的约定，只保留 README.md 和两个正式探针脚本。
 tools/_*
 
-# ---- 本机 AI 工具链目录 ----
-.dsh/
-.zcode/
-.zcodeignore
-
-# ---- 构建 / 打包（补充）----
+# 构建 / 打包（补充）
 *.aar
 captures/
 *.stackdump
 hs_err_pid*
 replay_pid*
 
-# ---- 签名与密钥（补充）----
+# 签名与密钥（补充）
 signing.properties
 keystore.properties
 *.p7b
 *.cer
 *.crt
 
-# ---- 系统垃圾（补充）----
+# 系统垃圾（补充）
 ._*
 .Spotlight-V100
 .Trashes
 *.swp
 *~
 
-# ---- 编辑器（补充）----
+# 编辑器（补充）
 .vscode/
 *.sublime-*
 *.suo
 *.user
 *.userosscache
 
-# ---- 文档 ----
+# 文档
 # 本仓库的 Markdown 与 LICENSE 必须入库。
 # 不要在下方添加 *.md / README* / docs/ 之类的忽略规则。
 # 注意：也不要加 !*.md，那会覆盖全局 gitignore 里的 *.local.md，

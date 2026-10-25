@@ -19,19 +19,24 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -118,8 +123,26 @@ internal const val KEY_SEND_FREQUENCY_HZ = "send_frequency_hz"
 /** 推流频率默认档（与 FaceRenderer 初始节流间隔 1000/30ms 对齐）。 */
 internal const val DEFAULT_SEND_FREQUENCY_HZ = 30
 
-/** 关于卡在 LazyColumn 中的 item 索引（第 5 张卡；新增卡片需同步更新）。 */
-private const val AboutCardIndex = 4
+// ---------- 应用语言（App 内切换，不走系统设置入口） ----------
+// 存的是 language tag 而非枚举序号：prefs 里的值直接就是 LocaleListCompat.forLanguageTags()
+// 的入参，读写两侧零转换。空串 = 跟随系统（清空 app locale，回落系统语言）。
+// 注：values/ 是中文默认资源，values-en/ 是英文；系统语言既非中文也非英文时，
+// 「跟随系统」按 Android 标准回退链落到中文默认资源，属预期行为。
+
+/** 应用语言 Key：值见 [LANGUAGE_SYSTEM] / [LANGUAGE_ZH] / [LANGUAGE_EN]。 */
+internal const val KEY_APP_LANGUAGE = "app_language"
+
+/** 「跟随系统」：写空串（= 清空 app 级 locale 覆盖）。 */
+internal const val LANGUAGE_SYSTEM = ""
+
+/** 简体中文。 */
+internal const val LANGUAGE_ZH = "zh"
+
+/** English。 */
+internal const val LANGUAGE_EN = "en"
+
+/** 关于卡在 LazyColumn 中的 item 索引（第 6 张卡；新增卡片需同步更新）。 */
+private const val AboutCardIndex = 5
 
 /** 设置页依赖集（纯数据，5 项，由 MainActivity 构造并经 AppRoot 传入；原设置弹窗的 deps）。
  *  appPrefs 亦被 AppRoot 用于首页 VTS 地址记忆的输入回写（KEY_VTS_IP/KEY_VTS_PORT）。 */
@@ -175,6 +198,8 @@ fun SettingsContent(
     onAdaptationToggle: (Boolean) -> Unit,
     /** 手动值写透（拖动中即时调用，成品 MapperOverrides；落盘在本页 onValueChangeFinished）。 */
     onManualOverridesChange: (MapperOverrides) -> Unit,
+    /** 语言切换（副作用在 MainActivity：写 prefs + AppCompatDelegate.setApplicationLocales）。 */
+    onLanguageChange: (String) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -221,6 +246,11 @@ fun SettingsContent(
     var faceMirrorEnabled by remember {
         mutableStateOf(deps.appPrefs.getBoolean(KEY_FACE_MIRROR, false))
     }
+    // 应用语言（appPrefs 真源，存 language tag；空串 = 跟随系统）
+    var appLanguage by remember {
+        mutableStateOf(deps.appPrefs.getString(KEY_APP_LANGUAGE, LANGUAGE_SYSTEM) ?: LANGUAGE_SYSTEM)
+    }
+    var languageDialogVisible by remember { mutableStateOf(false) }
 
     // 手动值 → 成品 MapperOverrides（UI 侧换算：倍率 ÷ 进归一化分母，倍率越大越灵敏）。
     // 换算基线与 BlendShapeMapper 私有常量人工对齐（BROW_DEVICE_MAX=1.0 /
@@ -475,6 +505,24 @@ fun SettingsContent(
         }
 
         item {
+            SettingsCard(title = stringResource(R.string.settings_card_language)) {
+                // 当前语言显示名：语言名一律用「自称」（简体中文 / English），
+                // 与界面语言无关——否则英文界面下「简体中文」会显示成 Chinese，
+                // 用户反而找不到自己的母语。language_zh / language_en 已 translatable="false"。
+                val currentLanguageLabel = when (appLanguage) {
+                    LANGUAGE_ZH -> stringResource(R.string.language_zh)
+                    LANGUAGE_EN -> stringResource(R.string.language_en)
+                    else -> stringResource(R.string.language_system)
+                }
+                ClickableValueRow(
+                    label = stringResource(R.string.settings_language_label),
+                    value = currentLanguageLabel,
+                    onClick = { languageDialogVisible = true },
+                )
+            }
+        }
+
+        item {
             SettingsCard(title = stringResource(R.string.settings_card_developer)) {
                 SwitchRow(
                     label = stringResource(R.string.switch_debug_logs),
@@ -522,6 +570,86 @@ fun SettingsContent(
                 )
             }
         }
+    }
+
+    // 语言选择对话框：单选（跟随系统 / 简体中文 / English）。
+    // 选中即落盘并上收 MainActivity 应用 locale —— 由 Activity recreate 让新语言生效
+    // （manifest 的 configChanges 不含 locale，见 MainActivity 的 attachBaseContext 注释）。
+    if (languageDialogVisible) {
+        LanguageDialog(
+            current = appLanguage,
+            onSelect = { tag ->
+                languageDialogVisible = false
+                if (tag != appLanguage) {
+                    appLanguage = tag
+                    onLanguageChange(tag)
+                }
+            },
+            onDismiss = { languageDialogVisible = false },
+        )
+    }
+}
+
+/**
+ * 语言选择对话框：三个单选（跟随系统 / 简体中文 / English），点选即生效并关闭。
+ *
+ * 用 AlertDialog + RadioButton 行而非 DropdownMenu：选项仅 3 个、且需要「当前选中」的
+ * 明确指示（DropdownMenu 在窄屏上弹出位置不稳定，也没有选中态语义）。
+ * 取消按钮留出「误触进入」的退路；点外部/返回键同样关闭（不选即不改）。
+ */
+@Composable
+private fun LanguageDialog(
+    current: String,
+    onSelect: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(text = stringResource(R.string.language_dialog_title)) },
+        text = {
+            Column {
+                LanguageOptionRow(
+                    label = stringResource(R.string.language_system),
+                    selected = current == LANGUAGE_SYSTEM,
+                    onClick = { onSelect(LANGUAGE_SYSTEM) },
+                )
+                LanguageOptionRow(
+                    label = stringResource(R.string.language_zh),
+                    selected = current == LANGUAGE_ZH,
+                    onClick = { onSelect(LANGUAGE_ZH) },
+                )
+                LanguageOptionRow(
+                    label = stringResource(R.string.language_en),
+                    selected = current == LANGUAGE_EN,
+                    onClick = { onSelect(LANGUAGE_EN) },
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onDismiss) {
+                Text(text = stringResource(R.string.action_cancel))
+            }
+        },
+    )
+}
+
+/** 对话框内的一行单选：RadioButton + 标签，整行可点（热区比只点圆点大得多）。 */
+@Composable
+private fun LanguageOptionRow(
+    label: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .selectable(selected = selected, onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        RadioButton(selected = selected, onClick = null)
+        Spacer(Modifier.width(12.dp))
+        Text(text = label)
     }
 }
 
