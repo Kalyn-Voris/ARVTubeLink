@@ -66,7 +66,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 ## 开源协议
 
-[PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)，附个人 VTuber 豁免。
+本项目基于 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)，详见 [LICENSE](LICENSE)，个人 VTuber 豁免条款详见 [LICENSE-ADDITIONAL.md](LICENSE-ADDITIONAL.md)。
 
 - 个人下载、编译、本地运行、学习修改、免费分发安装包，都可以。
 - 个人 VTuber 的直播与视频收益（含打赏、会员），个人视频创作者的视频收益，豁免 Noncommercial 限制。

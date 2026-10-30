@@ -46,6 +46,16 @@
     <string name="hint_vts_ip">IP of the PC running VTS</string>
     <string name="hint_port">Port</string>
 
+    <!-- ===== Auto-discovery (network/VtsDiscoveryClient: UDP 47779 broadcast + TCP 8001 fallback) ===== -->
+    <string name="action_auto_discover">Auto-discover VTS</string>
+    <string name="discovery_status_searching">Searching for VTS on the LAN…</string>
+    <string name="discovery_status_scanning">No UDP broadcast received, scanning LAN ports…</string>
+    <string name="discovery_status_found_connecting">VTS found at %1$s, connecting…</string>
+    <string name="discovery_status_api_off">VTS found at %1$s, but the API is disabled on the PC. Enable the API in VTube Studio, then connect</string>
+    <string name="discovery_status_timeout">No VTS found. Make sure the phone and the PC are on the same Wi-Fi and VTube Studio is running; &quot;AP isolation&quot; (client isolation) on the router can also block discovery</string>
+    <string name="discovery_status_no_network">No LAN connection detected; discovery unavailable</string>
+    <string name="discovery_toast_connected">Discovered and connected</string>
+
     <!-- ===== Tabs and top bar ===== -->
     <string name="tab_home">Home</string>
     <string name="tab_settings">Settings</string>
