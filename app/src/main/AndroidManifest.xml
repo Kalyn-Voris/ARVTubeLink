@@ -6,6 +6,9 @@
     <uses-permission android:name="android.permission.CAMERA" />
     <!-- WebSocket 连接 VTube Studio -->
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- 自动发现：MulticastLock 需要（VTS 经 UDP 47779 广播；部分 OEM 驱动按组播路径过滤
+         广播包，normal 权限免运行时申请） -->
+    <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
     <application
         android:allowBackup="true"

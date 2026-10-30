@@ -33,6 +33,7 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.State
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -55,13 +56,19 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ar.FaceRenderer
 import com.exarry.arvtubelink.mapping.MapperOverrides
+import com.exarry.arvtubelink.network.VtsDiscoveryClient
 import com.exarry.arvtubelink.ui.theme.ARVTubeLinkTheme
 import com.exarry.arvtubelink.ui.theme.LocalThemeIsDark
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 /** Tab 索引取值（tabIndex State 由 MainActivity 持有；切换一律经 onSelectTab 回调上收）。 */
 internal const val TAB_HOME = 0
 internal const val TAB_SETTINGS = 1
 internal const val TAB_LOG = 2
+
+/** 自动发现暂态文案（Found/Failed）显示时长，到点自动回 Idle。 */
+private const val DISCOVERY_STATUS_CLEAR_MS = 4_000L
 
 /**
  * 底部 Tab 三页面骨架（首页 / 设置 / 日志）的 Compose 根组件：UI 与 AR 渲染彻底分离。
@@ -118,6 +125,10 @@ fun AppRoot(
     onStartTracking: () -> Unit,
     onStopTracking: () -> Unit,
     onConnectVts: (ip: String, portText: String) -> Unit,
+    /** 自动发现命中且 API 开启时，先于 onConnectVts 调用（MainActivity 置 Toast 标记）。 */
+    onAutoConnectStarted: () -> Unit,
+    /** 自动发现客户端（MainActivity 构造，只持 applicationContext）。 */
+    discoveryClient: VtsDiscoveryClient,
     onClearToken: () -> Unit,
     onSelectTab: (Int) -> Unit,
     onOpenAbout: () -> Unit,
@@ -171,6 +182,64 @@ fun AppRoot(
         snapshotFlow { portState.value }.collect { text ->
             val port = text.toIntOrNull() ?: return@collect
             settingsDeps.appPrefs.edit().putInt(KEY_VTS_PORT, port).apply()
+        }
+    }
+
+    // 自动发现（v1.2.5）：状态 AppRoot 级 remember（Tab 互切保留、搜索跨 Tab 继续）；
+    // 搜索协程挂本组件 rememberCoroutineScope——Activity 销毁 = 组合离开 = 自动 cancel，
+    // 套接字与 MulticastLock 在 VtsDiscoveryClient 内经取消钩子/finally 释放（无泄漏，
+    // 红线②）。Activity 重建后状态回 Idle，ip/port 走 defaultIp/defaultPort 恢复路径。
+    val discoveryState = remember { mutableStateOf<DiscoveryUiState>(DiscoveryUiState.Idle) }
+    val discoveryScope = rememberCoroutineScope()
+
+    // 触发自动发现：Searching/Scanning 中守卫防重入；命中先填 ip/port（上方 snapshotFlow
+    // 链自动落盘，无需额外持久化代码）——API 开启 = 置 Toast 标记 + 复用既有 connectVts
+    // 流程；API 未开启（用户裁定）= 只填入 + 状态行提示，不发起必败连接。
+    val runAutoDiscover = {
+        val busy = discoveryState.value == DiscoveryUiState.Searching ||
+            discoveryState.value == DiscoveryUiState.Scanning
+        if (!busy) {
+            discoveryState.value = DiscoveryUiState.Searching
+            discoveryScope.launch {
+                when (val result = discoveryClient.discover()) {
+                    is VtsDiscoveryClient.DiscoveryResult.Found -> {
+                        ipState.value = result.ip
+                        portState.value = result.port.toString()
+                        if (result.isApiActive) {
+                            onAutoConnectStarted()
+                            onConnectVts(result.ip, result.port.toString())
+                            discoveryState.value =
+                                DiscoveryUiState.Found(result.ip, result.port, autoConnecting = true)
+                        } else {
+                            discoveryState.value =
+                                DiscoveryUiState.Found(result.ip, result.port, autoConnecting = false)
+                        }
+                    }
+                    is VtsDiscoveryClient.DiscoveryResult.Failed -> {
+                        discoveryState.value = DiscoveryUiState.Failed(result.reason)
+                    }
+                }
+            }
+        }
+    }
+
+    // 暂态自清与 Searching→Scanning 镜像：Found/Failed 显示 DISCOVERY_STATUS_CLEAR_MS 后
+    // 回 Idle（连接进展由 vtsStatus 行继续表达）；Searching 满 TCP_FALLBACK_DELAY_MS 转
+    // Scanning（纯文案切换，延迟值引用客户端常量防两处漂移）。key 挂状态对象，状态一变
+    // 即重启进入对应分支。
+    LaunchedEffect(discoveryState.value) {
+        when (discoveryState.value) {
+            is DiscoveryUiState.Found, is DiscoveryUiState.Failed -> {
+                delay(DISCOVERY_STATUS_CLEAR_MS)
+                discoveryState.value = DiscoveryUiState.Idle
+            }
+            DiscoveryUiState.Searching -> {
+                delay(VtsDiscoveryClient.TCP_FALLBACK_DELAY_MS)
+                if (discoveryState.value == DiscoveryUiState.Searching) {
+                    discoveryState.value = DiscoveryUiState.Scanning
+                }
+            }
+            else -> {}
         }
     }
 
@@ -286,6 +355,8 @@ fun AppRoot(
                                         showCalibrationGuide = showCalibrationGuide.value,
                                         ipState = ipState,
                                         portState = portState,
+                                        discoveryState = discoveryState.value,
+                                        onAutoDiscover = runAutoDiscover,
                                         onCheckAr = onCheckAr,
                                         onStartTracking = onStartTracking,
                                         onStopTracking = onStopTracking,

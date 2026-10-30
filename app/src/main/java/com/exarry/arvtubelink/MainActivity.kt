@@ -28,6 +28,7 @@ import com.exarry.arvtubelink.mapping.BlendShapeMapper
 import com.exarry.arvtubelink.mapping.CalibrationStorage
 import com.exarry.arvtubelink.mapping.MapperOverrides
 import com.exarry.arvtubelink.mapping.Smoother
+import com.exarry.arvtubelink.network.VtsDiscoveryClient
 import com.exarry.arvtubelink.network.VtsState
 import com.exarry.arvtubelink.network.VtsWsClient
 import com.exarry.arvtubelink.ui.AppRoot
@@ -106,7 +107,20 @@ class MainActivity : AppCompatActivity() {
         VtsWsClient(
             context = this,
             onVtsStateChanged = { state ->
-                runOnUiThread { vtsStatusState.value = vtsStateLabel(state) }
+                runOnUiThread {
+                    vtsStatusState.value = vtsStateLabel(state)
+                    when (state) {
+                        // 自动发现链路终点：真认证通过才报「已发现并连接」（发现成功 ≠ 连接
+                        // 成功——VTS 端授权弹窗/端口错/API 关都会失败，见 pendingAutoConnectToast）
+                        VtsState.Authenticated -> if (pendingAutoConnectToast) {
+                            pendingAutoConnectToast = false
+                            Toast.makeText(this, R.string.discovery_toast_connected, Toast.LENGTH_SHORT).show()
+                        }
+                        // 手动断开/停止追踪：丢弃陈旧标记（此后再次 Authenticated 属新连接）
+                        VtsState.Disconnected -> pendingAutoConnectToast = false
+                        else -> {}
+                    }
+                }
             },
             onError = { message ->
                 runOnUiThread {
@@ -120,6 +134,16 @@ class MainActivity : AppCompatActivity() {
             }
         )
     }
+
+    // 自动发现客户端（v1.2.5）：只做 UDP 广播监听 + TCP 端口兜底探测，不持连接状态；
+    // 命中后由 UI 层复用 connectVts 走既有链路。lazy 同 vtsClient（构造期 base context
+    // 未 attach，getSystemService 需等 onCreate 之后）
+    private val discoveryClient by lazy { VtsDiscoveryClient(this) }
+
+    // 自动发现连接标记：AppRoot 命中且 API 开启时经 onAutoConnectStarted 置 true；
+    // onVtsStateChanged 到 Authenticated 消费弹 Toast，Disconnected 清除防陈旧标记
+    // 污染下一次手动连接的 Authenticated
+    private var pendingAutoConnectToast = false
 
     // ---------- 参数自适应（adapt/ 包） ----------
 
@@ -394,6 +418,8 @@ class MainActivity : AppCompatActivity() {
                 onStartTracking = { startTracking() },
                 onStopTracking = { stopTracking() },
                 onConnectVts = { ip, portText -> connectVts(ip, portText) },
+                onAutoConnectStarted = { pendingAutoConnectToast = true },
+                discoveryClient = discoveryClient,
                 onClearToken = {
                     vtsClient.clearSavedToken()
                     Toast.makeText(this, R.string.toast_token_cleared, Toast.LENGTH_SHORT).show()

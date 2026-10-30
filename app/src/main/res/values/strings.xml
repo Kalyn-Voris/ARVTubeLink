@@ -43,6 +43,16 @@
     <string name="hint_vts_ip">VTS 所在电脑 IP</string>
     <string name="hint_port">端口</string>
 
+    <!-- ===== 自动发现（network/VtsDiscoveryClient：UDP 47779 广播 + TCP 8001 兜底） ===== -->
+    <string name="action_auto_discover">自动发现 VTS</string>
+    <string name="discovery_status_searching">正在搜索局域网内的 VTS…</string>
+    <string name="discovery_status_scanning">UDP 广播无响应，正在扫描局域网端口…</string>
+    <string name="discovery_status_found_connecting">已发现 VTS（%1$s），正在连接…</string>
+    <string name="discovery_status_api_off">已发现 VTS（%1$s），但电脑端 API 未开启，请在 VTube Studio 设置里打开 API 后再连接</string>
+    <string name="discovery_status_timeout">未发现 VTS。请确认手机与电脑在同一 Wi-Fi、VTube Studio 正在运行；路由器开启 AP 隔离（客户端隔离）也会导致搜索不到</string>
+    <string name="discovery_status_no_network">未检测到局域网连接，无法搜索</string>
+    <string name="discovery_toast_connected">已发现并连接</string>
+
     <!-- ===== Tab 与顶栏 ===== -->
     <string name="tab_home">首页</string>
     <string name="tab_settings">设置</string>

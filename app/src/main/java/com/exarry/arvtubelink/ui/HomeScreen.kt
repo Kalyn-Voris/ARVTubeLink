@@ -19,12 +19,15 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
@@ -45,6 +48,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
+import com.exarry.arvtubelink.network.VtsDiscoveryClient
 
 /**
  * 「图标+文字」按钮内容的视觉补偿：图标在左时文字视觉重心偏右，整体左移微调。
@@ -81,6 +85,35 @@ private val GuideCardBodySpacing = 14.dp
 private val GuideCardLaterSpacing = 4.dp
 
 /**
+ * 自动发现状态机（v1.2.5，网络实现在 network/VtsDiscoveryClient.kt，红线①不碰连接层）。
+ *
+ * 转移：Idle/Found/Failed 点自动发现按钮 → Searching（UI 状态守卫防重入；搜索协程挂
+ * AppRoot rememberCoroutineScope，Activity 销毁 = 组合离开 = 自动 cancel）→ 满 3s 无
+ * UDP 结果镜像转 Scanning（仅文案切换，延迟值引用 VtsDiscoveryClient.TCP_FALLBACK_DELAY_MS
+ * 防两处漂移）→ 命中转 Found（autoConnecting=false = 对端 API 未开启，只填入不连接）或
+ * 双路收工无果转 Failed；Found/Failed 均暂态，显示数秒后自动回 Idle（AppRoot LaunchedEffect）。
+ * 「已发现并连接」Toast 不在本状态机：发现成功 ≠ 连接成功（VTS 端授权弹窗/端口错/API 关
+ * 都会失败），连接成败由既有 VtsState 表达，MainActivity 在 Authenticated 时消费 pending
+ * 标记弹 Toast，避免误报。
+ */
+sealed interface DiscoveryUiState {
+    /** 常态（自动发现状态行不显示）。 */
+    data object Idle : DiscoveryUiState
+
+    /** 搜索前 3s：UDP 广播监听中。 */
+    data object Searching : DiscoveryUiState
+
+    /** 3s 后：UDP 无响应，TCP 兜底端口扫描中（典型为路由器 AP 隔离/OEM 驱动过滤广播）。 */
+    data object Scanning : DiscoveryUiState
+
+    /** 命中：IP/端口已填入；autoConnecting=false = 对端 API 未开启，只填入并提示。 */
+    data class Found(val ip: String, val port: Int, val autoConnecting: Boolean) : DiscoveryUiState
+
+    /** 失败终局：NO_NETWORK 无可用局域网 / TIMEOUT 超时未发现。 */
+    data class Failed(val reason: VtsDiscoveryClient.DiscoveryResult.Reason) : DiscoveryUiState
+}
+
+/**
  * 首页 Tab 内容：AR 状态 + 检查/开始/停止 + IP/端口输入 + 连接 VTS + 清除 Token + VTS 状态。
  *
  * 红线：本文件不得持有 GLSurfaceView/AndroidView——GL 表面常驻 AppRoot 根层
@@ -104,6 +137,9 @@ fun HomeContent(
     showCalibrationGuide: Boolean,
     ipState: MutableState<String>,
     portState: MutableState<String>,
+    /** 自动发现状态与触发（AppRoot 持有状态机并上收副作用，见 DiscoveryUiState KDoc）。 */
+    discoveryState: DiscoveryUiState,
+    onAutoDiscover: () -> Unit,
     onCheckAr: () -> Unit,
     onStartTracking: () -> Unit,
     onStopTracking: () -> Unit,
@@ -144,6 +180,8 @@ fun HomeContent(
             status = vtsStatus,
             ipState = ipState,
             portState = portState,
+            discoveryState = discoveryState,
+            onAutoDiscover = onAutoDiscover,
             onConnect = onConnectVts,
             onClearToken = onClearToken,
         )
@@ -276,9 +314,11 @@ private fun ArControlPanel(
 }
 
 /**
- * VTS 区：IP/端口一行 + 连接/清除 Token + 状态文字。
+ * VTS 区：IP/端口一行（行尾自动发现按钮，见 [AutoDiscoverButton]）+ 发现状态行 +
+ * 连接/清除 Token + 状态文字。
  * ip/port 文本由 AppRoot 级 remember 持有：Tab 互切保留，Activity 重建回默认值。
- * 端口/IP 的校验与 Toast 在 MainActivity.connectVts。
+ * 端口/IP 的校验与 Toast 在 MainActivity.connectVts；自动发现的搜索/填入/自动连接
+ * 逻辑在 AppRoot（runAutoDiscover），本组件纯展示 + 转发。
  * 清除 Token 先弹 [ClearTokenConfirmDialog] 确认再回调。
  * 间距/尺寸：分割线→输入框 +[DividerToInputSpacing]（分割线自带 8dp，本值 8dp，合计 16dp）、
  * 输入框→按钮 [InputToButtonSpacing]、两按钮间 [VtsButtonSpacing]、按钮高 [SecondaryButtonHeight]
@@ -289,6 +329,8 @@ private fun VtsControlPanel(
     status: String,
     ipState: MutableState<String>,
     portState: MutableState<String>,
+    discoveryState: DiscoveryUiState,
+    onAutoDiscover: () -> Unit,
     onConnect: (ip: String, portText: String) -> Unit,
     onClearToken: () -> Unit,
 ) {
@@ -317,6 +359,32 @@ private fun VtsControlPanel(
                     .padding(start = 8.dp)
                     .width(110.dp),
             )
+            // 自动发现按钮：行尾（VtsControlPanel KDoc 布局说明同步维护）
+            AutoDiscoverButton(
+                state = discoveryState,
+                onClick = onAutoDiscover,
+                modifier = Modifier.padding(start = 8.dp),
+            )
+        }
+        // 自动发现状态行：仅非 Idle 显示（不改变既有布局）；样式与 VTS 状态文字一致
+        when (val state = discoveryState) {
+            is DiscoveryUiState.Searching ->
+                DiscoveryStatusText(stringResource(R.string.discovery_status_searching))
+            is DiscoveryUiState.Scanning ->
+                DiscoveryStatusText(stringResource(R.string.discovery_status_scanning))
+            is DiscoveryUiState.Found ->
+                if (state.autoConnecting) {
+                    DiscoveryStatusText(stringResource(R.string.discovery_status_found_connecting, state.ip))
+                } else {
+                    DiscoveryStatusText(stringResource(R.string.discovery_status_api_off, state.ip))
+                }
+            is DiscoveryUiState.Failed ->
+                if (state.reason == VtsDiscoveryClient.DiscoveryResult.Reason.NO_NETWORK) {
+                    DiscoveryStatusText(stringResource(R.string.discovery_status_no_network))
+                } else {
+                    DiscoveryStatusText(stringResource(R.string.discovery_status_timeout))
+                }
+            DiscoveryUiState.Idle -> {}
         }
         Column(
             modifier = Modifier.padding(top = InputToButtonSpacing),
@@ -355,6 +423,49 @@ private fun VtsControlPanel(
             onDismiss = { showClearConfirm = false },
         )
     }
+}
+
+/**
+ * 自动发现按钮（IP/端口输入行行尾）：常态 Refresh 图标（icons-core 内置；魔法棒类图标
+ * AutoFixHigh/AutoAwesome 需引 icons-extended，违背本文件 KDoc 的既有取舍），搜索/扫描
+ * 中换 20dp loading 圈并禁点（重入由 AppRoot 状态守卫双保险）。contentDescription 走
+ * 完整语义：本按钮无伴随文字，无障碍需读出功能名。
+ */
+@Composable
+private fun AutoDiscoverButton(
+    state: DiscoveryUiState,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val busy = state == DiscoveryUiState.Searching || state == DiscoveryUiState.Scanning
+    IconButton(onClick = onClick, enabled = !busy, modifier = modifier) {
+        if (busy) {
+            CircularProgressIndicator(
+                modifier = Modifier.size(20.dp),
+                strokeWidth = 2.dp,
+            )
+        } else {
+            Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = stringResource(R.string.action_auto_discover),
+                tint = MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** 自动发现状态行文字：与 VTS 状态行同款式（14sp / onSurfaceVariant / 居中）。 */
+@Composable
+private fun DiscoveryStatusText(text: String) {
+    Text(
+        text = text,
+        fontSize = 14.sp,
+        textAlign = TextAlign.Center,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(top = 8.dp),
+    )
 }
 
 /**
