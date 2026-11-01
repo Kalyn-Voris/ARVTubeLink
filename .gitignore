@@ -76,6 +76,9 @@ keystore.properties
 *.cer
 *.crt
 
+# 构建计数（产物命名的"当天第 n 次"状态，本机私有）
+.build-counter
+
 # 系统垃圾（补充）
 ._*
 .Spotlight-V100

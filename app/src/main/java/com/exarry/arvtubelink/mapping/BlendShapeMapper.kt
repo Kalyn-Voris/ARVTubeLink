@@ -1,7 +1,7 @@
 package com.exarry.arvtubelink.mapping
 
 import android.os.SystemClock
-import android.util.Log
+import com.exarry.arvtubelink.utils.InAppLog
 import java.util.concurrent.ConcurrentHashMap
 import kotlin.math.asin
 import kotlin.math.atan2
@@ -210,13 +210,13 @@ class BlendShapeMapper(
             it !in CalibrationData.ANGLE_KEYS && it !in CalibrationData.POSITION_KEYS
         }
         if (angles.isEmpty()) {
-            Log.w(TAG, "校准捕获：快照缺头姿角度项（本帧未读到头姿？），角度基准回退中性 0")
+            InAppLog.w(TAG, "校准捕获：快照缺头姿角度项（本帧未读到头姿？），角度基准回退中性 0")
         }
         if (positions.isEmpty()) {
-            Log.w(TAG, "校准捕获：快照缺头姿位置项，位置基准回退中性 0")
+            InAppLog.w(TAG, "校准捕获：快照缺头姿位置项，位置基准回退中性 0")
         }
         if (expressions.isEmpty()) {
-            Log.w(TAG, "校准捕获：快照缺表情项，表情基准回退中性 0/1")
+            InAppLog.w(TAG, "校准捕获：快照缺表情项，表情基准回退中性 0/1")
         }
 
         val newCalibration = CalibrationData(
@@ -225,8 +225,11 @@ class BlendShapeMapper(
             baseExpressions = expressions
         )
         calibrationData = newCalibration
-        // 用户主动触发的低频事件（点一次「校准」一条），不纳入逐帧调试开关。
-        Log.i(
+        // 用户主动触发的低频事件（点一次「校准」一条），必须无条件可见：走 InAppLog.e。
+        // 不能用 i/w/d——它们受「详细日志」开关控制，默认关闭时会把这条校准成功提示一并
+        // 吞掉（用户点了校准却在日志面板里看不到任何痕迹）。级别取 e 是为了借用它的
+        // "无条件输出"语义，本条并不是错误。
+        InAppLog.e(
             TAG,
             "校准捕获完成：角度 ${angles.size} 项 $angles，位置 ${positions.size} 项，表情 ${expressions.size} 项"
         )
@@ -718,7 +721,7 @@ class BlendShapeMapper(
             val last = lastClampWarnAt[key] ?: 0L
             if (now - last >= CLAMP_WARN_INTERVAL_MS) {
                 lastClampWarnAt[key] = now
-                Log.w(TAG, "参数 $key 超出安全范围已截断：$value -> $clamped（允许 [$min, $max]）")
+                InAppLog.w(TAG, "参数 $key 超出安全范围已截断：$value -> $clamped（允许 [$min, $max]）")
             }
         }
         return clamped
