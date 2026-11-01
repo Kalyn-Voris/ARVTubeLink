@@ -38,6 +38,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,11 +54,16 @@ import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.window.DialogProperties
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ar.FaceRenderer
 import com.exarry.arvtubelink.mapping.BlendShapeMapper
@@ -66,6 +72,7 @@ import com.exarry.arvtubelink.mapping.MapperOverrides
 import com.exarry.arvtubelink.mapping.CalibrationStorage
 import com.exarry.arvtubelink.mapping.SensitivityConfig
 import com.exarry.arvtubelink.mapping.Smoother
+import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.Locale
@@ -123,6 +130,19 @@ internal const val KEY_SEND_FREQUENCY_HZ = "send_frequency_hz"
 /** 推流频率默认档（与 FaceRenderer 初始节流间隔 1000/30ms 对齐）。 */
 internal const val DEFAULT_SEND_FREQUENCY_HZ = 30
 
+// ---------- UI 效果开关 ----------
+
+/**
+ * 推流防烧屏开关 Key（Boolean，默认 true）。
+ *
+ * 控制 MainActivity 的 2s 空闲 -> 全屏纯黑遮罩逻辑（ui/BurnInMask.kt）。
+ * 默认开启：OLED 长期推流是烧屏高发场景，默认保护优于默认关闭。
+ */
+internal const val KEY_BURN_IN_MASK_ENABLED = "burn_in_mask_enabled"
+
+/** 防烧屏默认开启（见 [KEY_BURN_IN_MASK_ENABLED] 说明）。 */
+internal const val DEFAULT_BURN_IN_MASK_ENABLED = true
+
 // ---------- 应用语言（App 内切换，不走系统设置入口） ----------
 // 存的是 language tag 而非枚举序号：prefs 里的值直接就是 LocaleListCompat.forLanguageTags()
 // 的入参，读写两侧零转换。空串 = 跟随系统（清空 app locale，回落系统语言）。
@@ -141,8 +161,8 @@ internal const val LANGUAGE_ZH = "zh"
 /** English。 */
 internal const val LANGUAGE_EN = "en"
 
-/** 关于卡在 LazyColumn 中的 item 索引（第 6 张卡；新增卡片需同步更新）。 */
-private const val AboutCardIndex = 5
+/** 关于卡在 LazyColumn 中的 item 索引（第 7 张卡；新增卡片需同步更新）。 */
+private const val AboutCardIndex = 6
 
 /** 设置页依赖集（纯数据，5 项，由 MainActivity 构造并经 AppRoot 传入；原设置弹窗的 deps）。
  *  appPrefs 亦被 AppRoot 用于首页 VTS 地址记忆的输入回写（KEY_VTS_IP/KEY_VTS_PORT）。 */
@@ -200,6 +220,8 @@ fun SettingsContent(
     onManualOverridesChange: (MapperOverrides) -> Unit,
     /** 语言切换（副作用在 MainActivity：写 prefs + AppCompatDelegate.setApplicationLocales）。 */
     onLanguageChange: (String) -> Unit,
+    /** 防烧屏开关切换（副作用在 MainActivity：写 prefs + 取消/重启空闲计时器）。 */
+    onBurnInMaskEnabledChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -250,7 +272,65 @@ fun SettingsContent(
     var appLanguage by remember {
         mutableStateOf(deps.appPrefs.getString(KEY_APP_LANGUAGE, LANGUAGE_SYSTEM) ?: LANGUAGE_SYSTEM)
     }
+    // 语言选择弹窗可见性。
+    //
+    // 必须是 remember，**绝不能**改成 rememberSaveable：后者会把 true 存进 Bundle，
+    // Activity 重建时在新实例上恢复成 true，弹窗"自己跳回来"——正好是要修的 Bug。
+    // 但请注意：本值不是 Bug 根因（见下方 pendingLanguageTag 的注释），改成 remember
+    // 已经是现状，单靠它修不好真机现象。
     var languageDialogVisible by remember { mutableStateOf(false) }
+
+    // 待生效语言：把「应用 locale」从点击事件里摘出来，推迟到弹窗窗口真正移除之后再执行。
+    //
+    // 根因（真机复现：跟随系统 -> English，重建后弹窗仍在屏幕上）：
+    //  - AppCompat 的 setApplicationLocales 在 API < 33 上会**同步**调用
+    //    ActivityCompat.recreate()（见 AppCompatDelegateImpl.updateAppConfiguration）；
+    //  - Compose 的 AlertDialog 是一个独立 Window，它的移除走的是
+    //    「状态改 false -> 下一次组合 apply -> DisposableEffect.onDispose -> Dialog.dismiss()」
+    //    这条异步链；
+    //  - 同步 recreate() 抢在组合 apply 之前就把 Activity 拆掉，弹窗 Window 来不及 dismiss，
+    //    变成挂在旧 Activity 上的孤儿窗口——新 Activity 起来后它还在屏幕上。重建后
+    //    tabIndex 已复位到首页，所以看到的是「首页之上浮着一张语言弹窗」，与截图一致。
+    //
+    // 修法：选中时只做两件事——关弹窗、记下待生效语言；真正调用 onLanguageChange 交给
+    // 紧随其后的 LaunchedEffect。它的协程在组合 apply 之后才被调度，此刻 Dialog.dismiss()
+    // 已经把窗口摘掉了，recreate() 再怎么同步也不会漏掉弹窗。
+    var pendingLanguageTag by remember { mutableStateOf<String?>(null) }
+
+    // 待生效语言的落地时机：只有在弹窗确实已从组合中移除后才应用 locale。
+    LaunchedEffect(pendingLanguageTag, languageDialogVisible) {
+        val tag = pendingLanguageTag ?: return@LaunchedEffect
+        // 弹窗仍开着（正常流程不会，双保险）：等它关上，本轮先不重建
+        if (languageDialogVisible) return@LaunchedEffect
+        pendingLanguageTag = null
+        onLanguageChange(tag)
+    }
+
+    // 兜底：任何**不由本页发起**的重建也会把弹窗带走。
+    // 典型场景是用户开着语言弹窗去系统设置改系统语言——那条路径同样会因 locale 变化
+    // 重建 Activity，而我们没有任何机会像上面那样延后应用时机。ON_STOP 早于 onDestroy，
+    // 此刻组合仍在，改 false 能让 Dialog 走正常的 dismiss 路径，而不是随 Activity 一起
+    // 被丢弃在 WindowManager 里。代价是「弹窗开着时退到后台会关闭弹窗」——对设置页的
+    // 一次性选择框来说可以接受，换来的是绝不留孤儿窗口。
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP) {
+                languageDialogVisible = false
+                pendingLanguageTag = null
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
+    // ---------- UI 效果 ----------
+    // 推流防烧屏：真源在 MainActivity（它持有定时器），此处只做开关显示 + 回调上收
+    var burnInMaskEnabled by remember {
+        mutableStateOf(
+            deps.appPrefs.getBoolean(KEY_BURN_IN_MASK_ENABLED, DEFAULT_BURN_IN_MASK_ENABLED)
+        )
+    }
 
     // 手动值 → 成品 MapperOverrides（UI 侧换算：倍率 ÷ 进归一化分母，倍率越大越灵敏）。
     // 换算基线与 BlendShapeMapper 私有常量人工对齐（BROW_DEVICE_MAX=1.0 /
@@ -288,6 +368,11 @@ fun SettingsContent(
             onAboutScrollConsumed()
         }
     }
+
+    // 毛玻璃效果已移除（v1.2.9 回滚）：真机验证 Modifier.blur 对背景光晕的模糊收益不可见，
+    // 却要为每帧多一次 RenderLayer 合成；与其留一个"开了也看不出来"的开关，不如整段删掉。
+    // 设置页背景回归 Scaffold 默认底色，卡片靠 1dp outlineVariant 细边框区分层次（见
+    // SettingsCard KDoc），不再叠加任何氛围光晕/模糊层。
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -504,6 +589,25 @@ fun SettingsContent(
             }
         }
 
+        // ---- UI 效果卡：主题卡下方，集中放视觉/显示相关开关 ----
+        // 毛玻璃开关已移除（v1.2.9 回滚，见函数内「毛玻璃效果已移除」注释）：
+        // CARD 保留，因为「推流防烧屏」仍需要一个归属，且未来显示类开关都放这里。
+        item {
+            SettingsCard(title = stringResource(R.string.settings_card_ui_effects)) {
+                // 推流防烧屏：控制 MainActivity 的 2s 空闲遮罩逻辑
+                SwitchRow(
+                    label = stringResource(R.string.switch_burn_in_mask),
+                    subtitle = stringResource(R.string.switch_burn_in_mask_desc),
+                    checked = burnInMaskEnabled,
+                    onCheckedChange = { checked ->
+                        burnInMaskEnabled = checked
+                        // prefs 落盘 + 计时器取消/重启全在 MainActivity（回调上收）
+                        onBurnInMaskEnabledChange(checked)
+                    },
+                )
+            }
+        }
+
         item {
             SettingsCard(title = stringResource(R.string.settings_card_language)) {
                 // 当前语言显示名：语言名一律用「自称」（简体中文 / English），
@@ -530,7 +634,9 @@ fun SettingsContent(
                     onCheckedChange = { checked ->
                         debugLogsEnabled = checked
                         deps.appPrefs.edit().putBoolean(KEY_ENABLE_DEBUG_LOGS, checked).apply()
-                        deps.faceRenderer.setDebugLogsEnabled(checked)
+                        // 日志级别闸门是 InAppLog 的进程级开关：WARN/INFO/DEBUG 全部
+                        // 受它控制（默认关闭 = 只留 ERROR）。各调用点无需再加守卫。
+                        InAppLog.setDebugEnabled(checked)
                         Toast.makeText(
                             context,
                             context.getString(
@@ -573,8 +679,11 @@ fun SettingsContent(
     }
 
     // 语言选择对话框：单选（跟随系统 / 简体中文 / English）。
-    // 选中即落盘并上收 MainActivity 应用 locale —— 由 Activity recreate 让新语言生效
-    // （manifest 的 configChanges 不含 locale，见 MainActivity 的 attachBaseContext 注释）。
+    //
+    // 选中后**不在这里**调用 onLanguageChange：先关窗、记下待生效语言，由上面的
+    // LaunchedEffect 在弹窗窗口真正移除后再触发 Activity 重建（根因与时机见
+    // pendingLanguageTag 的注释）。若在此同步调用，recreate() 会抢在 Dialog.dismiss()
+    // 之前发生，窗口变成孤儿残留到新 Activity 之上——正是真机那个 Bug。
     if (languageDialogVisible) {
         LanguageDialog(
             current = appLanguage,
@@ -582,7 +691,7 @@ fun SettingsContent(
                 languageDialogVisible = false
                 if (tag != appLanguage) {
                     appLanguage = tag
-                    onLanguageChange(tag)
+                    pendingLanguageTag = tag
                 }
             },
             onDismiss = { languageDialogVisible = false },
@@ -603,11 +712,34 @@ private fun LanguageDialog(
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
+    // 事件消费兜底：吞掉弹窗区域内全部指针事件。
+    // 不能只写 detectTapGestures {}——它等到抬手才消费，期间 DOWN 已可能被下层看到；
+    // 逐事件 consume() 才是真正的「立即吞掉」。
+    val swallowPointer: Modifier = Modifier
+        .fillMaxWidth()
+        .pointerInput(Unit) {
+            awaitPointerEventScope {
+                while (true) {
+                    val event = awaitPointerEvent()
+                    event.changes.forEach { it.consume() }
+                }
+            }
+        }
+
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text(text = stringResource(R.string.language_dialog_title)) },
+        properties = DialogProperties(
+            dismissOnBackPress = true,
+            dismissOnClickOutside = true,
+            usePlatformDefaultWidth = true,
+        ),
+        title = {
+            Box(modifier = swallowPointer) {
+                Text(text = stringResource(R.string.language_dialog_title))
+            }
+        },
         text = {
-            Column {
+            Column(modifier = swallowPointer) {
                 LanguageOptionRow(
                     label = stringResource(R.string.language_system),
                     selected = current == LANGUAGE_SYSTEM,

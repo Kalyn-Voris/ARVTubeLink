@@ -1,34 +1,39 @@
 package com.exarry.arvtubelink.ui
 
 import androidx.compose.foundation.BorderStroke
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.ElevatedCard
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -41,60 +46,57 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.network.VtsDiscoveryClient
+import com.exarry.arvtubelink.ui.theme.accentColor
+
+// ---------- 首页间距常量：真机微调集中改这里，别散成魔法数字 ----------
+
+private val PagePadding = 16.dp
+
+/** 卡片间/卡内大块间距：8dp 网格上浮一档到 12dp，视觉更透气。 */
+private val SectionSpacing = 12.dp
+
+private val CardContentSpacing = 12.dp
+
+private val CardPadding = 16.dp
+
+/** 状态图标 18dp：比 M3 列表项默认的 24dp 小，匹配 14sp 文字的视觉重量。 */
+private val StatusIconSize = 18.dp
+
+/** 主操作按钮 48dp：M3 标准 40dp 上浮，作为唯一主操作的体量。 */
+private val PrimaryActionHeight = 48.dp
+
+private val CardCornerRadius = 12.dp
+
+/** 圆点 7dp，比推流卡 chip 的 6dp 大一档：这里裸放没有底板衬托。 */
+private val StatusDotSize = 7.dp
+
+/** 与 OutlinedTextField 最小高 56dp 等高，Row 居中对齐才不歪。 */
+private val AutoDiscoverButtonSize = 56.dp
 
 /**
- * 「图标+文字」按钮内容的视觉补偿：图标在左时文字视觉重心偏右，整体左移微调。
- * 目前取值 -2dp 为真机目测结果：若仍偏右改为 -3/-4，过偏左改为 -1/0。
- * 只动绘制坐标，不影响布局/触摸区域。
- */
-private val ButtonContentOffset = (-2).dp
-
-/**
- * 首页间距/尺寸常量（真机微调在此改，勿散落魔法数字）。
- */
-/** AR 状态文字→「检查 AR Engine」按钮。 */
-private val StatusToButtonSpacing = 16.dp
-/** AR 组三按钮之间。 */
-private val ArButtonSpacing = 18.dp
-/** VTS 组两按钮之间（次操作区隔）。 */
-private val VtsButtonSpacing = 18.dp
-/** AR 组按钮高（主操作，48dp 触控目标达标）。 */
-private val PrimaryButtonHeight = 48.dp
-/** VTS 组按钮高（矮一档防误操作；m3 minimumInteractiveComponentSize 仍扩触摸区到 48dp）。 */
-private val SecondaryButtonHeight = 40.dp
-/** 分割线→输入框额外间距（分割线自身 vertical 8dp + 本值 = 总距 16dp）。 */
-private val DividerToInputSpacing = 8.dp
-/** 输入框行→「连接 VTS」按钮。 */
-private val InputToButtonSpacing = 16.dp
-
-/** 引导卡圆角（比设置卡 12dp 略大，作为首页最高优先级的独立卡面）。 */
-private val GuideCardCornerRadius = 14.dp
-/** 引导卡标题行→正文。 */
-private val GuideCardTitleSpacing = 10.dp
-/** 引导卡正文→主按钮。 */
-private val GuideCardBodySpacing = 14.dp
-/** 引导卡主按钮→「稍后」文本按钮。 */
-private val GuideCardLaterSpacing = 4.dp
-
-/**
- * 自动发现状态机（v1.2.5，网络实现在 network/VtsDiscoveryClient.kt，红线①不碰连接层）。
+ * 自动发现状态机（网络实现在 network/VtsDiscoveryClient.kt）。
  *
- * 转移：Idle/Found/Failed 点自动发现按钮 → Searching（UI 状态守卫防重入；搜索协程挂
- * AppRoot rememberCoroutineScope，Activity 销毁 = 组合离开 = 自动 cancel）→ 满 3s 无
- * UDP 结果镜像转 Scanning（仅文案切换，延迟值引用 VtsDiscoveryClient.TCP_FALLBACK_DELAY_MS
- * 防两处漂移）→ 命中转 Found（autoConnecting=false = 对端 API 未开启，只填入不连接）或
- * 双路收工无果转 Failed；Found/Failed 均暂态，显示数秒后自动回 Idle（AppRoot LaunchedEffect）。
- * 「已发现并连接」Toast 不在本状态机：发现成功 ≠ 连接成功（VTS 端授权弹窗/端口错/API 关
- * 都会失败），连接成败由既有 VtsState 表达，MainActivity 在 Authenticated 时消费 pending
- * 标记弹 Toast，避免误报。
+ * 转移：Idle/Found/Failed --点按钮--> Searching（UI 守卫防重入）--满 3s 无 UDP 结果-->
+ * Scanning（延迟值引用 VtsDiscoveryClient.TCP_FALLBACK_DELAY_MS，防两处漂移）
+ * --命中--> Found；--双路无果--> Failed。Found/Failed 为暂态，AppRoot 的
+ * LaunchedEffect 数秒后清回 Idle。
+ *
+ * 「已发现并连接」Toast 不属于本状态机：发现成功不等于连接成功（授权弹窗/端口错/API
+ * 关闭都会让连接失败），成败由 VtsState 表达，MainActivity 在 Authenticated 时消费
+ * pending 标记再弹，避免误报。
  */
 sealed interface DiscoveryUiState {
     /** 常态（自动发现状态行不显示）。 */
@@ -114,22 +116,20 @@ sealed interface DiscoveryUiState {
 }
 
 /**
- * 首页 Tab 内容：AR 状态 + 检查/开始/停止 + IP/端口输入 + 连接 VTS + 清除 Token + VTS 状态。
+ * 首页 Tab 内容。
  *
- * 红线：本文件不得持有 GLSurfaceView/AndroidView——GL 表面常驻 AppRoot 根层
- * （见 AppRoot.kt KDoc），挪进 Tab 内容会在切 Tab 时销毁 SurfaceView（EGL context 丢失）。
+ * 版式自上而下：校准引导卡（条件显示）→ 控制区 → 连接区 → 推流卡（条件显示）→ 自适应进度行。
  *
- * 已知行为：Tab 切走再切回，本页滚动位置丢失（Compose 默认行为，已接受）；
- * ip/port 文本由 AppRoot 级 remember 持有（经 [ipState]/[portState] 传入），跨 Tab 保留。
+ * 红线：本文件不得持有 GLSurfaceView/AndroidView。GL 表面常驻 AppRoot 根层，
+ * 挪进 Tab 内容会在切 Tab 时销毁 SurfaceView，EGL context 丢失。
  *
- * 按钮图标（Search/Send/Warning，见 [IconTextContent]）+ AR/VTS 组间分割线 + 清除 Token
- * 确认框（[ClearTokenConfirmDialog]）。开始/停止追踪不加图标：Stop 不在 material-icons-core
- * 集（javap 实证），单边加 PlayArrow 不对称，不引入 icons-extended。
+ * 已知行为：Tab 互切丢失滚动位置（Compose 默认）；ip/port 由 AppRoot 持有，跨 Tab 保留。
  */
 @Composable
 fun HomeContent(
     arStatus: String,
-    vtsStatus: String,
+    /** AR Engine 是否已确认可用（MainActivity 从 checkAvailability() 结果投影的布尔）。 */
+    arReady: Boolean,
     /** 参数自适应进度行（null = 不显示）；显示/文案拼接见 MainActivity.onAdaptationState。 */
     adaptationStatus: String?,
     tracking: Boolean,
@@ -149,35 +149,41 @@ fun HomeContent(
     onStartCalibration: () -> Unit,
     /** 引导卡「稍后」：写 appPrefs，本次冷启动周期内不再显示。 */
     onDismissCalibrationGuide: () -> Unit,
+    /** 推流遥测快照（ui/StreamTelemetry；AppRoot 每秒采样一次）。 */
+    telemetry: TelemetryState,
+    /** 用户配置的推流频率（仪表盘量程与参考虚线用）。 */
+    configuredHz: Int,
+    /** VTS 是否已认证连接（推流卡 chip 用）。 */
+    vtsConnected: Boolean,
+    /** VTS 异常/等待态文案（null = 不显示；由 AppRoot 按 VtsState 条件求值后传入）。 */
+    vtsWarning: String? = null,
+    /** 该警示是否属于错误级（决定推流卡用 error 色还是次级文字色）。 */
+    vtsWarningIsError: Boolean = false,
 ) {
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .verticalScroll(rememberScrollState()),
+            .verticalScroll(rememberScrollState())
+            .padding(PagePadding),
+        verticalArrangement = Arrangement.spacedBy(SectionSpacing),
     ) {
-        // 首次校准引导卡：置于 AR/推流控制区之上，即推流卡片上方。
-        // 可见性由 MainActivity 求值后经 showCalibrationGuide 传入，本组件不做判断，
-        // 保持纯展示（与 SettingsContent 的状态上收约定一致）。
         if (showCalibrationGuide) {
             CalibrationGuideCard(
                 onStartCalibration = onStartCalibration,
                 onDismiss = onDismissCalibrationGuide,
             )
         }
-        ArControlPanel(
-            status = arStatus,
+
+        ControlCard(
+            arStatus = arStatus,
+            arReady = arReady,
             tracking = tracking,
             onCheckAr = onCheckAr,
             onStartTracking = onStartTracking,
             onStopTracking = onStopTracking,
         )
-        // AR 按钮组与 VTS 按钮组之间的分割线（色走主题 outlineVariant = colors.xml colorOutline）
-        HorizontalDivider(
-            modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
-            color = MaterialTheme.colorScheme.outlineVariant,
-        )
-        VtsControlPanel(
-            status = vtsStatus,
+
+        VtsConnectCard(
             ipState = ipState,
             portState = portState,
             discoveryState = discoveryState,
@@ -185,148 +191,171 @@ fun HomeContent(
             onConnect = onConnectVts,
             onClearToken = onClearToken,
         )
-        // 参数自适应进度行：探测期间显示（样式与 VTS 状态行同款），结束/取消清 null 隐藏
+
+        // 未开始推流时展示一张全 0 的图表没有信息量
+        if (tracking || vtsConnected) {
+            PushStatusCard(
+                telemetry = telemetry,
+                tracking = tracking,
+                configuredHz = configuredHz,
+                vtsConnected = vtsConnected,
+                vtsWarning = vtsWarning,
+                vtsWarningIsError = vtsWarningIsError,
+            )
+        }
+
+        // 参数自适应进度行：探测期间显示，结束/取消清 null 隐藏
         adaptationStatus?.let { text ->
             Text(
                 text = text,
-                fontSize = 14.sp,
+                style = MaterialTheme.typography.bodyMedium,
                 textAlign = TextAlign.Center,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp)
-                    .padding(bottom = 16.dp),
+                    .padding(bottom = SectionSpacing),
             )
         }
     }
 }
 
 /**
- * 首次校准引导卡（首页顶部，推流/AR 控制区之上）。
+ * 控制区卡片：状态指示行 + 检查 AR Engine（[OutlinedButton]）+ 开始/停止追踪（[Button]）。
  *
- * 为什么需要它：新用户装好后首页没有任何提示，必须自己摸到设置 Tab 才会发现「校准」，
- * 于是带着未校准的偏移直接推流，第一印象就是「追踪不准」。
- *
- * 版式：高亮容器色（primaryContainer）+ 标题 + 正文 + 主按钮（开始校准）+ 文本按钮（稍后）。
- * 纯展示组件：可见性、忽略落盘、校准拉起全部在 MainActivity，本组件只负责画和转发点击。
- * 「稍后」只隐藏本次会话（冷启动会重现）——用文本按钮而非叉号，降低误触丢失引导的概率，
- * 同时比叉号更明确表达「不是永久关闭」。
- *
- * 间距常量见文件顶部 [GuideCardInnerSpacing] 等，真机微调在此改。
+ * 状态行只在未追踪时出现——追踪后由推流卡接管，避免同一信息说两遍。
+ * 开始/停止不并排：两者互斥，并排会出现「一个可点一个灰」的割裂感。
  */
 @Composable
-private fun CalibrationGuideCard(
-    onStartCalibration: () -> Unit,
-    onDismiss: () -> Unit,
-) {
-    Surface(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp, vertical = 12.dp),
-        shape = RoundedCornerShape(GuideCardCornerRadius),
-        color = MaterialTheme.colorScheme.primaryContainer,
-        // 高亮卡需要与背景拉开层级：容器色已够，加一层语义性描边便于深色下辨识边界
-        border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.45f)),
-    ) {
-        Column(modifier = Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Icon(
-                    imageVector = Icons.Filled.Warning,
-                    contentDescription = null, // 装饰性：语义由标题承担
-                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
-                    modifier = Modifier.size(20.dp),
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    text = stringResource(R.string.calib_guide_title),
-                    style = MaterialTheme.typography.titleMedium,
-                    color = MaterialTheme.colorScheme.onPrimaryContainer,
-                )
-            }
-            Spacer(Modifier.height(GuideCardTitleSpacing))
-            Text(
-                text = stringResource(R.string.calib_guide_body),
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
-            )
-            Spacer(Modifier.height(GuideCardBodySpacing))
-            Button(
-                onClick = onStartCalibration,
-                modifier = Modifier.fillMaxWidth().height(PrimaryButtonHeight),
-            ) {
-                Text(stringResource(R.string.calib_guide_action_start))
-            }
-            TextButton(
-                onClick = onDismiss,
-                modifier = Modifier.fillMaxWidth().padding(top = GuideCardLaterSpacing),
-            ) {
-                Text(
-                    text = stringResource(R.string.calib_guide_action_later),
-                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
-                )
-            }
-        }
-    }
-}
-
-/**
- * AR 区：状态文字 + 检查/开始/停止。开始/停止的可用性由 tracking 派生。
- * 间距/尺寸见上方常量。
- */
-@Composable
-private fun ArControlPanel(
-    status: String,
+private fun ControlCard(
+    arStatus: String,
+    /** AR 是否已确认可用（决定圆点颜色，见 [StatusIndicatorRow]）。 */
+    arReady: Boolean,
     tracking: Boolean,
     onCheckAr: () -> Unit,
     onStartTracking: () -> Unit,
     onStopTracking: () -> Unit,
 ) {
-    Column(modifier = Modifier.fillMaxWidth().padding(16.dp)) {
-        Text(
-            text = status,
-            fontSize = 16.sp,
-            textAlign = TextAlign.Center,
-            modifier = Modifier.fillMaxWidth().padding(bottom = StatusToButtonSpacing),
-        )
-        Column(verticalArrangement = Arrangement.spacedBy(ArButtonSpacing)) {
-            Button(
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(CardCornerRadius),
+    ) {
+        Column(
+            modifier = Modifier.padding(CardPadding),
+            verticalArrangement = Arrangement.spacedBy(CardContentSpacing),
+        ) {
+            if (!tracking) {
+                StatusIndicatorRow(
+                    arStatus = arStatus,
+                    arReady = arReady,
+                )
+            }
+
+            OutlinedButton(
                 onClick = onCheckAr,
-                modifier = Modifier.fillMaxWidth().height(PrimaryButtonHeight),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                IconTextContent(icon = Icons.Filled.Search, text = stringResource(R.string.action_check_ar))
+                ButtonIconText(
+                    icon = Icons.Filled.Search,
+                    text = stringResource(R.string.action_check_ar),
+                )
             }
-            Button(
-                onClick = onStartTracking,
-                enabled = !tracking,
-                modifier = Modifier.fillMaxWidth().height(PrimaryButtonHeight),
-            ) {
-                Text(stringResource(R.string.action_start_tracking))
-            }
-            Button(
-                onClick = onStopTracking,
-                enabled = tracking,
-                modifier = Modifier.fillMaxWidth().height(PrimaryButtonHeight),
-            ) {
-                Text(stringResource(R.string.action_stop_tracking))
+            if (tracking) {
+                Button(
+                    onClick = onStopTracking,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(PrimaryActionHeight),
+                ) {
+                    ButtonIconText(
+                        // material-icons-core 不含 Stop（已 javap 实证），用 Clear 表达"结束"
+                        icon = Icons.Filled.Clear,
+                        text = stringResource(R.string.action_stop_tracking),
+                    )
+                }
+            } else {
+                Button(
+                    onClick = onStartTracking,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(PrimaryActionHeight),
+                ) {
+                    ButtonIconText(
+                        icon = Icons.Filled.PlayArrow,
+                        text = stringResource(R.string.action_start_tracking),
+                    )
+                }
             }
         }
     }
 }
 
 /**
- * VTS 区：IP/端口一行（行尾自动发现按钮，见 [AutoDiscoverButton]）+ 发现状态行 +
- * 连接/清除 Token + 状态文字。
- * ip/port 文本由 AppRoot 级 remember 持有：Tab 互切保留，Activity 重建回默认值。
- * 端口/IP 的校验与 Toast 在 MainActivity.connectVts；自动发现的搜索/填入/自动连接
- * 逻辑在 AppRoot（runAutoDiscover），本组件纯展示 + 转发。
- * 清除 Token 先弹 [ClearTokenConfirmDialog] 确认再回调。
- * 间距/尺寸：分割线→输入框 +[DividerToInputSpacing]（分割线自带 8dp，本值 8dp，合计 16dp）、
- * 输入框→按钮 [InputToButtonSpacing]、两按钮间 [VtsButtonSpacing]、按钮高 [SecondaryButtonHeight]
- * （比 AR 组矮一档防误操作）；状态文字色 onSurfaceVariant（与按钮区分）。
+ * 控制卡顶部状态行：`● AR：<状态>`。
+ *
+ * 只显示 AR：VTS 状态串自带「VTS：」前缀，再套标签会重复；且 VTS 属网络连接，
+ * 由连接区和推流卡承担。AR 引擎是否可用直接决定「开始追踪」点了有没有反应，
+ * 放在按钮上方是就近解释。
+ *
+ * [arReady] 与 [tracking] 分开传：本行只在 `!tracking` 时渲染，用 tracking 当判据
+ * 会恒为灰点。arReady 表达"检查过且可用"，未检查时保持中性灰。
  */
 @Composable
-private fun VtsControlPanel(
-    status: String,
+private fun StatusIndicatorRow(
+    arStatus: String,
+    arReady: Boolean,
+) {
+    StatusIndicatorLine(
+        label = stringResource(R.string.push_chip_ar),
+        value = arStatus,
+        dotColor = if (arReady) accentColor() else MaterialTheme.colorScheme.outline,
+    )
+}
+
+/**
+ * 单条状态行：`● 标签：值`。
+ * Alignment.Top + 圆点顶偏移是为了对齐文字首行——CenterVertically 在长句折行时
+ * 会把圆点甩到整块中间。
+ */
+@Composable
+private fun StatusIndicatorLine(
+    label: String,
+    value: String,
+    dotColor: Color,
+) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        verticalAlignment = Alignment.Top,
+    ) {
+        Box(
+            modifier = Modifier
+                .padding(top = 5.dp)
+                .size(StatusDotSize)
+                .clip(CircleShape)
+                .background(dotColor),
+        )
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = "$label：",
+            style = MaterialTheme.typography.labelMedium,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            modifier = Modifier.weight(1f),
+        )
+    }
+}
+
+/**
+ * VTS 连接区卡片：IP/端口输入 + 行尾自动发现 + 连接 VTS + 清除 Token + 发现状态。
+ *
+ * 校验与 Toast 在 MainActivity.connectVts，自动发现逻辑在 AppRoot.runAutoDiscover，
+ * 本组件纯展示 + 转发。
+ */
+@Composable
+private fun VtsConnectCard(
     ipState: MutableState<String>,
     portState: MutableState<String>,
     discoveryState: DiscoveryUiState,
@@ -335,85 +364,92 @@ private fun VtsControlPanel(
     onClearToken: () -> Unit,
 ) {
     var showClearConfirm by remember { mutableStateOf(false) }
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 16.dp)
-            .padding(top = DividerToInputSpacing),
+
+    ElevatedCard(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(CardCornerRadius),
     ) {
-        Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            OutlinedTextField(
-                value = ipState.value,
-                onValueChange = { ipState.value = it },
-                label = { Text(stringResource(R.string.hint_vts_ip)) },
-                singleLine = true,
-                modifier = Modifier.weight(1f),
-            )
-            OutlinedTextField(
-                value = portState.value,
-                onValueChange = { portState.value = it },
-                label = { Text(stringResource(R.string.hint_port)) },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier
-                    .padding(start = 8.dp)
-                    .width(110.dp),
-            )
-            // 自动发现按钮：行尾（VtsControlPanel KDoc 布局说明同步维护）
-            AutoDiscoverButton(
-                state = discoveryState,
-                onClick = onAutoDiscover,
-                modifier = Modifier.padding(start = 8.dp),
-            )
-        }
-        // 自动发现状态行：仅非 Idle 显示（不改变既有布局）；样式与 VTS 状态文字一致
-        when (val state = discoveryState) {
-            is DiscoveryUiState.Searching ->
-                DiscoveryStatusText(stringResource(R.string.discovery_status_searching))
-            is DiscoveryUiState.Scanning ->
-                DiscoveryStatusText(stringResource(R.string.discovery_status_scanning))
-            is DiscoveryUiState.Found ->
-                if (state.autoConnecting) {
-                    DiscoveryStatusText(stringResource(R.string.discovery_status_found_connecting, state.ip))
-                } else {
-                    DiscoveryStatusText(stringResource(R.string.discovery_status_api_off, state.ip))
-                }
-            is DiscoveryUiState.Failed ->
-                if (state.reason == VtsDiscoveryClient.DiscoveryResult.Reason.NO_NETWORK) {
-                    DiscoveryStatusText(stringResource(R.string.discovery_status_no_network))
-                } else {
-                    DiscoveryStatusText(stringResource(R.string.discovery_status_timeout))
-                }
-            DiscoveryUiState.Idle -> {}
-        }
         Column(
-            modifier = Modifier.padding(top = InputToButtonSpacing),
-            verticalArrangement = Arrangement.spacedBy(VtsButtonSpacing),
+            modifier = Modifier.padding(CardPadding),
+            verticalArrangement = Arrangement.spacedBy(CardContentSpacing),
         ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                OutlinedTextField(
+                    value = ipState.value,
+                    onValueChange = { ipState.value = it },
+                    label = { Text(stringResource(R.string.hint_vts_ip)) },
+                    singleLine = true,
+                    modifier = Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                OutlinedTextField(
+                    value = portState.value,
+                    onValueChange = { portState.value = it },
+                    label = { Text(stringResource(R.string.hint_port)) },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.width(104.dp),
+                )
+                AutoDiscoverButton(
+                    state = discoveryState,
+                    onClick = onAutoDiscover,
+                )
+            }
+
+            DiscoveryRadarBand(state = discoveryState)
+
+            // 发现结果行：忙碌态文案已由雷达带承担，这里只管 Found/Failed
+            when (val state = discoveryState) {
+                is DiscoveryUiState.Found ->
+                    if (state.autoConnecting) {
+                        DiscoveryStatusText(
+                            stringResource(R.string.discovery_status_found_connecting, state.ip)
+                        )
+                    } else {
+                        DiscoveryStatusText(
+                            stringResource(R.string.discovery_status_api_off, state.ip)
+                        )
+                    }
+                is DiscoveryUiState.Failed ->
+                    if (state.reason == VtsDiscoveryClient.DiscoveryResult.Reason.NO_NETWORK) {
+                        DiscoveryStatusText(
+                            text = stringResource(R.string.discovery_status_no_network),
+                            isFailure = true,
+                        )
+                    } else {
+                        DiscoveryStatusText(
+                            text = stringResource(R.string.discovery_status_timeout),
+                            isFailure = true,
+                        )
+                    }
+                is DiscoveryUiState.Searching, is DiscoveryUiState.Scanning, DiscoveryUiState.Idle -> {}
+            }
+
             Button(
                 onClick = { onConnect(ipState.value, portState.value) },
-                modifier = Modifier.fillMaxWidth().height(SecondaryButtonHeight),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                IconTextContent(icon = Icons.AutoMirrored.Filled.Send, text = stringResource(R.string.action_connect_vts))
+                ButtonIconText(
+                    icon = Icons.AutoMirrored.Filled.Send,
+                    text = stringResource(R.string.action_connect_vts),
+                )
             }
-            Button(
+
+            OutlinedButton(
                 onClick = { showClearConfirm = true },
-                modifier = Modifier.fillMaxWidth().height(SecondaryButtonHeight),
+                modifier = Modifier.fillMaxWidth(),
             ) {
-                IconTextContent(icon = Icons.Filled.Warning, text = stringResource(R.string.action_clear_token))
+                ButtonIconText(
+                    icon = Icons.Filled.Warning,
+                    text = stringResource(R.string.action_clear_token),
+                )
             }
         }
-        Text(
-            text = status,
-            fontSize = 14.sp,
-            textAlign = TextAlign.Center,
-            // 与按钮色区分；走 colorScheme 槽随主题切换
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(top = VtsButtonSpacing, bottom = 16.dp),
-        )
     }
+
     if (showClearConfirm) {
         ClearTokenConfirmDialog(
             onConfirm = {
@@ -426,10 +462,14 @@ private fun VtsControlPanel(
 }
 
 /**
- * 自动发现按钮（IP/端口输入行行尾）：常态 Refresh 图标（icons-core 内置；魔法棒类图标
- * AutoFixHigh/AutoAwesome 需引 icons-extended，违背本文件 KDoc 的既有取舍），搜索/扫描
- * 中换 20dp loading 圈并禁点（重入由 AppRoot 状态守卫双保险）。contentDescription 走
- * 完整语义：本按钮无伴随文字，无障碍需读出功能名。
+ * 自动发现按钮：垂直排布，上方刷新图标、下方 "AUTO"。
+ *
+ * 56dp 高与左侧 [OutlinedTextField] 对齐。用 [Modifier.clickable] 而非 IconButton：
+ * 后者自带圆形水波纹与固定图标槽位，装不下两行内容。
+ *
+ * 忙碌态用 18dp 转圈替换图标（同尺寸，文字不跳动），主反馈仍由 [DiscoveryRadarBand] 承担。
+ *
+ * "AUTO" 是缩写，故给整个 Column 挂 contentDescription 为完整功能名，供读屏使用。
  */
 @Composable
 private fun AutoDiscoverButton(
@@ -438,58 +478,124 @@ private fun AutoDiscoverButton(
     modifier: Modifier = Modifier,
 ) {
     val busy = state == DiscoveryUiState.Searching || state == DiscoveryUiState.Scanning
-    IconButton(onClick = onClick, enabled = !busy, modifier = modifier) {
-        if (busy) {
-            CircularProgressIndicator(
-                modifier = Modifier.size(20.dp),
-                strokeWidth = 2.dp,
+    val accent = accentColor()
+    val autoDiscoverLabel = stringResource(R.string.action_auto_discover)
+
+    Column(
+        modifier = modifier
+            .size(AutoDiscoverButtonSize)
+            .clip(RoundedCornerShape(8.dp))
+            .clickable(enabled = !busy, onClick = onClick)
+            .semantics { contentDescription = autoDiscoverLabel },
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        // 固定 18dp 图标位：转圈与图标同尺寸，切换时文字不跳动
+        Box(modifier = Modifier.size(StatusIconSize), contentAlignment = Alignment.Center) {
+            if (busy) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(StatusIconSize),
+                    strokeWidth = 2.dp,
+                    color = accent,
+                )
+            } else {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = null,
+                    tint = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.size(StatusIconSize),
+                )
+            }
+        }
+        Spacer(Modifier.height(2.dp))
+        Text(
+            text = stringResource(R.string.action_auto_discover_short),
+            fontSize = 10.sp,
+            color = if (busy) accent else MaterialTheme.colorScheme.onSurfaceVariant,
+            fontWeight = if (busy) FontWeight.Medium else FontWeight.Normal,
+            maxLines = 1,
+        )
+    }
+}
+
+/**
+ * 首次校准引导卡：新用户不校准就推流，第一印象是「追踪不准」，故置于首页顶部强提示。
+ *
+ * 全页唯一的强调卡：primaryContainer 实底 + 1dp primary 描边（深色下容器色接近背景时
+ * 靠描边咬住边界），与下方 ElevatedCard 功能卡区分。前景色统一取 onPrimaryContainer 系，
+ * 与容器成对保证 M3 对比度；正文/次要文字降透明度做层次。
+ * 别把它改回 ElevatedCard（丢强调），也别把功能卡改成 primaryContainer（全部高亮等于没有高亮）。
+ *
+ * 纯展示组件：可见性、忽略落盘、校准拉起都在 MainActivity。
+ * 「稍后」只隐藏本次会话（冷启动重现）。
+ */
+@Composable
+private fun CalibrationGuideCard(
+    onStartCalibration: () -> Unit,
+    onDismiss: () -> Unit,
+) {
+    Surface(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(CardCornerRadius),
+        color = MaterialTheme.colorScheme.primaryContainer,
+        border = BorderStroke(
+            width = 1.dp,
+            color = MaterialTheme.colorScheme.primary.copy(alpha = 0.45f),
+        ),
+    ) {
+        Column(modifier = Modifier.padding(CardPadding)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Icon(
+                    imageVector = Icons.Filled.Warning,
+                    contentDescription = null, // 装饰性，语义由标题承担
+                    tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                    modifier = Modifier.size(20.dp),
+                )
+                Spacer(Modifier.width(8.dp))
+                Text(
+                    text = stringResource(R.string.calib_guide_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = MaterialTheme.colorScheme.onPrimaryContainer,
+                )
+            }
+            Spacer(Modifier.height(CardContentSpacing))
+            Text(
+                text = stringResource(R.string.calib_guide_body),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.85f),
             )
-        } else {
-            Icon(
-                imageVector = Icons.Filled.Refresh,
-                contentDescription = stringResource(R.string.action_auto_discover),
-                tint = MaterialTheme.colorScheme.onSurfaceVariant,
-            )
+            Spacer(Modifier.height(CardContentSpacing))
+            Button(
+                onClick = onStartCalibration,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .height(PrimaryActionHeight),
+            ) {
+                Text(stringResource(R.string.calib_guide_action_start))
+            }
+            TextButton(
+                onClick = onDismiss,
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Text(
+                    text = stringResource(R.string.calib_guide_action_later),
+                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.75f),
+                )
+            }
         }
     }
 }
 
-/** 自动发现状态行文字：与 VTS 状态行同款式（14sp / onSurfaceVariant / 居中）。 */
+/** 按钮内「图标 + 文字」：M3 Button 的 content 无自动 spacedBy，间距要手动加。 */
 @Composable
-private fun DiscoveryStatusText(text: String) {
-    Text(
-        text = text,
-        fontSize = 14.sp,
-        textAlign = TextAlign.Center,
-        color = MaterialTheme.colorScheme.onSurfaceVariant,
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(top = 8.dp),
-    )
-}
-
-/**
- * 按钮内「图标 + 间距 + 文字」内容：三按钮共用，整体带 [ButtonContentOffset]
- * 视觉补偿。间距自管——m3 Button 的 content 是普通 RowScope，无自动 spacedBy。
- *
- * 居中方案取舍：
- *  - 内容偏右不是布局没居中（默认已水平居中），是「图标 + 间距」把文字视觉重心推右，
- *    加 Arrangement.Center 无效；
- *  - 右侧补 Spacer 对称补偿会让按钮右侧明显空洞，故用 offset 只动绘制坐标，
- *    不动测量/布局/触摸区域，可按 [ButtonContentOffset] 处注释真机 1dp 步进再调。
- */
-@Composable
-private fun IconTextContent(
+private fun ButtonIconText(
     icon: ImageVector,
     text: String,
 ) {
-    Row(
-        verticalAlignment = Alignment.CenterVertically,
-        modifier = Modifier.offset(x = ButtonContentOffset),
-    ) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
         Icon(
             imageVector = icon,
-            contentDescription = null, // 装饰性：语义由文字承担（无障碍读文字即可）
+            contentDescription = null, // 装饰性，语义由文字承担
             modifier = Modifier.size(18.dp),
         )
         Spacer(Modifier.width(8.dp))
@@ -498,12 +604,8 @@ private fun IconTextContent(
 }
 
 /**
- * 清除 Token 确认框：m3 AlertDialog，位于 AppRoot 的 ARVTubeLinkTheme 内，
- * 自动继承深色色板。
- * 布局：icon 居中（m3 icon 槽天然居中）+ 标题/正文居中（TextAlign.Center + fillMaxWidth，
- * m3 默认左对齐）+ 按钮右下（m3 默认）。
- * 确认按钮 colorError 表达危险操作（colors.xml 单一来源）；若真机上刺眼/看不清，
- * 可在此处换成 colorPrimary。
+ * 清除 Token 确认框。继承外层 ARVTubeLinkTheme 色板，无需显式传 colors。
+ * 确认按钮用 error 色表达危险操作；真机若刺眼可换 primary。
  */
 @Composable
 private fun ClearTokenConfirmDialog(

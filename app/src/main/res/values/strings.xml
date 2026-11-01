@@ -45,6 +45,8 @@
 
     <!-- ===== 自动发现（network/VtsDiscoveryClient：UDP 47779 广播 + TCP 8001 兜底） ===== -->
     <string name="action_auto_discover">自动发现 VTS</string>
+    <!-- 输入行行尾按钮下方的 10sp 小字（图标 + 短标签的垂直版式） -->
+    <string name="action_auto_discover_short">AUTO</string>
     <string name="discovery_status_searching">正在搜索局域网内的 VTS…</string>
     <string name="discovery_status_scanning">UDP 广播无响应，正在扫描局域网端口…</string>
     <string name="discovery_status_found_connecting">已发现 VTS（%1$s），正在连接…</string>
@@ -52,6 +54,27 @@
     <string name="discovery_status_timeout">未发现 VTS。请确认手机与电脑在同一 Wi-Fi、VTube Studio 正在运行；路由器开启 AP 隔离（客户端隔离）也会导致搜索不到</string>
     <string name="discovery_status_no_network">未检测到局域网连接，无法搜索</string>
     <string name="discovery_toast_connected">已发现并连接</string>
+    <!-- 雷达带副标题：Searching 阶段（UDP 广播监听，对应 TCP_FALLBACK_DELAY_MS=3s） -->
+    <string name="discovery_meta_udp">UDP 47779 广播监听中 · 每 2 秒一包</string>
+    <!-- 雷达带副标题：Scanning 阶段（3s 后 TCP 8001 兜底扫描，最长到 8s 总闸） -->
+    <string name="discovery_meta_scan">UDP 无响应 · 正在逐端口探测 TCP 8001</string>
+
+    <!-- ===== 首页推流状态卡（ui/PushStatusCard，v1.2.6） ===== -->
+    <string name="push_card_title">推流状态</string>
+    <string name="push_card_live">LIVE</string>
+    <string name="push_gauge_unit">Hz 实测</string>
+    <!-- %1$d = 采样窗口秒数（TELEMETRY_WINDOW） -->
+    <string name="push_chart_caption">最近 %1$d 秒 · 帧率波动</string>
+    <!-- %1$d = 配置频率，%2$.1f = 实测值 -->
+    <string name="push_card_summary">配置 %1$dHz · 实测 %2$.1fHz</string>
+    <!-- %1$d = 配置频率（尚无采样点时） -->
+    <string name="push_card_waiting">配置 %1$dHz · 等待首个采样点…</string>
+    <string name="push_chip_ar">AR</string>
+    <string name="push_chip_ar_on">追踪中</string>
+    <string name="push_chip_ar_off">未追踪</string>
+    <string name="push_chip_vts">VTS</string>
+    <string name="push_chip_vts_on">已连接</string>
+    <string name="push_chip_vts_off">未连接</string>
 
     <!-- ===== Tab 与顶栏 ===== -->
     <string name="tab_home">首页</string>
@@ -67,6 +90,14 @@
     <string name="theme_follow_system">跟随系统（关闭默认深色）</string>
     <string name="theme_amoled_black">AMOLED 黑色主题</string>
     <string name="theme_amoled_black_desc">深色模式下的纯黑背景</string>
+
+    <!-- ===== UI 效果卡 =====
+         毛玻璃相关文案已随实现一并移除（v1.2.9 回滚：真机收益不可见，每帧的 RenderLayer
+         合成开销却是实打实的）。本卡现仅承载「推流防烧屏」。 -->
+    <string name="settings_card_ui_effects">UI 效果</string>
+    <string name="switch_burn_in_mask">推流防烧屏</string>
+    <string name="switch_burn_in_mask_desc">2 秒无操作自动变暗，保护 OLED 屏幕</string>
+
     <string name="about_app_intro">ARVTubeLink 通过华为 AR Engine 捕捉人脸表情与头姿，实时映射并注入 VTube Studio，让 Live2D 模型跟随你的脸动作。</string>
     <string name="about_github_url" translatable="false">https://github.com/Kalyn-Voris/ARVTubeLink</string>
 

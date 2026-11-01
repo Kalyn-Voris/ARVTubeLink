@@ -48,6 +48,8 @@
 
     <!-- ===== Auto-discovery (network/VtsDiscoveryClient: UDP 47779 broadcast + TCP 8001 fallback) ===== -->
     <string name="action_auto_discover">Auto-discover VTS</string>
+    <!-- 10sp short label under the icon (vertical icon + text layout) -->
+    <string name="action_auto_discover_short">AUTO</string>
     <string name="discovery_status_searching">Searching for VTS on the LAN…</string>
     <string name="discovery_status_scanning">No UDP broadcast received, scanning LAN ports…</string>
     <string name="discovery_status_found_connecting">VTS found at %1$s, connecting…</string>
@@ -55,6 +57,27 @@
     <string name="discovery_status_timeout">No VTS found. Make sure the phone and the PC are on the same Wi-Fi and VTube Studio is running; &quot;AP isolation&quot; (client isolation) on the router can also block discovery</string>
     <string name="discovery_status_no_network">No LAN connection detected; discovery unavailable</string>
     <string name="discovery_toast_connected">Discovered and connected</string>
+    <!-- Radar band subtitle: Searching phase (UDP broadcast, mirrors TCP_FALLBACK_DELAY_MS=3s) -->
+    <string name="discovery_meta_udp">Listening for UDP 47779 · one packet every 2s</string>
+    <!-- Radar band subtitle: Scanning phase (TCP 8001 fallback after 3s, 8s total deadline) -->
+    <string name="discovery_meta_scan">No UDP reply · probing TCP 8001 port by port</string>
+
+    <!-- ===== Home push-status card (ui/PushStatusCard, v1.2.6) ===== -->
+    <string name="push_card_title">Stream status</string>
+    <string name="push_card_live">LIVE</string>
+    <string name="push_gauge_unit">Hz measured</string>
+    <!-- %1$d = sampling window in seconds (TELEMETRY_WINDOW) -->
+    <string name="push_chart_caption">Last %1$d s · frame-rate jitter</string>
+    <!-- %1$d = configured rate, %2$.1f = measured rate -->
+    <string name="push_card_summary">Target %1$dHz · measured %2$.1fHz</string>
+    <!-- %1$d = configured rate (before the first sample arrives) -->
+    <string name="push_card_waiting">Target %1$dHz · waiting for first sample…</string>
+    <string name="push_chip_ar">AR</string>
+    <string name="push_chip_ar_on">Tracking</string>
+    <string name="push_chip_ar_off">Idle</string>
+    <string name="push_chip_vts">VTS</string>
+    <string name="push_chip_vts_on">Connected</string>
+    <string name="push_chip_vts_off">Offline</string>
 
     <!-- ===== Tabs and top bar ===== -->
     <string name="tab_home">Home</string>
@@ -70,6 +93,15 @@
     <string name="theme_follow_system">Follow system (off = always dark)</string>
     <string name="theme_amoled_black">AMOLED black theme</string>
     <string name="theme_amoled_black_desc">Pure black background in dark mode</string>
+
+    <!-- ===== UI effects card =====
+         The frosted-glass strings were removed along with the implementation (v1.2.9
+         rollback: the effect was not visible on device, while the per-frame RenderLayer
+         cost was real). This card now only hosts burn-in protection. -->
+    <string name="settings_card_ui_effects">UI effects</string>
+    <string name="switch_burn_in_mask">Burn-in protection</string>
+    <string name="switch_burn_in_mask_desc">Dims after 2s of inactivity to protect OLED screens</string>
+
     <string name="about_app_intro">ARVTubeLink uses Huawei AR Engine to capture facial expressions and head pose, mapping them in real time into VTube Studio so your Live2D model follows your face.</string>
 
     <!-- ===== Language card ===== -->

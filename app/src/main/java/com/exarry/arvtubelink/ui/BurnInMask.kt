@@ -131,7 +131,10 @@ fun BurnInMask(visible: Boolean, onDismiss: () -> Unit) {
         if (textVisible) {
             Text(
                 text = stringResource(R.string.burn_in_mask_label),
-                fontSize = 18.sp,
+                // v1.2.8：18sp -> 64sp（约 3.6 倍）。原字号在整块纯黑屏上几乎不可见，
+                // 用户会以为 App 卡死；放大后一眼能确认「推流仍在进行」。
+                // 颜色仍为 #1A1A1A（观感亮度≈0.1），大字号不会因此变成亮点，不加剧烧屏。
+                fontSize = 64.sp,
                 color = MASK_TEXT_COLOR,
                 modifier = Modifier.offset { IntOffset(0, textOffsetY) },
             )
