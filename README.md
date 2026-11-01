@@ -64,7 +64,7 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 - `MouthX` 方向翻转没有 UI 入口，用全局脸部镜像统一处理。
 - 眼球与部分表情通道的增益是经验值，不同模型观感有差异，需自行微调灵敏度。
 
-## 开源协议
+## 许可协议
 
 本项目基于 [PolyForm Noncommercial 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0)，详见 [LICENSE](LICENSE)，个人 VTuber 豁免条款详见 [LICENSE-ADDITIONAL.md](LICENSE-ADDITIONAL.md)。
 
