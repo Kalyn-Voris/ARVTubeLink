@@ -10,6 +10,45 @@
          广播包，normal 权限免运行时申请） -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
+    <!--
+      移除依赖库带入的存储权限（v1.2.6）。
+
+      来源：com.huawei.hms:arenginesdk:4.0.0.5 的 AAR Manifest 第 12/13 行硬编码声明了
+      WRITE_EXTERNAL_STORAGE + READ_EXTERNAL_STORAGE（其 targetSdk=27，属旧版模板残留）。
+      实测（manifest-merger-blame-release-report.txt）这两条是**唯一**的存储权限来源，
+      本 App 源码零引用。
+
+      为什么可以安全移除：
+        - 本 App 不向本地写任何文件：日志只在内存环形缓冲（utils/InAppLog.kt），
+          校准/偏好全部走 SharedPreferences（不需要存储权限）；
+        - AR Engine 运行时只读取摄像头帧（CAMERA），不读外部存储；
+        - 代码中仅有的两处 requestPermissions 都只申请 CAMERA
+          （MainActivity.startTracking / enterCalibrationMode）。
+
+      tools:node="remove" 是 Manifest Merger 的显式移除指令，比 maxSdkVersion 更彻底
+      ——合并结果里该条会被真正删除，而不是降级为只在旧系统生效。
+    -->
+    <uses-permission
+        android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        tools:node="remove" />
+    <!--
+      ACCESS_NETWORK_STATE：同样由 arenginesdk 带入，本 App 保留。
+
+      澄清一处易误判的点：本 App 的自动发现**并不**依赖它。
+      VtsDiscoveryClient.pickPrivateIpv4() 走的是 java.net.NetworkInterface 枚举网卡，
+      该 API 不需要任何权限；MulticastLock 需要的是 CHANGE_WIFI_MULTICAST_STATE（已声明）。
+      源码中确实没有任何 ConnectivityManager 调用。
+
+      仍然保留的理由：arenginesdk 自身可能用它在无网时快速失败；移除会让该 SDK 的
+      行为从"依赖库自报"变成"未声明却调用"，属不可控风险。它属于 normal 权限
+      （安装即授予、不弹窗、不出现在运行时权限列表），对用户零打扰，因此不构成
+      权限列表"不干净"的问题。若后续实测确认可去，再单独评估。
+    -->
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"

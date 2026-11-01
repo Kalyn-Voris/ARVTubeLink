@@ -3,8 +3,8 @@ package com.exarry.arvtubelink.ar
 import android.Manifest
 import android.content.Context
 import android.content.pm.PackageManager
-import android.util.Log
 import androidx.core.content.ContextCompat
+import com.exarry.arvtubelink.utils.InAppLog
 import com.huawei.hiar.AREnginesApk
 import com.huawei.hiar.AREnginesApk.ARAvailability
 import com.huawei.hiar.ARConfigBase
@@ -67,11 +67,11 @@ class ArSessionManager(private val context: Context) {
     /** 创建人脸追踪会话（前置摄像头，开启 BlendShape 表情系数输出）。 */
     fun createArSession(): ARSession? {
         if (!hasCameraPermission()) {
-            Log.w(TAG, "camera permission not granted")
+            InAppLog.w(TAG, "camera permission not granted")
             return null
         }
         if (session != null) {
-            Log.w(TAG, "session already exists")
+            InAppLog.w(TAG, "session already exists")
             return session
         }
         return try {
@@ -89,28 +89,28 @@ class ArSessionManager(private val context: Context) {
             newSession
         } catch (e: ARUnavailableServiceNotInstalledException) {
             state = ArEngineState.NotInstalled
-            Log.e(TAG, "AR Engine service not installed", e)
+            InAppLog.e(TAG, "AR Engine service not installed", e)
             null
         } catch (e: ARUnavailableServiceApkTooOldException) {
             state = ArEngineState.NotInstalled
-            Log.e(TAG, "AR Engine service apk too old", e)
+            InAppLog.e(TAG, "AR Engine service apk too old", e)
             null
         } catch (e: ARUnavailableDeviceNotCompatibleException) {
             state = ArEngineState.Unsupported
-            Log.e(TAG, "device not compatible with AR Engine", e)
+            InAppLog.e(TAG, "device not compatible with AR Engine", e)
             null
         } catch (e: ARUnavailableEmuiNotCompatibleException) {
             state = ArEngineState.Unsupported
-            Log.e(TAG, "EMUI not compatible with AR Engine", e)
+            InAppLog.e(TAG, "EMUI not compatible with AR Engine", e)
             null
         } catch (e: ARUnSupportedConfigurationException) {
-            Log.e(TAG, "config unsupported", e)
+            InAppLog.e(TAG, "config unsupported", e)
             null
         } catch (e: ARCameraNotAvailableException) {
-            Log.e(TAG, "camera unavailable", e)
+            InAppLog.e(TAG, "camera unavailable", e)
             null
         } catch (e: ARFatalException) {
-            Log.e(TAG, "AR fatal exception on create", e)
+            InAppLog.e(TAG, "AR fatal exception on create", e)
             null
         }
     }
@@ -120,11 +120,11 @@ class ArSessionManager(private val context: Context) {
         session?.resume()
         session != null
     } catch (e: ARCameraNotAvailableException) {
-        Log.e(TAG, "camera unavailable on resume", e)
+        InAppLog.e(TAG, "camera unavailable on resume", e)
         releaseSession()
         false
     } catch (e: Exception) {
-        Log.e(TAG, "resume failed", e)
+        InAppLog.e(TAG, "resume failed", e)
         false
     }
 
@@ -133,7 +133,7 @@ class ArSessionManager(private val context: Context) {
         try {
             session?.pause()
         } catch (e: Exception) {
-            Log.w(TAG, "pause failed", e)
+            InAppLog.w(TAG, "pause failed", e)
         }
     }
 
@@ -142,7 +142,7 @@ class ArSessionManager(private val context: Context) {
         try {
             session?.stop()
         } catch (e: Exception) {
-            Log.w(TAG, "stop failed", e)
+            InAppLog.w(TAG, "stop failed", e)
         }
         session = null
     }
@@ -154,7 +154,7 @@ class ArSessionManager(private val context: Context) {
         try {
             session?.setDisplayGeometry(rotation, width, height)
         } catch (e: Exception) {
-            Log.w(TAG, "setDisplayGeometry failed", e)
+            InAppLog.w(TAG, "setDisplayGeometry failed", e)
         }
     }
 

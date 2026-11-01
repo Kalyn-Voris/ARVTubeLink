@@ -5,7 +5,6 @@ import android.opengl.GLSurfaceView
 import android.opengl.Matrix
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
 import com.exarry.arvtubelink.mapping.BlendShapeMapper
 import com.exarry.arvtubelink.utils.InAppLog
 import com.exarry.arvtubelink.mapping.Smoother
@@ -86,19 +85,15 @@ class FaceRenderer(
     /** 网络发送专用协程池；[release] 时取消。绝不复用 GL 线程做 IO。 */
     private val sendScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
-    // ---------- 校准模式 / 调试日志开关（UI 线程写、GL 线程读） ----------
+    // ---------- 校准模式（UI 线程写、GL 线程读） ----------
 
     /** 校准网格可视化开关：true 时额外绘制网格/准星（数据管线完全不受影响）。 */
     @Volatile
     private var calibrationMode = false
 
-    /**
-     * 详细调试日志开关。由 MainActivity 依据 SharedPreferences（Key: enable_debug_logs）
-     * 写入——渲染器自己绝不读 SharedPreferences。开启后：校准模式输出网格诊断、
-     * 追踪模式输出逐帧头姿原始值（均进内嵌日志面板）。
-     */
-    @Volatile
-    private var debugLogsEnabled = false
+    // 逐帧诊断日志（原始系数、头姿、校准网格统计）不设本类字段开关：
+    // 一律走 InAppLog，由它的进程级总开关（设置页「详细日志」）统一拦截，
+    // 默认（未开详细日志）直接丢弃，本类无需再读任何 SharedPreferences。
 
     /**
      * 节流间隔（毫秒）。由 UI 线程经 [setSendFrequencyHz] 写入（换算与粒度说明见该方法），
@@ -165,11 +160,6 @@ class FaceRenderer(
         calibrationMode = enabled
     }
 
-    /** 详细调试日志开关（UI 线程调用，来源 SharedPreferences enable_debug_logs）。 */
-    fun setDebugLogsEnabled(enabled: Boolean) {
-        debugLogsEnabled = enabled
-    }
-
     /**
      * 推流频率（UI 线程调用，来源 SharedPreferences send_frequency_hz）。
      * 档位 10/20/30/40/50/60 Hz，内部换算为整除毫秒间隔 1000/HZ
@@ -195,6 +185,28 @@ class FaceRenderer(
     fun setStreamingPaused(paused: Boolean) {
         streamingPaused = paused
     }
+
+    // ---------- 推流遥测（v1.2.6 首页实时折线/仪表盘用） ----------
+
+    /**
+     * 真实发送帧计数（纯只读观测，**不参与任何发送决策**）：每成功交给
+     * [VtsWsClient.injectParameters] 并返回 true 的帧 +1。
+     *
+     * 与配置值的区别：`send_frequency_hz` 是用户设定值；本计数是实际送达率——渲染帧率
+     * 封顶、[sendIntervalMs] 节流、[sendPending] 防积压丢弃、未认证静默丢弃都会让它
+     * 低于设定值。UI 侧每秒取一次差值即为实测 Hz。
+     *
+     * 线程：IO 协程写（AtomicLong），UI 线程读，无锁无阻塞。
+     */
+    private val sentFrameCount = java.util.concurrent.atomic.AtomicLong(0L)
+
+    /**
+     * 读取并清零真实发送帧计数（UI 线程调用，建议 1s 一次）。
+     *
+     * @return 自上次调用以来成功送达 VTS 的帧数；调用方用「帧数 / 间隔秒」得实测 Hz。
+     *         清零与读取是同一个原子操作（getAndSet），不存在丢失窗口。
+     */
+    fun readAndResetSentFrames(): Long = sentFrameCount.getAndSet(0L)
 
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
         GLES20.glClearColor(0f, 0f, 0f, 1f)
@@ -322,27 +334,25 @@ class FaceRenderer(
         // 2) 平滑：按参数名做 1€ 滤波，抑制抖动（返回新 Map，无共享可变状态）
         val smoothed = smoother.smoothAll(mergedParams)
 
-        // 原始系数/头姿 Logcat 日志：仅「开启详细日志」时输出（体积大且高频，不进内嵌面板）
-        if (debugLogsEnabled && frameCount % LOG_INTERVAL == 0L) {
-            Log.i(TAG, "帧数据($frameCount): $blendShapeMap")
+        // 原始系数/头姿日志：低频采样（每 LOG_INTERVAL 帧一条），是否真的输出由
+        // InAppLog 的全局开关决定——默认（未开详细日志）直接被拦截，无需此处再加守卫。
+        // 用 isDebugEnabled 先短路，避免开关关闭时仍为丢弃的日志拼字符串。
+        if (frameCount % LOG_INTERVAL == 0L && InAppLog.isDebugEnabled) {
+            InAppLog.i(TAG, "帧数据($frameCount): $blendShapeMap")
             headPose?.let {
-                Log.i(TAG, "头姿: T=${it.translation.contentToString()}, Q=${it.quaternion.contentToString()}")
+                InAppLog.i(TAG, "头姿: T=${it.translation.contentToString()}, Q=${it.quaternion.contentToString()}")
             }
         }
 
         // 内嵌日志：每 60 帧打印一次实际待发送的 VTS 参数 map（注入前的最终值；
         // 60 帧的时长随推流频率变化）
-        if (frameCount % INAPP_LOG_INTERVAL == 0L) {
-            // 「开启详细日志」时才输出（logcat 与内嵌面板同时受控）
-            if (debugLogsEnabled) {
-                InAppLog.i(TAG, "帧 $frameCount：发送参数 $smoothed")
-            }
-            // 「开启详细日志」时：头姿原始值进内嵌面板（默认只进 Logcat，防刷屏）
-            if (debugLogsEnabled && headPose != null) {
+        if (frameCount % INAPP_LOG_INTERVAL == 0L && InAppLog.isDebugEnabled) {
+            InAppLog.i(TAG, "帧 $frameCount：发送参数 $smoothed")
+            headPose?.let {
                 InAppLog.i(
                     TAG,
-                    "帧 $frameCount 头姿原始：T=${headPose.translation.contentToString()}," +
-                        " Q=${headPose.quaternion.contentToString()}"
+                    "帧 $frameCount 头姿原始：T=${it.translation.contentToString()}," +
+                        " Q=${it.quaternion.contentToString()}"
                 )
             }
         }
@@ -645,7 +655,7 @@ class FaceRenderer(
 
             drawCentroidMarker(sumNdcX, sumNdcY, validCount)
 
-            if (debugLogsEnabled && frameCount % CALIB_LOG_INTERVAL == 0L) {
+            if (frameCount % CALIB_LOG_INTERVAL == 0L && InAppLog.isDebugEnabled) {
                 val cx = if (validCount > 0) sumNdcX / validCount else 0f
                 val cy = if (validCount > 0) sumNdcY / validCount else 0f
                 InAppLog.i(
@@ -851,7 +861,9 @@ class FaceRenderer(
         sendScope.launch {
             try {
                 // 未认证时内部静默丢弃并返回 false，不会抛异常
-                vtsClient.injectParameters(params)
+                // 遥测计数（纯观测）：返回值仅用于累加统计，不参与任何发送决策——
+                // 节流、防积压、丢弃路径完全不变，原有丢弃的帧照旧丢弃。
+                if (vtsClient.injectParameters(params)) sentFrameCount.incrementAndGet()
             } catch (e: Exception) {
                 // 理论上 injectParameters 不抛；兜底防止 IO 协程异常影响后续发送
                 InAppLog.w(TAG, "injectParameters failed: ${e.message}")

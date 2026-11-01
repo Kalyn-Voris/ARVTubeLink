@@ -421,8 +421,10 @@ class VtsWsClient(
         }
 
         override fun onMessage(webSocket: WebSocket, text: String) {
+            // 先脱敏后截断：反过来可能把真实 token 的头部留在截断尾巴里
+            val safeText = maskToken(text)
             if (gen != generation) {
-                InAppLog.w(TAG, "onMessage: stale socket (gen=$gen) ignored, raw=$text")
+                InAppLog.w(TAG, "onMessage: stale socket (gen=$gen) ignored, raw=$safeText")
                 return
             }
             // RAW 下行报文 5s 节流：注入回执 30Hz 逐条到达会刷爆 Logcat 与内嵌面板；
@@ -430,7 +432,7 @@ class VtsWsClient(
             val now = System.currentTimeMillis()
             if (now - lastRawLogAtMs >= RAW_LOG_INTERVAL_MS) {
                 lastRawLogAtMs = now
-                InAppLog.i(TAG, "<< RAW: ${text.take(MAX_LOG_JSON)}")
+                InAppLog.i(TAG, "<< RAW: ${safeText.take(MAX_LOG_JSON)}")
             }
             try {
                 handleMessage(text)
@@ -476,10 +478,12 @@ class VtsWsClient(
     }
 
     private fun handleMessage(text: String) {
+        // 仅日志用；解析必须走原始 text（token 值参与认证，不能脱敏后再喂解析）
+        val safeText = maskToken(text)
         val envelope = VtsProtocol.parseEnvelope(text)
         if (envelope == null) {
             // Gson 解析信封失败：打印原始报文，便于对照 VTS 协议排查
-            InAppLog.w(TAG, "<< 解析失败, raw=${text.take(MAX_LOG_JSON)}")
+            InAppLog.w(TAG, "<< 解析失败, raw=${safeText.take(MAX_LOG_JSON)}")
             onError("响应解析失败（原始报文见 Logcat）")
             return
         }
@@ -494,7 +498,7 @@ class VtsWsClient(
             }
         } else {
             // 用 Info 而非 Debug：Debug 级会被 Logcat 过滤，回包会看不到
-            InAppLog.i(TAG, "<< $type, raw=${text.take(MAX_LOG_JSON)}")
+            InAppLog.i(TAG, "<< $type, raw=${safeText.take(MAX_LOG_JSON)}")
         }
         when (type) {
             "AuthenticationTokenResponse" -> {
@@ -505,7 +509,7 @@ class VtsWsClient(
                 // 直接从 envelope.data(JsonObject) 提取并兼容两种写法
                 val tokenValue = extractToken(envelope)
                 if (tokenValue.isNullOrEmpty()) {
-                    InAppLog.e(TAG, "token 字段缺失, raw=${text.take(MAX_LOG_JSON)}")
+                    InAppLog.e(TAG, "token 字段缺失, raw=${safeText.take(MAX_LOG_JSON)}")
                     onError("Token 响应中缺少 authenticationToken 字段")
                     return
                 }
@@ -530,7 +534,7 @@ class VtsWsClient(
                     // 重连认证后在此重订；旧版 VTS 无 Event API 时静默降级，见 APIError 分支）
                     sendModelEventSubscription()
                 } else {
-                    InAppLog.e(TAG, "认证被拒, raw=${text.take(MAX_LOG_JSON)}")
+                    InAppLog.e(TAG, "认证被拒, raw=${safeText.take(MAX_LOG_JSON)}")
                     // Token 已失效（VTS 端被移除授权）：清 Token 后跳过退避立即重连，
                     // onOpen 因本地已无 token 自动重走 AuthenticationTokenRequest 弹窗申请
                     state = VtsState.AuthenticationFailed
@@ -706,11 +710,23 @@ class VtsWsClient(
             // 注入帧每秒最多 30 条且体积大，只记条数不记内容
             InAppLog.d(TAG, ">> InjectParameterDataRequest (${json.length} bytes)")
         } else {
-            // 控制类消息（认证/心跳等）打印完整 raw，便于对照 VTS 协议排查
-            InAppLog.i(TAG, ">> ${message.javaClass.simpleName}, raw=$json")
+            // 控制类消息（认证/心跳等）打印完整 raw，便于对照 VTS 协议排查；
+            // AuthenticationRequest 的 raw 含真实 token，必须 maskToken 后才进日志
+            InAppLog.i(TAG, ">> ${message.javaClass.simpleName}, raw=${maskToken(json)}")
         }
         webSocket?.send(json)
     }
+
+    /**
+     * 日志脱敏：把 JSON 里 authenticationToken / token 的值替换为 ***，保留键名。
+     *
+     * 覆盖上行（AuthenticationRequest.data.authenticationToken）与下行
+     * （AuthenticationTokenResponse.data.authenticationToken，兼容旧文档的 token 写法）。
+     * 所有打印原始报文的日志点都必须过这里——Logcat 与内嵌日志面板（含「复制全部」）
+     * 共用同一条消息字符串，在调用点脱敏即两处同时干净。
+     */
+    private fun maskToken(json: String): String =
+        TOKEN_JSON_REGEX.replace(json) { m -> "\"" + m.groupValues[1] + "\":\"***\"" }
 
     /** 认证成功后启动：每 15s 发一次 APIState 请求，兼作应用层心跳与活性探测。 */
     private fun startHeartbeat() {
@@ -779,6 +795,8 @@ class VtsWsClient(
         private const val RECONNECT_FAIL_NOTIFY_THRESHOLD = 5
         /** 日志中原始 JSON 报文的最大打印长度 */
         private const val MAX_LOG_JSON = 500
+        /** 匹配 "authenticationToken":"..." / "token":"..."（VTS 两种字段写法都要盖住） */
+        private val TOKEN_JSON_REGEX = Regex("\"(authenticationToken|token)\"\\s*:\\s*\"[^\"]*\"")
         /** 认证成功后的应用层心跳间隔（毫秒） */
         private const val HEARTBEAT_INTERVAL_MS = 15_000L
         /** 注入在途回执超时（毫秒）：超过即强制接管在途锁，防回执丢失永久堵死注入 */

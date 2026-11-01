@@ -34,7 +34,19 @@
 # AuthenticationResponse / ApiStateRequest / InjectParameterDataRequest /
 # InputParameterListResponse / Live2DParameterListResponse / ModelLoadedEvent /
 # VtsEnvelope / VtsApiError / ParameterValue 等全部位于 network 包。
--keepclassmembers class com.exarry.arvtubelink.network.** { <fields>; }
+#
+# ⚠️ v1.2.7 修正（R8 首轮开启后实测暴露的真实缺陷）：
+#    原先只有 -keepclassmembers，它**只保留成员、不阻止 R8 删除整个类**。
+#    R8 在「类只被反射/Gson 使用、没有任何静态类型引用」时会直接判定其不可达并删除，
+#    连带着类里作为 messageType 默认值的字符串常量（"AuthenticationResponse" 等）
+#    也一起消失 —— 而 VtsWsClient.handleMessage 的 when 分支正是靠这些字符串分发。
+#    实测后果（usage.txt + mapping.txt 实证）：
+#      AuthenticationResponse / InputParameterListResponse / InjectParameterDataResponse
+#      / Live2DParameterListResponse / ModelLoadedEvent / AuthenticationTokenResponse
+#      全部被删除，parseTokenResponse 等解析函数一并被删 →
+#      表现为「能连上、能发认证请求，但永远收不到 AuthenticationResponse」= 认证死循环。
+#    故必须升级为 -keep（保类 + 保成员 + 保字符串常量）。
+-keep class com.exarry.arvtubelink.network.** { *; }
 
 # 参数自适应覆盖层：经 Gson 持久化到 SharedPreferences（adaptation_prefs）。
 # 字段名被混淆会导致历史存档读回失败（当前代码用 runCatching 兜底，
