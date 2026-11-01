@@ -1,5 +1,6 @@
 package com.exarry.arvtubelink.ui
 
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -22,13 +23,21 @@ import androidx.compose.ui.unit.dp
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ui.theme.themedColorResource
 
-/** 卡片圆角：m3 medium 档，与 12dp 卡距、大卡面协调（16dp 偏玩具感）。 */
+/** 卡片圆角：m3 medium 档，与 12dp 卡距、大卡面协调。 */
 private val CardCornerRadius = 12.dp
 
 /**
  * 设置页卡片容器：标题 + 内容槽，Surface 承载（自带 clip + 语义）。
- * 容器色 colorCardContainer（colors.xml 单一来源，values/values-night 双套值）。
- * 阴影刻意不加：深色主题下不可见、浅色易显脏，深浅分层交给容器色档位。
+ *
+ * ## 样式（v1.2.8 回退）
+ *
+ * 回到最简形态：纯底色 Surface + 1dp 细边框，无渐变、无发光线、无多层叠加。
+ * 原因：设置页要新增「UI 效果」卡片，功能卡片应当靠**内容层级**区分，而不是靠
+ * 基础容器堆视觉特效。六张卡都发光 = 没有一张发光，反而稀释了重点。
+ *
+ * 视觉层次改由以下两点承担：
+ *  - 容器色 colorCardContainer（colors.xml 单一来源，values/values-night 双套值）；
+ *  - 1dp outlineVariant 细边框，深色下明确卡片边界又不抢内容。
  *
  * 扩展方式：新增卡片 = 在 SettingsScreen.kt 的 SettingsContent 里再写一个
  * `SettingsCard(stringResource(R.string.xxx)) { ... }` 调用，无需改本文件。
@@ -44,6 +53,7 @@ fun SettingsCard(
         shape = RoundedCornerShape(CardCornerRadius),
         // colorCardContainer 深浅跨档（深=Container、浅=High）无法走单槽 → themedColorResource
         color = themedColorResource(R.color.colorCardContainerDark, R.color.colorCardContainerLight),
+        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
             Text(

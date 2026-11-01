@@ -33,8 +33,10 @@ import com.exarry.arvtubelink.network.VtsState
 import com.exarry.arvtubelink.network.VtsWsClient
 import com.exarry.arvtubelink.ui.AppRoot
 import com.exarry.arvtubelink.ui.CalibrationOverlay
+import com.exarry.arvtubelink.ui.DEFAULT_BURN_IN_MASK_ENABLED
 import com.exarry.arvtubelink.ui.DEFAULT_SEND_FREQUENCY_HZ
 import com.exarry.arvtubelink.ui.KEY_APP_LANGUAGE
+import com.exarry.arvtubelink.ui.KEY_BURN_IN_MASK_ENABLED
 import com.exarry.arvtubelink.ui.KEY_ENABLE_ADAPTATION
 import com.exarry.arvtubelink.ui.KEY_ENABLE_DEBUG_LOGS
 import com.exarry.arvtubelink.ui.KEY_ENABLE_ONE_EURO_FILTER
@@ -76,8 +78,8 @@ import com.exarry.arvtubelink.utils.InAppLog
  *    并弹全屏遮罩承载状态提示与确认/取消；
  *  - 渲染器进入校准可视化模式：绘制人脸网格线框 + 中心十字/对准框 + 质心标记点；
  *  - 点「确认校准」→ mapper.captureCurrentAsBase(当前帧快照) 并持久化，关闭网格模式；
- *  - UI 与 GL 线程只通过 @Volatile 标志（setCalibrationMode/setDebugLogsEnabled）
- *    与主线程回调（onFacePresenceChanged）通信，UI 层绝不直接触碰 OpenGL。
+ *  - UI 与 GL 线程只通过 @Volatile 标志（setCalibrationMode）与主线程回调
+ *    （onFacePresenceChanged）通信，UI 层绝不直接触碰 OpenGL。
  */
 class MainActivity : AppCompatActivity() {
 
@@ -109,6 +111,12 @@ class MainActivity : AppCompatActivity() {
             onVtsStateChanged = { state ->
                 runOnUiThread {
                     vtsStatusState.value = vtsStateLabel(state)
+                    // 推流卡 chip：Authenticated 即"可注入参数"（Injecting 是它的伴生别名，
+                    // 见 VtsWsClient.VtsState.Companion.Injecting，不是独立子类型）
+                    vtsConnectedState.value = state is VtsState.Authenticated
+                    // 状态流转即重置错误标记：onError 只覆盖文案，能走到这里说明错误已成过去
+                    vtsStateState.value = state
+                    vtsErrorState.value = false
                     when (state) {
                         // 自动发现链路终点：真认证通过才报「已发现并连接」（发现成功 ≠ 连接
                         // 成功——VTS 端授权弹窗/端口错/API 关都会失败，见 pendingAutoConnectToast）
@@ -125,6 +133,8 @@ class MainActivity : AppCompatActivity() {
             onError = { message ->
                 runOnUiThread {
                     vtsStatusState.value = getString(R.string.vts_status_error, message)
+                    // VtsState 没有 Error 子类型，错误色靠这个布尔额外表达
+                    vtsErrorState.value = true
                 }
             },
             // 模型身份（认证后 InputParameterListResponse / 追踪中 ModelLoadedEvent 推送，
@@ -203,6 +213,21 @@ class MainActivity : AppCompatActivity() {
     private val trackingState = mutableStateOf(false)
     private val surfaceFullscreenState = mutableStateOf(false)
 
+    // VTS 是否已认证（推流卡 chip 用）：从 VtsState 投影。状态文案可能被 onError 覆盖成
+    // 错误串，本布尔只表达"能否注入参数"
+    private val vtsConnectedState = mutableStateOf(false)
+
+    // 当前 VTS 状态枚举，推流卡警示行的显示条件真源。
+    // 不复用 vtsStatusState 文案：本地化串反解析判断，换语言/改措辞会静默失效
+    private val vtsStateState = mutableStateOf<VtsState>(VtsState.Disconnected)
+
+    // VtsState 没有 Error 子类型（异常只经 onError 抛出），错误态靠这个布尔额外表达。
+    // 每次状态流转重置，避免错误色残留
+    private val vtsErrorState = mutableStateOf(false)
+
+    // AR Engine 已确认可用（控制卡圆点用）：仅 checkAvailability() 返回 Available 时置 true
+    private val arReadyState = mutableStateOf(false)
+
     // 底部 Tab 索引：NavigationBar 与顶栏 info 图标的切换都经 onSelectTab 上收
     private val tabIndexState = mutableStateOf(TAB_HOME)
 
@@ -245,12 +270,20 @@ class MainActivity : AppCompatActivity() {
     private val showFullLicenseState = mutableStateOf(false)
     private val showPolyFormState = mutableStateOf(false)
 
-    // ---------- OLED 防烧屏（常驻，无开关，纯黑遮罩方案） ----------
+    // ---------- OLED 防烧屏（可由设置页「推流防烧屏」开关关闭） ----------
     // 追踪中 2s 无用户操作 → burnInMaskState 置 true 显示全屏纯黑遮罩（ui/BurnInMask.kt）；
     // 任意触摸经 onUserInteraction 移除，退后台/停追踪经 cancelIdleDim 收。
     // 遮罩期 GL/相机/推流继续跑（「推流中」语义），见 BurnInMask KDoc。
     private val dimHandler = Handler(Looper.getMainLooper())
     private val dimRunnable = Runnable { burnInMaskState.value = true }
+
+    /**
+     * 防烧屏开关（v1.2.8 新增，默认开启）：设置页「推流防烧屏」控制。
+     * 关闭后所有挂计时入口都不再 postDelayed，遮罩永不出现。
+     * 读路径统一走 [scheduleIdleDim]，避免 5 处调用点各改一遍漏改。
+     */
+    @Volatile
+    private var burnInMaskEnabled = true
 
     // 遮罩可见性：MainActivity 驱动（dimRunnable 置 true；cancelIdleDim / onBurnInMaskDismiss
     // 置 false——后者 = BurnInMask 的 tap 判定回调上收），AppRoot 以 State<Boolean> 只读消费
@@ -325,6 +358,11 @@ class MainActivity : AppCompatActivity() {
         else LocaleListCompat.forLanguageTags(tag)
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        // 详细日志开关：日志级别闸门是 InAppLog 的进程级开关，必须在任何组件产出日志
+        // 之前就位（这里是最早能读 prefs 的位置——字段初始化期 baseContext 尚未 attach），
+        // 否则冷启动早期的 INFO/WARN 会按默认 false 被静默丢弃。
+        InAppLog.setDebugEnabled(appPrefs.getBoolean(KEY_ENABLE_DEBUG_LOGS, false))
+
         // 主题初始化：顺序写死——先读 prefs（显式触发 appPrefs lazy 初始化，此时 baseContext
         // 已 attach）→ 强制深色时应用 ForceDark overlay（覆盖 windowBackground/statusBar
         // 首帧，必须在 super.onCreate 的 decor 创建之前）→ super.onCreate()。
@@ -399,7 +437,11 @@ class MainActivity : AppCompatActivity() {
             AppRoot(
                 arStatus = arStatusState,
                 vtsStatus = vtsStatusState,
+                vtsState = vtsStateState,
+                vtsError = vtsErrorState,
+                arReady = arReadyState,
                 tracking = trackingState,
+                vtsConnected = vtsConnectedState,
                 surfaceFullscreen = surfaceFullscreenState,
                 calibrationActive = calibrationActiveState,
                 calibFacePresent = calibFacePresentState,
@@ -478,14 +520,12 @@ class MainActivity : AppCompatActivity() {
                     mapper.updateOverrides(overrides)
                 },
                 onLanguageChange = { tag -> applyAppLanguage(tag) },
+                onBurnInMaskEnabledChange = { enabled -> setBurnInMaskEnabled(enabled) },
             )
         }
 
-        // 以下四项启动即从 SharedPreferences 同步给各组件（UI 侧持有 prefs 真源，
+        // 以下三项启动即从 SharedPreferences 同步给各组件（UI 侧持有 prefs 真源，
         // 渲染器 / Smoother / mapper 均不自读 prefs）。
-        // 详细日志开关
-        faceRenderer.setDebugLogsEnabled(appPrefs.getBoolean(KEY_ENABLE_DEBUG_LOGS, false))
-
         // 推流频率
         faceRenderer.setSendFrequencyHz(appPrefs.getInt(KEY_SEND_FREQUENCY_HZ, DEFAULT_SEND_FREQUENCY_HZ))
 
@@ -494,6 +534,10 @@ class MainActivity : AppCompatActivity() {
 
         // 脸部镜像开关（默认关闭）
         mapper.faceMirrorEnabled = appPrefs.getBoolean(KEY_FACE_MIRROR, false)
+
+        // 防烧屏开关（v1.2.8，默认开启）：必须在任何 scheduleIdleDim 调用之前就位，
+        // 否则首帧会按默认值 true 挂上计时器（本方法在 onCreate 的 setContent 之前执行）
+        burnInMaskEnabled = appPrefs.getBoolean(KEY_BURN_IN_MASK_ENABLED, DEFAULT_BURN_IN_MASK_ENABLED)
 
         loadPersistedMappingConfig()
     }
@@ -569,8 +613,7 @@ class MainActivity : AppCompatActivity() {
         // （最后一次交互）；stopTracking 路径此处重启的计时由紧随其后的 cancelIdleDim 清掉。
         // 自适应进行中不重启：探测期需屏幕保持点亮看进度行（见 adaptationRunning KDoc）
         if (trackingState.value && !adaptationRunning) {
-            dimHandler.removeCallbacks(dimRunnable)
-            dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+            scheduleIdleDim()
         }
     }
 
@@ -642,6 +685,8 @@ class MainActivity : AppCompatActivity() {
         arStatusState.value = getString(R.string.ar_status_checking)
         lifecycleScope.launch {
             val state = arSessionManager.checkAvailability()
+            // 圆点真源：仅 Available 才算"可用"，其余两种情况一律置灰点
+            arReadyState.value = state is ArEngineState.Available
             val engineText = getString(
                 when (state) {
                     ArEngineState.Available -> R.string.ar_engine_available
@@ -796,8 +841,7 @@ class MainActivity : AppCompatActivity() {
      */
     private fun restartIdleDimIfTracking() {
         if (trackingState.value && !calibrationActiveState.value) {
-            dimHandler.removeCallbacks(dimRunnable)
-            dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+            scheduleIdleDim()
         }
     }
 
@@ -887,8 +931,7 @@ class MainActivity : AppCompatActivity() {
         // 还是 false 不会计时，需在此补启动）；自适应进行中不启动——「连接即适应」窗口内
         // 用户点开始追踪时探测仍在跑，挂计时会让 2s 后的遮罩盖住首页进度行
         if (!adaptationRunning) {
-            dimHandler.removeCallbacks(dimRunnable)
-            dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+            scheduleIdleDim()
         }
         val sending = vtsClient.state is VtsState.Authenticated
         // 显示的是设置值（prefs），非实际发送率（实际率受采集帧率封顶）；已知限制：
@@ -936,8 +979,42 @@ class MainActivity : AppCompatActivity() {
     override fun onUserInteraction() {
         if (trackingState.value) {
             if (calibrationActiveState.value || adaptationRunning) return
-            dimHandler.removeCallbacks(dimRunnable)
-            dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+            scheduleIdleDim()
+        }
+    }
+
+    /**
+     * 挂防烧屏倒计时（v1.2.8 收口）。
+     *
+     * 此前 5 处调用点（beginTracking / onResume / onUserInteraction / closeCalibration /
+     * 自适应结束）各自 `removeCallbacks + postDelayed`。加开关后统一走本方法，
+     * 保证「开关关闭 = 永不挂计时」只有一处判断，不会漏改。
+     *
+     * 开关关闭时顺带收掉可能已在跑的计时与遮罩——用户刚关开关时不该继续黑屏。
+     */
+    private fun scheduleIdleDim() {
+        dimHandler.removeCallbacks(dimRunnable)
+        if (!burnInMaskEnabled) {
+            // 关闭态：确保没有任何残留遮罩（例如开关在遮罩显示期间被改）
+            burnInMaskState.value = false
+            return
+        }
+        dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+    }
+
+    /**
+     * 设置页「推流防烧屏」开关回调：写 prefs + 更新内存标志。
+     *
+     * 关闭时立即 [cancelIdleDim]（清计时 + 收遮罩）；开启时若正在追踪则重新挂计时，
+     * 让用户不必等下一次交互才生效。
+     */
+    private fun setBurnInMaskEnabled(enabled: Boolean) {
+        burnInMaskEnabled = enabled
+        appPrefs.edit().putBoolean(KEY_BURN_IN_MASK_ENABLED, enabled).apply()
+        if (!enabled) {
+            cancelIdleDim()
+        } else if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
+            scheduleIdleDim()
         }
     }
 
@@ -992,8 +1069,7 @@ class MainActivity : AppCompatActivity() {
         // 不补计时则静置场景永远不出遮罩——与 beginTracking 一样重启 2s 倒计时；
         // 校准中/自适应中不补（防烧屏挂起，对准视图或进度行需保持点亮）
         if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
-            dimHandler.removeCallbacks(dimRunnable)
-            dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+            scheduleIdleDim()
         }
     }
 

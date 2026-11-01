@@ -57,6 +57,7 @@ import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ar.FaceRenderer
 import com.exarry.arvtubelink.mapping.MapperOverrides
 import com.exarry.arvtubelink.network.VtsDiscoveryClient
+import com.exarry.arvtubelink.network.VtsState
 import com.exarry.arvtubelink.ui.theme.ARVTubeLinkTheme
 import com.exarry.arvtubelink.ui.theme.LocalThemeIsDark
 import kotlinx.coroutines.delay
@@ -106,7 +107,15 @@ private const val DISCOVERY_STATUS_CLEAR_MS = 4_000L
 fun AppRoot(
     arStatus: State<String>,
     vtsStatus: State<String>,
+    /** 当前 VTS 状态枚举（推流卡底部警示行的显示条件真源）。 */
+    vtsState: State<VtsState>,
+    /** 上一条 VTS 文案是否为错误串（VtsState 无 Error 子类型，见 MainActivity.vtsErrorState）。 */
+    vtsError: State<Boolean>,
+    /** AR Engine 是否已确认可用（控制卡状态圆点用，由 MainActivity 从 checkAvailability 投影）。 */
+    arReady: State<Boolean>,
     tracking: State<Boolean>,
+    /** VTS 是否已认证连接（推流卡 chip 用，由 MainActivity 从 VtsState 投影）。 */
+    vtsConnected: State<Boolean>,
     surfaceFullscreen: State<Boolean>,
     calibrationActive: State<Boolean>,
     calibFacePresent: State<Boolean?>,
@@ -165,6 +174,8 @@ fun AppRoot(
     onManualOverridesChange: (MapperOverrides) -> Unit,
     /** 应用语言切换（MainActivity 写 prefs + AppCompatDelegate.setApplicationLocales）。 */
     onLanguageChange: (String) -> Unit,
+    /** 防烧屏开关切换（副作用在 MainActivity：写 prefs + 取消/重启空闲计时器）。 */
+    onBurnInMaskEnabledChange: (Boolean) -> Unit,
 ) {
     // ip/port 输入框状态：AppRoot 级 remember——Tab 互切不清空；Activity 重建随新组合
     // 以 defaultIp/defaultPort 重新初始化（MainActivity 已从 prefs 恢复上次输入）
@@ -191,6 +202,29 @@ fun AppRoot(
     // 红线②）。Activity 重建后状态回 Idle，ip/port 走 defaultIp/defaultPort 恢复路径。
     val discoveryState = remember { mutableStateOf<DiscoveryUiState>(DiscoveryUiState.Idle) }
     val discoveryScope = rememberCoroutineScope()
+
+    // 每秒从渲染器取一次真实送达帧数 → 30 点环形缓冲。
+    // 采样器挂本组件组合生命周期，Tab 切换不中断（曲线连续）；Activity 销毁自动 cancel。
+    val telemetry = rememberTelemetryState(renderer = renderer, tracking = tracking.value)
+
+    // 警示行只在"需要用户注意"的状态出现：等待授权、认证失败、重连、onError。
+    // 连接中/已连接/未连接三态 chip 已表达清楚，再说一句是噪音。
+    val vtsWarningVisible = vtsError.value || when (vtsState.value) {
+        VtsState.WaitingForTokenApproval,
+        VtsState.AuthenticationFailed,
+        is VtsState.Reconnecting -> true
+        else -> false
+    }
+    // AuthFailed 与 onError 是故障取 error 色；等待授权/重连是过程态，别渲染成故障
+    val vtsWarningIsError = vtsError.value ||
+        vtsState.value is VtsState.AuthenticationFailed
+
+    // 配置频率：设置页改动后需立刻反映到首页仪表盘量程/参考虚线。
+    // appPrefs 不是 Compose 可观察源，故以「当前 Tab 是否首页」为 key 重读——
+    // 用户改完设置切回首页即拿到最新值，避免为这一个数字引入全局事件总线。
+    val configuredHz = remember(tabIndex.value) {
+        settingsDeps.appPrefs.getInt(KEY_SEND_FREQUENCY_HZ, DEFAULT_SEND_FREQUENCY_HZ)
+    }
 
     // 触发自动发现：Searching/Scanning 中守卫防重入；命中先填 ip/port（上方 snapshotFlow
     // 链自动落盘，无需额外持久化代码）——API 开启 = 置 Toast 标记 + 复用既有 connectVts
@@ -224,7 +258,7 @@ fun AppRoot(
     }
 
     // 暂态自清与 Searching→Scanning 镜像：Found/Failed 显示 DISCOVERY_STATUS_CLEAR_MS 后
-    // 回 Idle（连接进展由 vtsStatus 行继续表达）；Searching 满 TCP_FALLBACK_DELAY_MS 转
+    // 回 Idle（连接进展此后由推流卡的 chip/警示行表达）；Searching 满 TCP_FALLBACK_DELAY_MS 转
     // Scanning（纯文案切换，延迟值引用客户端常量防两处漂移）。key 挂状态对象，状态一变
     // 即重启进入对应分支。
     LaunchedEffect(discoveryState.value) {
@@ -349,7 +383,7 @@ fun AppRoot(
                                 when (tabIndex.value) {
                                     TAB_HOME -> HomeContent(
                                         arStatus = arStatus.value,
-                                        vtsStatus = vtsStatus.value,
+                                        arReady = arReady.value,
                                         adaptationStatus = adaptationStatus?.value,
                                         tracking = tracking.value,
                                         showCalibrationGuide = showCalibrationGuide.value,
@@ -364,6 +398,12 @@ fun AppRoot(
                                         onClearToken = onClearToken,
                                         onStartCalibration = onStartCalibrationFromHome,
                                         onDismissCalibrationGuide = onDismissCalibrationGuide,
+                                        telemetry = telemetry,
+                                        configuredHz = configuredHz,
+                                        vtsConnected = vtsConnected.value,
+                                        vtsWarning = vtsStatus.value
+                                            .takeIf { vtsWarningVisible },
+                                        vtsWarningIsError = vtsWarningIsError,
                                     )
                                     TAB_SETTINGS -> SettingsContent(
                                         deps = settingsDeps,
@@ -401,6 +441,7 @@ fun AppRoot(
                                         onAdaptationToggle = onAdaptationToggle,
                                         onManualOverridesChange = onManualOverridesChange,
                                         onLanguageChange = onLanguageChange,
+                                        onBurnInMaskEnabledChange = onBurnInMaskEnabledChange,
                                     )
                                     TAB_LOG -> LogContent()
                                 }
