@@ -35,6 +35,36 @@
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         tools:node="remove" />
     <!--
+      移除 SYSTEM_ALERT_WINDOW（悬浮窗 / 后台弹窗权限，v1.2.9 真机反馈）。
+
+      这是华为 AR Engine 系产品线的已知注入：部分 arenginesdk / 华为应用市场分发的
+      变体会带上该权限（用于 SDK 内部弹窗）。本 App 源码零引用——全项目无
+      Settings.canDrawOverlays / TYPE_APPLICATION_OVERLAY / WindowManager.addView 的
+      悬浮窗用法，所有 UI 都在本进程 Activity 内。
+
+      本次核查结论（务必留档，避免以后重复排查）：
+        - com.huawei.hms:arenginesdk:4.0.0.5 的 AAR Manifest **实际只声明**了
+          CAMERA / INTERNET / ACCESS_NETWORK_STATE / WRITE_EXTERNAL_STORAGE /
+          READ_EXTERNAL_STORAGE 五条，**不含** SYSTEM_ALERT_WINDOW；
+        - 对 ~/.gradle/caches 下全部 125 个 AAR 的清单做全量扫描，命中数为 0；
+        - 历史各版本 release APK（aapt2 dump permissions）均不含该权限；
+        - git 全历史 -S 检索从未出现过该字符串。
+      也就是说：在当前依赖组合下它本就不会被合并进来。真机上看到的条目极可能来自
+      更早的安装包或华为侧预置。
+
+      既然如此为何仍写这条 remove？三点理由：
+        1) 防御性锁定——AR Engine 升级（如 4.0.0.x → 4.1/5.x）或换用华为应用市场
+           分发的 AAR 时，该权限可能被重新注入，这条规则保证它进不了最终包；
+        2) 显式优于隐式——留一条带注释的声明，比"恰好没出现"更容易被后来者审计；
+        3) 成本为零——Merger 对不存在的节点做 remove 是 no-op，不产生警告、不影响构建。
+
+      SYSTEM_ALERT_WINDOW 属 signature|appop|installer 级权限，本就不在运行时权限列表
+      里，但它会在应用详情页的权限清单中显示为"悬浮窗"，是明显的观感与合规负担。
+    -->
+    <uses-permission
+        android:name="android.permission.SYSTEM_ALERT_WINDOW"
+        tools:node="remove" />
+    <!--
       ACCESS_NETWORK_STATE：同样由 arenginesdk 带入，本 App 保留。
 
       澄清一处易误判的点：本 App 的自动发现**并不**依赖它。
