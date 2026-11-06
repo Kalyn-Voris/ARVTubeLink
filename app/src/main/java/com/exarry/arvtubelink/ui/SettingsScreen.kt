@@ -70,128 +70,70 @@ import kotlinx.coroutines.launch
 import java.util.Locale
 import kotlin.math.roundToInt
 
-/** 应用级设置 prefs 的 Key（MainActivity 启动同步也引用）。 */
 internal const val KEY_ENABLE_DEBUG_LOGS = "enable_debug_logs"
 
-/** 1€ 滤波器开关的 SharedPreferences Key（默认开启）。 */
 internal const val KEY_ENABLE_ONE_EURO_FILTER = "enable_one_euro_filter"
 
-/**
- * 参数自适应开关的 SharedPreferences Key（默认开启）。
- */
 internal const val KEY_ENABLE_ADAPTATION = "enable_adaptation"
 
-// ---------- 手动映射范围（app_settings 扩展键） ----------
-// 手动值独立于 adaptation_prefs（探测结果专属，互不覆盖）；应用规则互斥：
-// probeOverridesActive（探测值生效中）时手动区禁用，OFF/Failed 时手动值应用。
-// 未设过的键不参与覆盖（MainActivity 侧 contains 判空 → MapperOverrides 对应字段 null）。
-
-/** MouthSmile 中性点（Float 0~1，默认 0.5；直接对应 MapperOverrides.mouthSmileNeutralBase）。 */
+// 手动值存独立 prefs，与自适应 overrides 互不覆盖；探测值生效中时手动区禁用
+/** Float 0~1，默认 0.5，对应 MapperOverrides.mouthSmileNeutralBase */
 internal const val KEY_MANUAL_MOUTHSMILE_NEUTRAL = "manual_mouthsmile_neutral"
 
-/** 眉毛灵敏度倍率（Float 0.5~2.0，默认 1.0；应用时换算 browDeviceMax = 1.0f / 倍率）。 */
+/** Float 0.5~2.0，默认 1.0；应用时 browDeviceMax = 1.0f / 倍率 */
 internal const val KEY_MANUAL_BROW_SENSITIVITY = "manual_brow_sensitivity"
 
-/** 说话灵敏度倍率（Float 0.5~2.0，默认 1.0；应用时换算 mouthOpenDeviceMax = 0.30f / 倍率）。 */
+/** Float 0.5~2.0，默认 1.0；应用时 mouthOpenDeviceMax = 0.30f / 倍率 */
 internal const val KEY_MANUAL_MOUTHOPEN_SENSITIVITY = "manual_mouthopen_sensitivity"
 
-/**
- * 脸部镜像开关的 SharedPreferences Key（Boolean，默认 false；存 app_settings，
- * 与 [KEY_ENABLE_ADAPTATION] 同级）。开启后 mapper 对所有出网参数做左右镜像
- * （见 BlendShapeMapper.applyFaceMirror），全局语义、不属于手动映射范围。
- *
- * 注：原「MouthX 方向翻转」的 `manual_mouthx_invert` 已随 UI 移除
- * （MapperOverrides.mouthXInvert 字段保留作底层兜底，当前无写入点）。
- */
+/** Boolean，默认 false；开启后 mapper 对所有出网参数左右镜像 */
 internal const val KEY_FACE_MIRROR = "face_mirror"
 
-/** 主题开关 Key：ON = 跟随系统（默认）/ OFF = 强制深色。 */
+/** ON = 跟随系统（默认），OFF = 强制深色 */
 internal const val KEY_THEME_FOLLOW_SYSTEM = "theme_follow_system"
 
-/** AMOLED 纯黑背景 Key（默认关闭；仅深色模式下生效，浅色下开启无视觉效果）。 */
+/** 默认关闭；仅深色模式下生效 */
 internal const val KEY_THEME_AMOLED_BLACK = "theme_amoled_black"
 
-/** VTS 地址记忆 Key：上次输入的 IP / 端口（MainActivity 启动恢复、AppRoot 输入回写）。 */
 internal const val KEY_VTS_IP = "vts_ip"
 internal const val KEY_VTS_PORT = "vts_port"
 
-/** 推流频率 Key：发给 VTS 的节流频率档位（Int，10/20/30/40/50/60 Hz）。 */
+/** Int，10/20/30/40/50/60 Hz */
 internal const val KEY_SEND_FREQUENCY_HZ = "send_frequency_hz"
 
-/** 推流频率默认档（与 FaceRenderer 初始节流间隔 1000/30ms 对齐）。 */
+/** 默认 30，与 FaceRenderer 初始节流间隔 1000/30ms 对齐 */
 internal const val DEFAULT_SEND_FREQUENCY_HZ = 30
 
-// ---------- UI 效果开关 ----------
-
-/**
- * 推流防烧屏开关 Key（Boolean，默认 true）。
- *
- * 控制 MainActivity 的 2s 空闲 -> 全屏纯黑遮罩逻辑（ui/BurnInMask.kt）。
- * 默认开启：OLED 长期推流是烧屏高发场景，默认保护优于默认关闭。
- */
+/** 控制 MainActivity 的 2s 空闲全屏纯黑遮罩（ui/BurnInMask.kt） */
 internal const val KEY_BURN_IN_MASK_ENABLED = "burn_in_mask_enabled"
 
-/** 防烧屏默认开启（见 [KEY_BURN_IN_MASK_ENABLED] 说明）。 */
 internal const val DEFAULT_BURN_IN_MASK_ENABLED = true
 
-// ---------- 应用语言（App 内切换，不走系统设置入口） ----------
-// 存的是 language tag 而非枚举序号：prefs 里的值直接就是 LocaleListCompat.forLanguageTags()
-// 的入参，读写两侧零转换。空串 = 跟随系统（清空 app locale，回落系统语言）。
-// 注：values/ 是中文默认资源，values-en/ 是英文；系统语言既非中文也非英文时，
-// 「跟随系统」按 Android 标准回退链落到中文默认资源，属预期行为。
-
-/** 应用语言 Key：值见 [LANGUAGE_SYSTEM] / [LANGUAGE_ZH] / [LANGUAGE_EN]。 */
+// 存 language tag，空串 = 跟随系统；values/ 为中文默认资源，values-en/ 为英文
+/** 值见 [LANGUAGE_SYSTEM] / [LANGUAGE_ZH] / [LANGUAGE_EN] */
 internal const val KEY_APP_LANGUAGE = "app_language"
 
-/** 「跟随系统」：写空串（= 清空 app 级 locale 覆盖）。 */
 internal const val LANGUAGE_SYSTEM = ""
 
-/** 简体中文。 */
 internal const val LANGUAGE_ZH = "zh"
 
-/** English。 */
 internal const val LANGUAGE_EN = "en"
 
-/** 关于卡在 LazyColumn 中的 item 索引（第 7 张卡；新增卡片需同步更新）。 */
+/** 关于卡在 LazyColumn 中的 item 索引（第 7 张卡） */
 private const val AboutCardIndex = 6
 
-/** 设置页依赖集（纯数据，5 项，由 MainActivity 构造并经 AppRoot 传入；原设置弹窗的 deps）。
- *  appPrefs 亦被 AppRoot 用于首页 VTS 地址记忆的输入回写（KEY_VTS_IP/KEY_VTS_PORT）。 */
+/** 由 MainActivity 构造，经 AppRoot 传入 */
 data class SettingsDeps(
     val mapper: BlendShapeMapper,
     val smoother: Smoother,
     val calibrationStorage: CalibrationStorage,
     val appPrefs: SharedPreferences,
-    /** 手动映射值独立 prefs（决策 2：adaptation_manual_prefs，与自适应 overrides 分离互不覆盖）。 */
+    /** 手动映射值独立 prefs（adaptation_manual_prefs） */
     val adaptationManualPrefs: SharedPreferences,
     val faceRenderer: FaceRenderer
 )
 
-/**
- * 设置页 Tab 内容：五张 [SettingsCard]——校准与灵敏度 / 推流 / 主题 / 开发者 / 关于。
- * 新增卡片 = 再写一个 SettingsCard 调用（item 顺序变化时同步 [AboutCardIndex]）。
- *
- * 状态策略：mapper 的系数/校准状态是 @Volatile 跨线程值，Compose
- * 快照系统无法感知其变化——Tab 每次进入组合用 remember 读一次 mapper/prefs 最新值进本地
- * state；UI 交互只改本地 state 并同时写透 mapper（GL 侧读到的系数恒等于 UI 显示值）；
- * Tab 切走即组合销毁，下次进入重读最新值。
- *
- * 主题开关：本地 remember 读 prefs，切换经
- * [onThemeFollowSystemChange] 上收 MainActivity（写 state + prefs 落盘）；语义 ON=跟随系统 /
- * OFF=强制深色；点击坐标（Switch 中心 root 坐标）先行经 [onThemeRevealOrigin] 上收 AppRoot
- * （AppRoot 本地 state 自持，MainActivity 零改动）。
- *
- * 滚到关于：顶栏 info（首页）跳设置页时 [aboutScrollSignal] 递增，LaunchedEffect
- * 检测后滚到 [AboutCardIndex] 并经 [onAboutScrollConsumed] 清零——防止之后手动切回误滚。
- *
- * 滚动位置：LazyListState 用 rememberSaveable + LazyListState.Saver——Tab 互切
- * 销毁组合时滚动位置保存/恢复，不再回顶。
- *
- * 持久化：灵敏度 onValueChangeFinished 落盘（Dispatchers.IO，不占主线程）；开关切换即时落盘。
- * Theme：色板由 AppRoot 外层 ARVTubeLinkTheme 统一提供（colors.xml 单一来源，深浅两套限定符）。
- * Toast 的 Context 用 [LocalContext]，不为 Toast 给 SettingsDeps 加 activity 字段。
- * 用户可见文字一律走 stringResource，不硬编码中文。
- */
+/** Tab 内容：进入组合时读一次 mapper/prefs 进本地 state，交互同时写透 mapper */
 @Composable
 fun SettingsContent(
     deps: SettingsDeps,
@@ -201,26 +143,19 @@ fun SettingsContent(
     onAmoledBlackChange: (Boolean) -> Unit,
     onThemeRevealOrigin: (Offset) -> Unit,
     onCalibrateRequested: () -> Unit,
-    /** 重置校准后通知 Activity：首页引导卡应重新出现（校准回到未完成态）。 */
     onCalibrationReset: () -> Unit,
-    /** 探测值生效中（开关 ON 且最近 Done/缓存命中）：手动映射区禁用，见 MainActivity 真源。 */
+    /** 探测值生效中（开关 ON 且最近 Done/缓存命中）时手动映射区禁用 */
     adaptationProbeActive: Boolean,
-    /** 自适应开关切换（副作用在 MainActivity：ON 复用触发链 / OFF 取消+应用手动值）。 */
     onAdaptationToggle: (Boolean) -> Unit,
-    /** 手动值写透（拖动中即时调用，成品 MapperOverrides；落盘在本页 onValueChangeFinished）。 */
     onManualOverridesChange: (MapperOverrides) -> Unit,
-    /** 语言切换（副作用在 MainActivity：写 prefs + AppCompatDelegate.setApplicationLocales）。 */
     onLanguageChange: (String) -> Unit,
-    /** 防烧屏开关切换（副作用在 MainActivity：写 prefs + 取消/重启空闲计时器）。 */
     onBurnInMaskEnabledChange: (Boolean) -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    // LazyListState 经 rememberSaveable + Saver 持久化：Tab 互切销毁组合时滚动位置保存/恢复，
-    // 不再回顶；主题切换在截图覆盖模式下组合本就保持，此处为双保险
+    // rememberSaveable + Saver：Tab 切走销毁组合后仍恢复滚动位置
     val listState = rememberSaveable(saver = LazyListState.Saver) { LazyListState() }
 
-    // 进入 Tab（组合）时读一次 mapper/prefs 最新值进本地 state（写透见各回调）
     var calibrated by remember { mutableStateOf(deps.mapper.calibrationData.isCalibrated) }
     var angleSensitivity by remember { mutableStateOf(deps.mapper.angleSensitivity) }
     var expressionSensitivity by remember { mutableStateOf(deps.mapper.expressionSensitivity) }
@@ -240,8 +175,6 @@ fun SettingsContent(
     var sendFrequencyHz by remember {
         mutableStateOf(deps.appPrefs.getInt(KEY_SEND_FREQUENCY_HZ, DEFAULT_SEND_FREQUENCY_HZ))
     }
-    // 参数自适应开关（appPrefs 真源）+ 手动映射范围 4 项本地值（进入 Tab 读一次独立 prefs，
-    // 拖动写透 onManualOverridesChange、松手 onValueChangeFinished 落盘——与灵敏度滑块类似）
     var adaptationEnabled by remember {
         mutableStateOf(deps.appPrefs.getBoolean(KEY_ENABLE_ADAPTATION, true))
     }
@@ -255,58 +188,29 @@ fun SettingsContent(
     var manualMouthOpenSensitivity by remember {
         mutableStateOf(deps.adaptationManualPrefs.getFloat(KEY_MANUAL_MOUTHOPEN_SENSITIVITY, MANUAL_SENSITIVITY_DEFAULT))
     }
-    // 脸部镜像（appPrefs 真源）：全局开关，不属手动映射范围、不受 probeActive 门控
     var faceMirrorEnabled by remember {
         mutableStateOf(deps.appPrefs.getBoolean(KEY_FACE_MIRROR, false))
     }
-    // 应用语言（appPrefs 真源，存 language tag；空串 = 跟随系统）
     var appLanguage by remember {
         mutableStateOf(deps.appPrefs.getString(KEY_APP_LANGUAGE, LANGUAGE_SYSTEM) ?: LANGUAGE_SYSTEM)
     }
-    // 语言选择弹窗可见性。
-    //
-    // 必须是 remember，**绝不能**改成 rememberSaveable：后者会把 true 存进 Bundle，
-    // Activity 重建时在新实例上恢复成 true，弹窗"自己跳回来"——正好是要修的 Bug。
-    // 但请注意：本值不是 Bug 根因（见下方 pendingLanguageTag 的注释），改成 remember
-    // 已经是现状，单靠它修不好真机现象。
+    // 必须用 remember：rememberSaveable 会把 true 存进 Bundle，Activity 重建后弹窗自动重开
     var languageDialogVisible by remember { mutableStateOf(false) }
 
-    // 开源许可全屏页：同样用 remember 而非 rememberSaveable——许可页是「看一眼就关」
-    // 的临时层，Activity 重建（主题/语言切换）后恢复到打开状态反而突兀。
+    // 同样用 remember，Activity 重建后不恢复打开态
     var ossDialogVisible by remember { mutableStateOf(false) }
 
-    // 待生效语言：把「应用 locale」从点击事件里摘出来，推迟到弹窗窗口真正移除之后再执行。
-    //
-    // 根因（真机复现：跟随系统 -> English，重建后弹窗仍在屏幕上）：
-    //  - AppCompat 的 setApplicationLocales 在 API < 33 上会**同步**调用
-    //    ActivityCompat.recreate()（见 AppCompatDelegateImpl.updateAppConfiguration）；
-    //  - Compose 的 AlertDialog 是一个独立 Window，它的移除走的是
-    //    「状态改 false -> 下一次组合 apply -> DisposableEffect.onDispose -> Dialog.dismiss()」
-    //    这条异步链；
-    //  - 同步 recreate() 抢在组合 apply 之前就把 Activity 拆掉，弹窗 Window 来不及 dismiss，
-    //    变成挂在旧 Activity 上的孤儿窗口——新 Activity 起来后它还在屏幕上。重建后
-    //    tabIndex 已复位到首页，所以看到的是「首页之上浮着一张语言弹窗」，与截图一致。
-    //
-    // 修法：选中时只做两件事——关弹窗、记下待生效语言；真正调用 onLanguageChange 交给
-    // 紧随其后的 LaunchedEffect。它的协程在组合 apply 之后才被调度，此刻 Dialog.dismiss()
-    // 已经把窗口摘掉了，recreate() 再怎么同步也不会漏掉弹窗。
+    // API < 33 的 setApplicationLocales 同步调用 recreate()，须等弹窗窗口移除后再应用
     var pendingLanguageTag by remember { mutableStateOf<String?>(null) }
 
-    // 待生效语言的落地时机：只有在弹窗确实已从组合中移除后才应用 locale。
     LaunchedEffect(pendingLanguageTag, languageDialogVisible) {
         val tag = pendingLanguageTag ?: return@LaunchedEffect
-        // 弹窗仍开着（正常流程不会，双保险）：等它关上，本轮先不重建
         if (languageDialogVisible) return@LaunchedEffect
         pendingLanguageTag = null
         onLanguageChange(tag)
     }
 
-    // 兜底：任何**不由本页发起**的重建也会把弹窗带走。
-    // 典型场景是用户开着语言弹窗去系统设置改系统语言——那条路径同样会因 locale 变化
-    // 重建 Activity，而我们没有任何机会像上面那样延后应用时机。ON_STOP 早于 onDestroy，
-    // 此刻组合仍在，改 false 能让 Dialog 走正常的 dismiss 路径，而不是随 Activity 一起
-    // 被丢弃在 WindowManager 里。代价是「弹窗开着时退到后台会关闭弹窗」——对设置页的
-    // 一次性选择框来说可以接受，换来的是绝不留孤儿窗口。
+    // ON_STOP 早于 onDestroy，此时改 false 让 Dialog 走正常 dismiss，不留孤儿窗口
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -319,17 +223,13 @@ fun SettingsContent(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
-    // ---------- UI 效果 ----------
-    // 推流防烧屏：真源在 MainActivity（它持有定时器），此处只做开关显示 + 回调上收
     var burnInMaskEnabled by remember {
         mutableStateOf(
             deps.appPrefs.getBoolean(KEY_BURN_IN_MASK_ENABLED, DEFAULT_BURN_IN_MASK_ENABLED)
         )
     }
 
-    // 手动值 → 成品 MapperOverrides（UI 侧换算：倍率 ÷ 进归一化分母，倍率越大越灵敏）。
-    // 换算基线与 BlendShapeMapper 私有常量人工对齐（BROW_DEVICE_MAX=1.0 /
-    // MouthOpen deviceMax=0.30），mapper 不放权故不引其常量——改动 mapper 默认值时此处同步。
+    // 倍率 ÷ 换算基线：brow 1.0 / mouthOpen 0.30，倍率越大分母越小越灵敏
     fun manualOverrides() = MapperOverrides(
         mouthSmileNeutralBase = manualMouthSmileNeutral,
         browDeviceMax = MANUAL_BROW_DEVICE_BASELINE / manualBrowSensitivity,
@@ -356,18 +256,12 @@ fun SettingsContent(
         }
     }
 
-    // 滚到关于：信号 >0 才滚（0 = 初始/已消费），滚完立即清零
     LaunchedEffect(aboutScrollSignal) {
         if (aboutScrollSignal > 0) {
             listState.animateScrollToItem(AboutCardIndex)
             onAboutScrollConsumed()
         }
     }
-
-    // 毛玻璃效果已移除（v1.2.9 回滚）：真机验证 Modifier.blur 对背景光晕的模糊收益不可见，
-    // 却要为每帧多一次 RenderLayer 合成；与其留一个"开了也看不出来"的开关，不如整段删掉。
-    // 设置页背景回归 Scaffold 默认底色，卡片靠 1dp outlineVariant 细边框区分层次（见
-    // SettingsCard KDoc），不再叠加任何氛围光晕/模糊层。
 
     LazyColumn(
         modifier = Modifier.fillMaxSize(),
@@ -393,17 +287,16 @@ fun SettingsContent(
                 )
                 Spacer(Modifier.height(8.dp))
                 Button(
-                    onClick = onCalibrateRequested, // Tab 版无弹窗可关，直接进全屏对准视图
+                    onClick = onCalibrateRequested,
                     modifier = Modifier.fillMaxWidth().height(PrimaryButtonHeight),
                 ) { Text(stringResource(R.string.action_calibrate)) }
                 Spacer(Modifier.height(ResetButtonSpacing))
                 Button(
                     onClick = {
-                        deps.mapper.updateCalibration(CalibrationData()) // 中性默认：恢复恒等映射
+                        deps.mapper.updateCalibration(CalibrationData())
                         deps.smoother.reset()
                         scope.launch { deps.calibrationStorage.reset() }
                         calibrated = deps.mapper.calibrationData.isCalibrated
-                        // 通知 Activity：校准已回到未完成态，首页引导卡应重新出现
                         onCalibrationReset()
                         Toast.makeText(
                             context,
@@ -451,14 +344,12 @@ fun SettingsContent(
                     value = sendFrequencyHz,
                     onValueChange = { hz ->
                         sendFrequencyHz = hz
-                        // 写透渲染器（下一帧立即按新频率节流）；落盘等拖动结束（onFinished）
                         deps.faceRenderer.setSendFrequencyHz(hz)
                     },
                     onFinished = {
                         deps.appPrefs.edit().putInt(KEY_SEND_FREQUENCY_HZ, sendFrequencyHz).apply()
                     },
                 )
-                // 频率滑块与 1€ 开关之间的分割线（色同首页 outlineVariant）
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
@@ -479,7 +370,6 @@ fun SettingsContent(
                         ).show()
                     },
                 )
-                // 参数自适应开关与手动映射区的分割线（色同卡内既有分割线）
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
@@ -497,8 +387,6 @@ fun SettingsContent(
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
                 )
-                // 脸部镜像：全局输出后处理（左右通道互换 + 水平分量取反），不属于手动映射
-                // 范围——不受 probeActive 禁用，与自适应开关同层
                 SwitchRow(
                     label = stringResource(R.string.face_mirror_label),
                     subtitle = stringResource(R.string.face_mirror_desc),
@@ -506,7 +394,6 @@ fun SettingsContent(
                     onCheckedChange = { checked ->
                         faceMirrorEnabled = checked
                         deps.appPrefs.edit().putBoolean(KEY_FACE_MIRROR, checked).apply()
-                        // 写透 mapper：GL 线程下一帧即生效（不 reset smoother，保留柔性过渡）
                         deps.mapper.faceMirrorEnabled = checked
                     },
                 )
@@ -538,8 +425,7 @@ fun SettingsContent(
                         manualMouthSmileNeutral = MANUAL_MOUTHSMILE_NEUTRAL_DEFAULT
                         manualBrowSensitivity = MANUAL_SENSITIVITY_DEFAULT
                         manualMouthOpenSensitivity = MANUAL_SENSITIVITY_DEFAULT
-                        // 决策 3：清手动 prefs + 重置滑块 UI，不动自适应 overrides（探测结果
-                        // 生效中按钮本就禁用，本回调只在手动模式可达）；应用全 null 覆盖 = 默认
+                        // 清手动 prefs 并重置滑块，不动自适应 overrides
                         deps.adaptationManualPrefs.edit()
                             .remove(KEY_MANUAL_MOUTHSMILE_NEUTRAL)
                             .remove(KEY_MANUAL_BROW_SENSITIVITY)
@@ -558,20 +444,16 @@ fun SettingsContent(
                     checked = themeFollowSystem,
                     onCheckedChange = { checked ->
                         themeFollowSystem = checked
-                        // state 更新 + prefs 落盘全在 MainActivity（回调上收）
                         onThemeFollowSystemChange(checked)
                     },
-                    // Reveal 圆心（Switch 中心 root 坐标）先行上收——SwitchRow 内部保证
-                    // origin 先于 onCheckedChange 调用，同一帧快照与 isDark 翻转一起送达
+                    // origin 先于 onCheckedChange 上收，同一帧快照送达 Reveal
                     onCheckedChangeWithOrigin = { _, origin -> onThemeRevealOrigin(origin) },
                 )
-                // 分割线（色同推流卡，outlineVariant）
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
                 )
-                // AMOLED 纯黑背景：普通 Switch（非主题深浅切换语义，不走 Reveal 过渡）；
-                // 浅色模式下开启无视觉效果，pref 照写，切回深色自动生效
+                // 不走 Reveal 过渡；浅色模式下 pref 照写，切回深色自动生效
                 SwitchRow(
                     label = stringResource(R.string.theme_amoled_black),
                     subtitle = stringResource(R.string.theme_amoled_black_desc),
@@ -584,19 +466,14 @@ fun SettingsContent(
             }
         }
 
-        // ---- UI 效果卡：主题卡下方，集中放视觉/显示相关开关 ----
-        // 毛玻璃开关已移除（v1.2.9 回滚，见函数内「毛玻璃效果已移除」注释）：
-        // CARD 保留，因为「推流防烧屏」仍需要一个归属，且未来显示类开关都放这里。
         item {
             SettingsCard(title = stringResource(R.string.settings_card_ui_effects)) {
-                // 推流防烧屏：控制 MainActivity 的 2s 空闲遮罩逻辑
                 SwitchRow(
                     label = stringResource(R.string.switch_burn_in_mask),
                     subtitle = stringResource(R.string.switch_burn_in_mask_desc),
                     checked = burnInMaskEnabled,
                     onCheckedChange = { checked ->
                         burnInMaskEnabled = checked
-                        // prefs 落盘 + 计时器取消/重启全在 MainActivity（回调上收）
                         onBurnInMaskEnabledChange(checked)
                     },
                 )
@@ -605,9 +482,7 @@ fun SettingsContent(
 
         item {
             SettingsCard(title = stringResource(R.string.settings_card_language)) {
-                // 当前语言显示名：语言名一律用「自称」（简体中文 / English），
-                // 与界面语言无关——否则英文界面下「简体中文」会显示成 Chinese，
-                // 用户反而找不到自己的母语。language_zh / language_en 已 translatable="false"。
+                // 语言名用各自的自称，不随界面语言变化
                 val currentLanguageLabel = when (appLanguage) {
                     LANGUAGE_ZH -> stringResource(R.string.language_zh)
                     LANGUAGE_EN -> stringResource(R.string.language_en)
@@ -629,8 +504,7 @@ fun SettingsContent(
                     onCheckedChange = { checked ->
                         debugLogsEnabled = checked
                         deps.appPrefs.edit().putBoolean(KEY_ENABLE_DEBUG_LOGS, checked).apply()
-                        // 日志级别闸门是 InAppLog 的进程级开关：WARN/INFO/DEBUG 全部
-                        // 受它控制（默认关闭 = 只留 ERROR）。各调用点无需再加守卫。
+                        // InAppLog 进程级闸门，WARN/INFO/DEBUG 全部受控
                         InAppLog.setDebugEnabled(checked)
                         Toast.makeText(
                             context,
@@ -656,8 +530,6 @@ fun SettingsContent(
                     style = MaterialTheme.typography.bodyMedium,
                     color = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.clickable {
-                        // 系统浏览器打开（占位 URL 打不开属预期）；无浏览器设备静默忽略（罕见，
-                        // 不为此引入新 toast 文案）
                         try {
                             context.startActivity(
                                 Intent(
@@ -673,9 +545,6 @@ fun SettingsContent(
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
                 )
-                // 开源依赖入口：放在关于卡**内部**而非另起一卡。
-                // 许可声明在语义上是「关于本应用」的一部分（谁写了它、它由什么构成），
-                // 单独成卡会让设置页多出一张只有一行的空卡片。
                 ClickableValueRow(
                     label = stringResource(R.string.settings_oss_label),
                     subtitle = stringResource(R.string.settings_oss_desc),
@@ -686,12 +555,6 @@ fun SettingsContent(
         }
     }
 
-    // 语言选择对话框：单选（跟随系统 / 简体中文 / English）。
-    //
-    // 选中后**不在这里**调用 onLanguageChange：先关窗、记下待生效语言，由上面的
-    // LaunchedEffect 在弹窗窗口真正移除后再触发 Activity 重建（根因与时机见
-    // pendingLanguageTag 的注释）。若在此同步调用，recreate() 会抢在 Dialog.dismiss()
-    // 之前发生，窗口变成孤儿残留到新 Activity 之上——正是真机那个 Bug。
     if (languageDialogVisible) {
         LanguageDialog(
             current = appLanguage,
@@ -706,8 +569,6 @@ fun SettingsContent(
         )
     }
 
-    // 开源许可全屏页：独立全屏 Dialog（usePlatformDefaultWidth = false），
-    // 内部自带两级页面与返回键处理，此处只负责显隐。
     if (ossDialogVisible) {
         com.exarry.arvtubelink.ui.licenses.OpenSourceLicensesDialog(
             onDismiss = { ossDialogVisible = false },
@@ -715,22 +576,14 @@ fun SettingsContent(
     }
 }
 
-/**
- * 语言选择对话框：三个单选（跟随系统 / 简体中文 / English），点选即生效并关闭。
- *
- * 用 AlertDialog + RadioButton 行而非 DropdownMenu：选项仅 3 个、且需要「当前选中」的
- * 明确指示（DropdownMenu 在窄屏上弹出位置不稳定，也没有选中态语义）。
- * 取消按钮留出「误触进入」的退路；点外部/返回键同样关闭（不选即不改）。
- */
+/** 三个单选：跟随系统 / 简体中文 / English */
 @Composable
 private fun LanguageDialog(
     current: String,
     onSelect: (String) -> Unit,
     onDismiss: () -> Unit,
 ) {
-    // 事件消费兜底：吞掉弹窗区域内全部指针事件。
-    // 不能只写 detectTapGestures {}——它等到抬手才消费，期间 DOWN 已可能被下层看到；
-    // 逐事件 consume() 才是真正的「立即吞掉」。
+    // 逐事件 consume() 才立即吞掉；detectTapGestures 要等抬手，期间 DOWN 会漏到下层
     val swallowPointer: Modifier = Modifier
         .fillMaxWidth()
         .pointerInput(Unit) {
@@ -781,7 +634,6 @@ private fun LanguageDialog(
     )
 }
 
-/** 对话框内的一行单选：RadioButton + 标签，整行可点（热区比只点圆点大得多）。 */
 @Composable
 private fun LanguageOptionRow(
     label: String,
@@ -801,12 +653,7 @@ private fun LanguageOptionRow(
     }
 }
 
-/**
- * 一行开关：文案（可选副标题 [subtitle]，小字 onSurfaceVariant）+ Switch（m3）。
- * [onCheckedChangeWithOrigin] 非空时（当前仅主题开关）：额外上收 Switch 中心点的 root 坐标
- * （主题过渡 Reveal 圆心），且 origin 先于 [onCheckedChange] 调用——两者在同一点击
- * 处理器内同步写 state，同帧快照送达 ThemeTransition（先 origin 后翻转，无竞态）。
- */
+/** 开关行；onCheckedChangeWithOrigin 上收 Switch 中心 root 坐标且先于 onCheckedChange */
 @Composable
 private fun SwitchRow(
     label: String,
@@ -858,18 +705,7 @@ private fun SwitchRow(
     }
 }
 
-/**
- * 一行灵敏度滑块：标签 + 数值 + [ARVSlider]。
- * 值域 [BlendShapeMapper.SENSITIVITY_MIN]..[BlendShapeMapper.SENSITIVITY_MAX]（0.10x ~ 3.00x），
- * 步进 0.01（steps=289：区间内含两端共 291 个离散值），与 ARVSlider 内部吸附网格一致
- * （(3.00-0.10)/290 = 0.01）。
- * onValueChange 先把两位小数吸附再写透 mapper（下一帧立即生效），onValueChangeFinished 整体落盘。
- *
- * v1.2.6：原 m3 `Slider` + 静态 thumb/track 槽换成自绘 [ARVSlider]。原实现拿不到
- * 「正在拖拽」这一层状态，无法实现粗细/尺寸随手指形变；新组件用 InteractionSource
- * 监听 DragInteraction.Start/Stop 驱动 4dp↔12dp、12dp↔20dp 的 150ms 过渡，
- * 并把触摸热区拉到 48dp（视觉轨道仍只有 4dp）。
- */
+/** 灵敏度滑块 0.10x~3.00x，步进 0.01（steps=289） */
 @Composable
 private fun SensitivitySlider(
     label: String,
@@ -888,8 +724,7 @@ private fun SensitivitySlider(
         ARVSlider(
             value = value,
             onValueChange = { raw ->
-                // 两位小数吸附：tick 值带 ~1e-7 浮点尾差（如 0.9999999f），吸附后才是
-                // 精确 0.01 网格值（1.00f），显示/写透/落盘三方一致；coerceIn 兜底
+                // tick 值带 ~1e-7 浮点尾差，先按 0.01 吸附再 coerceIn
                 onValueChange(
                     ((raw * 100).roundToInt() / 100f).coerceIn(
                         BlendShapeMapper.SENSITIVITY_MIN,
@@ -904,21 +739,15 @@ private fun SensitivitySlider(
     }
 }
 
-/** Slider 步进配置：(MAX-MIN)/0.01 = 290 段 → 含两端 291 个离散值 → steps = 291 - 2。 */
+/** 含两端 291 个离散值 → steps = 291 - 2 */
 private const val SENSITIVITY_STEPS = 289
 
-/** 推流频率滑块档位（Hz）：10..60 每 5Hz 一档共 11 档，steps = 10 段 - 2 = 9。 */
+/** 10..60 Hz 每 5Hz 一档共 11 档，steps = 10 段 - 2 */
 private const val FREQUENCY_MIN = 10f
 private const val FREQUENCY_MAX = 60f
 private const val FREQUENCY_STEPS = 9
 
-/**
- * 一行推流频率离散滑块：标签 + 数值 + 说明 + [ARVSlider]。结构与 [SensitivitySlider] 一致
- * （同一自绘组件、同一形变规格），差异仅两处：值显示为整数 Hz、多一行说明文本。
- * 档位 10/15/…/60 Hz 每 5Hz 一档共 11 档（steps=9：10..60 共 10 段）；onValueChange 吸附
- * 5Hz 网格（tick 值带浮点尾差，吸附后才是精确档位）并写透渲染器（下一帧生效），
- * onValueChangeFinished 落盘。
- */
+/** 推流频率滑块 10..60 Hz，吸附 5Hz 网格 */
 @Composable
 private fun FrequencySlider(
     label: String,
@@ -954,67 +783,37 @@ private fun FrequencySlider(
     }
 }
 
-/**
- * 校准卡片按钮主次常量（与首页同值，可独立调整）。
- */
-/** 「校准」按钮高（主操作，48dp 触控目标）。 */
 private val PrimaryButtonHeight = 48.dp
-/** 「重置校准」按钮高（危险操作矮一档，视觉主次）。 */
 private val SecondaryButtonHeight = 40.dp
 
-// ---------- 手动映射范围换算基线与滑块常量 ----------
-
-/** MouthSmile 中性点默认值（与 BlendShapeMapper.SYNTH_NEUTRAL_BASE 对齐，mapper 私有不引）。 */
+/** 默认 0.5，与 BlendShapeMapper.SYNTH_NEUTRAL_BASE 对齐 */
 internal const val MANUAL_MOUTHSMILE_NEUTRAL_DEFAULT = 0.5f
 
-/** 灵敏度倍率默认值（1.0 = 恒等，恢复默认用）。 */
 internal const val MANUAL_SENSITIVITY_DEFAULT = 1.0f
 
-/**
- * 眉毛灵敏度换算基线（与 BlendShapeMapper 私有常量 BROW_DEVICE_MAX=1.0 对齐）：
- * 应用时 browDeviceMax = 本值 / 倍率，倍率越大越灵敏（分母越小）。
- * mapper 不放权故不引其常量，改动 mapper 默认值时此处同步（漂移风险已记录 P2）。
- */
+/** 与 BlendShapeMapper 私有 BROW_DEVICE_MAX=1.0 对齐 */
 internal const val MANUAL_BROW_DEVICE_BASELINE = 1.0f
 
-/** 说话灵敏度换算基线（与 BlendShapeMapper 私有常量 MouthOpen deviceMax=0.30 对齐）。 */
+/** 与 BlendShapeMapper 私有 MouthOpen deviceMax=0.30 对齐 */
 internal const val MANUAL_MOUTHOPEN_DEVICE_BASELINE = 0.30f
 
-/** 灵敏度倍率滑块范围/步进：0.50x~2.00x 每 0.05 一档（30 段 31 值，steps=29）。 */
+/** 0.50x~2.00x 每 0.05 一档（31 值，steps=29） */
 private const val MANUAL_SENSITIVITY_MIN = 0.5f
 private const val MANUAL_SENSITIVITY_MAX = 2.0f
 private const val MANUAL_SENSITIVITY_STEPS = 29
 
-/**
- * 灵敏度倍率滑块的**显式吸附步长**（0.05 = (MAX-MIN)/30，与 [MANUAL_SENSITIVITY_STEPS] 自洽）。
- *
- * 为什么不用 `(end - start) / (steps + 2)` 反推：m3 Slider 的 `steps = n` 表示 n 个内部
- * 刻度、切成 n+1 段，反推公式分母多算 1 段，得到 1.5/31 ≈ 0.048387——1.00x 落在
- * 20.66 格上，永远吸附不到（真机「停不住 1.00x」的根因）。改用零锚定固定步长后，
- * 端点 0.5 / 2.0 与中点 1.0 都是步长整数倍，精准可达。
- */
+/** 显式吸附步长 0.05；从 steps 反推会多算一段，1.00x 吸附不到 */
 private const val MANUAL_SENSITIVITY_STEP = 0.05f
 
-/** MouthSmile 中性点滑块：0~1 每 0.01 一档（100 段 101 值，steps=99）。 */
+/** 0~1 每 0.01 一档（101 值，steps=99） */
 private const val MANUAL_NEUTRAL_MIN = 0f
 private const val MANUAL_NEUTRAL_MAX = 1f
 private const val MANUAL_NEUTRAL_STEPS = 99
 
-/** 中性点滑块的显式吸附步长（0.01 = (MAX-MIN)/100，与 [MANUAL_NEUTRAL_STEPS] 自洽）。 */
+/** 显式吸附步长 0.01 */
 private const val MANUAL_NEUTRAL_STEP = 0.01f
 
-/**
- * 「手动映射范围」折叠区：可点标题行（箭头随展开旋转）+ AnimatedVisibility 内容
- * （禁用提示行 + MouthSmile 中性点/眉毛灵敏度/说话灵敏度滑块 + 恢复默认按钮）。
- * 展开状态 rememberSaveable 存于调用处（Tab 切走销毁组合时保活）。
- *
- * 原「MouthX 方向翻转」开关已移除（改由推流卡的全局「脸部镜像」承担）；
- * MapperOverrides.mouthXInvert 字段仍保留作底层兜底，当前无 UI 写入点。
- *
- * 禁用规则：[probeActive] = 探测值生效中（自适应开关 ON 且最近 Done/缓存命中）——
- * 此时手动调整不进 mapper（拖动被忽略），整区半透明禁用并显示提示行；OFF/Failed 可用。
- * 写透时机：拖动中 onValueChange 即经各回调上收成品（立即生效），松手 [onFinished] 落盘。
- */
+/** 折叠区：中性点 / 眉毛灵敏度 / 说话灵敏度滑块；probeActive 时整区禁用 */
 @Composable
 private fun ManualMappingSection(
     expanded: Boolean,
@@ -1030,7 +829,6 @@ private fun ManualMappingSection(
     onRestoreDefaults: () -> Unit,
 ) {
     Column(modifier = Modifier.fillMaxWidth()) {
-        // 可点标题行：箭头 180° 旋转指示展开态（m3 无自带折叠组件，最小自绘）
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1044,7 +842,7 @@ private fun ManualMappingSection(
             )
             Icon(
                 imageVector = Icons.Filled.KeyboardArrowDown,
-                contentDescription = null, // 装饰性：展开态由旋转与内容显隐承担
+                contentDescription = null,
                 modifier = Modifier.rotate(if (expanded) 180f else 0f),
             )
         }
@@ -1102,17 +900,7 @@ private fun ManualMappingSection(
     }
 }
 
-/**
- * 一行通用范围滑块（手动映射区专用）：标签 + 数值 + [ARVSlider]。
- * 自绘组件统一了样式与交互动画（4dp↔12dp 轨道、12dp↔20dp thumb、48dp 热区），
- * 本函数只负责标签行与各滑块的吸附策略。
- *
- * 吸附：[step] 为**显式**吸附步长（由调用方按各滑块网格给定，见 [MANUAL_SENSITIVITY_STEP] /
- * [MANUAL_NEUTRAL_STEP]），零锚定 `(raw / step).roundToInt() * step`——与 [FrequencySlider]
- * 的 `(raw / 5).roundToInt() * 5` 类似写法。不再从 `steps` 反推步长：m3 的 `steps = n`
- * 是 n 个内部刻度切成 n+1 段，反推分母会多算一段，使 1.00x 这类非零整数倍锚点吸附不到。
- * 三个滑块的端点都是步长整数倍，故无需从 start 起算。
- */
+/** 标签 + 数值 + ARVSlider；零锚定吸附 (raw / step).roundToInt() * step */
 @Composable
 private fun ManualRangeSlider(
     label: String,
@@ -1136,7 +924,6 @@ private fun ManualRangeSlider(
         ARVSlider(
             value = value,
             onValueChange = { raw ->
-                // 零锚定吸附：端点与常用锚点（1.00x / 0.50）均为 step 整数倍，精准可达
                 onValueChange(
                     ((raw / step).roundToInt() * step)
                         .coerceIn(valueRange.start, valueRange.endInclusive)
@@ -1149,5 +936,4 @@ private fun ManualRangeSlider(
         )
     }
 }
-/** 校准→重置间距（卡片内独立节奏；首页按钮间为 20dp，此处 16dp，真机可调）。 */
 private val ResetButtonSpacing = 16.dp

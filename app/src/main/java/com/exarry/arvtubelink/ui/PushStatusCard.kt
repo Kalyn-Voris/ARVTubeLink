@@ -38,41 +38,20 @@ import com.exarry.arvtubelink.ui.theme.accentColor
 import kotlin.math.cos
 import kotlin.math.sin
 
-/** 仪表盘直径。 */
+/** 仪表盘直径 92dp */
 private val GaugeSize = 92.dp
 
-/** 折线图高度。 */
+/** 折线区高度 84dp */
 private val ChartHeight = 84.dp
 
-/** 卡片圆角（与设置卡统一 16dp）。 */
+/** 卡片圆角 16dp，与设置卡一致 */
 private val PushCardCorner = 16.dp
 
-/** 仪表盘弧的起始角与跨度（135° 起，270° 扫 = 经典左下开口）。 */
+/** 弧从 135° 起扫 270°，左下开口 */
 private const val GAUGE_START_ANGLE = 135f
 private const val GAUGE_SWEEP_ANGLE = 270f
 
-/**
- * 推流状态卡（v1.2.6）：圆形仪表盘（瞬时值）+ 实时折线（趋势）+ 两枚状态 chip。
- *
- * ## 为什么仪表盘和折线都做
- *
- * 仪表盘回答"现在多少"，折线回答"刚才稳不稳"——掉帧是瞬时事件，只靠数字很容易错过。
- * 两者共用一张卡、一次布局，比拆成两张卡省约 60dp 竖向空间（首页是纵向滚动，
- * 空间紧张）。
- *
- * ## 数据诚实性
- *
- * 仪表盘与折线读的都是 [FaceRenderer.readAndResetSentFrames] 的真实送达帧数
- * （见 [rememberTelemetry]），不是配置值、不是随机数。VTS 未连接时真实值为 0，
- * 仪表盘会明确显示 0 而不是假装在推流。
- *
- * @param telemetry 采样窗口快照
- * @param tracking 是否追踪中（false 时显示"未推流"而非 0Hz）
- * @param configuredHz 用户设定频率（画参考虚线 + 说明文字用）
- * @param vtsConnected VTS 是否已认证连接（底部 chip）
- * @param vtsWarning VTS 异常/等待态文案，null = 不显示；显示条件由调用方判定
- * @param vtsWarningIsError 错误级（认证失败/异常）取 colorScheme.error，过程态取次级文字色
- */
+/** 推流状态卡：瞬时值仪表盘 + 趋势折线 + 两枚状态 chip */
 @Composable
 internal fun PushStatusCard(
     telemetry: TelemetryState,
@@ -109,7 +88,6 @@ internal fun PushStatusCard(
             .padding(16.dp),
     ) {
         Column {
-            // ---- 标题行 ----
             Row(
                 modifier = Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
@@ -138,7 +116,6 @@ internal fun PushStatusCard(
             }
             Spacer(Modifier.height(12.dp))
 
-            // ---- 仪表盘 + 折线 ----
             Row(verticalAlignment = Alignment.CenterVertically) {
                 HzGauge(
                     value = telemetry.latest ?: 0f,
@@ -182,7 +159,6 @@ internal fun PushStatusCard(
             )
 
             Spacer(Modifier.height(12.dp))
-            // ---- 状态 chip ----
             Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
                 StatusChip(
                     label = stringResource(R.string.push_chip_ar),
@@ -202,7 +178,7 @@ internal fun PushStatusCard(
                 )
             }
 
-            // 警示是 chip 的注解（chip 只有二值，这里给具体原因），紧贴其下
+            // chip 只有二值，警示行补具体原因，紧贴 chip 之下
             vtsWarning?.let { warning ->
                 Spacer(Modifier.height(10.dp))
                 Text(
@@ -220,13 +196,7 @@ internal fun PushStatusCard(
     }
 }
 
-/**
- * 圆形仪表盘：底弧 + 进度弧 + 指针 + 中心数值。
- *
- * 单 Canvas 按 z 序画完所有层（不叠多个 Canvas/Box）——这是这类组件最省的画法。
- * 指针用一条 Round-cap [androidx.compose.ui.graphics.drawscope.DrawScope.drawLine]
- * 表达，不需要 Path。
- */
+/** 圆形仪表盘：底弧 + 进度弧 + 指针 + 中心数值，单 Canvas 按 z 序画完 */
 @Composable
 private fun HzGauge(
     value: Float,
@@ -239,7 +209,6 @@ private fun HzGauge(
     val fraction = (value / maxValue).coerceIn(0f, 1f)
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
-        // 绘制全部在 modifier 的 drawWithCache 里（尺寸变化时才重建）
         Box(
             modifier = Modifier.size(GaugeSize).drawWithCache {
                 val strokeWidth = size.minDimension / 15f
@@ -252,7 +221,6 @@ private fun HzGauge(
                 val hubRadius = 3.dp.toPx()
 
                 onDrawBehind {
-                    // 底弧（全轨道）
                     drawArc(
                         color = trackColor.copy(alpha = 0.55f),
                         startAngle = GAUGE_START_ANGLE,
@@ -262,7 +230,6 @@ private fun HzGauge(
                         size = arcSize,
                         style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
                     )
-                    // 进度弧（实测值）
                     if (fraction > 0f) {
                         drawArc(
                             brush = Brush.linearGradient(
@@ -276,7 +243,6 @@ private fun HzGauge(
                             style = Stroke(width = strokeWidth, cap = StrokeCap.Round),
                         )
                     }
-                    // 指针
                     val angleRad = Math.toRadians(
                         (GAUGE_START_ANGLE + GAUGE_SWEEP_ANGLE * fraction).toDouble()
                     )
@@ -290,12 +256,11 @@ private fun HzGauge(
                         strokeWidth = needleWidth,
                         cap = StrokeCap.Round,
                     )
-                    // 轴心
                     drawCircle(accent, hubRadius, center)
                 }
             },
         )
-        // 数值叠在 Canvas 中央偏下（指针在上方，避免遮挡）
+        // 数值下移 18dp 避开上方指针
         Column(horizontalAlignment = Alignment.CenterHorizontally) {
             Spacer(Modifier.height(18.dp))
             Text(
@@ -317,19 +282,7 @@ private fun HzGauge(
     }
 }
 
-/**
- * 极简实时折线：30 点，Path 复用 + 渐变面积 + 领先点。
- *
- * ## Path 复用（防 GC 抖动）
- *
- * `Path` 与填充 `Path` 都在 `drawWithCache` 的 build 块里创建一次，draw 相位只
- * `rewind()` 再重填——每秒重绘 60 次时避免每帧两个新 Path 对象。
- *
- * ## y 轴归一化
- *
- * 上界取 max(参考频率 × 1.25, 实测最大 × 1.1)，下界取 0：这样曲线始终有参考虚线
- * 可对照，且不会因为实测值偶尔超配而顶出画布。
- */
+/** 实时折线：30 点，y 上界 max(参考×1.25, 实测×1.1, 1) */
 @Composable
 private fun SparkLine(
     samples: FloatArray,
@@ -339,15 +292,14 @@ private fun SparkLine(
 ) {
     val gridColor = MaterialTheme.colorScheme.outlineVariant
 
-    // 绘制全部在 modifier 的 drawWithCache 里（尺寸变化时才重建），Box 本身无内容
     Box(
         modifier = modifier.drawWithCache {
+            // Path 在 build 块创建一次，draw 相位只 rewind 重填
             val linePath = Path()
             val fillPath = Path()
             val strokeWidth = 2.dp.toPx()
             val dash = PathEffect.dashPathEffect(floatArrayOf(4.dp.toPx(), 4.dp.toPx()))
             onDrawBehind {
-                // 无数据：画一条底轨，提示"还没开始"
                 if (samples.size < 2) {
                     drawLine(
                         color = gridColor.copy(alpha = 0.4f),
@@ -363,7 +315,6 @@ private fun SparkLine(
                 val upper = maxOf(referenceHz * 1.25f, maxObserved * 1.1f, 1f)
                 val stepX = size.width / (samples.size - 1).toFloat()
 
-                // ---- 折线 ----
                 linePath.rewind()
                 fillPath.rewind()
                 samples.forEachIndexed { i, v ->
@@ -378,7 +329,6 @@ private fun SparkLine(
                         fillPath.lineTo(x, y)
                     }
                 }
-                // 面积收口到底边
                 fillPath.lineTo(size.width, size.height)
                 fillPath.lineTo(0f, size.height)
                 fillPath.close()
@@ -390,7 +340,7 @@ private fun SparkLine(
                     ),
                 )
 
-                // ---- 参考虚线（配置频率）----
+                // 参考虚线取配置频率
                 val refY = size.height * (1f - (referenceHz / upper).coerceIn(0f, 1f))
                 drawLine(
                     color = gridColor.copy(alpha = 0.7f),
@@ -410,7 +360,7 @@ private fun SparkLine(
                     ),
                 )
 
-                // ---- 领先点：外圈光晕 + 内实心 ----
+                // 领先点：5dp 光晕 + 2.5dp 实心
                 val lastY = size.height *
                     (1f - (samples.last() / upper).coerceIn(0f, 1f))
                 val lastPoint = Offset(size.width, lastY)
@@ -421,7 +371,6 @@ private fun SparkLine(
     )
 }
 
-/** 状态 chip：小圆点 + 标签 + 值。 */
 @Composable
 private fun StatusChip(
     label: String,

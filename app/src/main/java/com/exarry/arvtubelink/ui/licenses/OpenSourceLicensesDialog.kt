@@ -58,60 +58,20 @@ import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.zIndex
 import com.exarry.arvtubelink.R
 
-/** 列表/详情切换的横向滑入时长，与 Material 的「进入下一层」节奏对齐。 */
 private const val NavAnimMs = 220
 
-/**
- * 开源许可全屏页（v1.3.x）。
- *
- * ## 结构
- * 单 [Dialog] + 两级内部状态（列表 ⇄ 详情），**不嵌套第二个 Dialog、不引入导航库**：
- *
- *  - 两级页面同处一个全屏 Dialog 内，用 `nullable OpenSourceLibrary` 表示层级：
- *    `null` = 列表页，非 null = 该库的详情页；
- *  - 用 [AnimatedVisibility] 做横向推入/推出，模拟二级页面的层级感；
- *  - Back 键行为由这一层统一接管：详情页时先退回列表，列表页时才关窗。
- *
- * 为什么不用 Navigation-Compose：为两个页面引入一个导航图 + 依赖，收益远低于成本；
- * 本项目全程是「单 Activity + 状态提升」，这个弹窗保持同样的思路。
- *
- * ## 为什么是 Dialog 而不是切 Tab / 新 Activity
- * 许可页是「短暂查阅」场景，看完即走。做成 Tab 会永久占用一个底部导航位；
- * 做成 Activity 则要新增 manifest 条目并处理主题/语言重建。全屏 Dialog 最轻。
- *
- * @param onDismiss 关闭回调（返回键 / 关闭按钮 / 点外部均触发）
- */
+/** 单 Dialog 内两级页面，null 库 = 列表页 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
-    // 两级页面的状态用两个变量表达，**刻意拆开**：
-    //  - [detailVisible] 控制「详情层是否可见」；
-    //  - [detailContent] 保存「详情层要显示哪个库」，**只在点击时写入**，收起时不清理。
-    //
-    // 为什么必须拆：AnimatedVisibility 的退出动画期间 visible 已变 false，但内容仍需
-    // 完整渲染完那 220ms。若只用一个 `OpenSourceLibrary?` 同时表达两件事，退出时它变
-    // null，内容立即塌成空白 → 滑出动画会变成「白板滑走」。
-    // 而如果用 `if (x != null) held = x` 之类的写法在**组合期**回填另一个 state，
-    // 又属于 Compose 明确不推荐的副作用。
-    // 拆成两个变量后，写入点全部在手势回调里（onSelect / 返回），组合期零副作用。
+    // 可见性与内容拆开：退出动画 220ms 内仍需渲染内容，拆开避免滑走白板
     var detailVisible by remember { mutableStateOf(false) }
     var detailContent by remember { mutableStateOf<OpenSourceLibrary?>(null) }
 
-    // 返回键分层接管：详情页时「返回」= 退回列表，列表页时才真正关窗。
-    //
-    // ⚠ 这里踩过两个坑，都已在下方修掉：
-    //  1. 原实现 `BackHandler(enabled = detailVisible)`：列表页时 enabled=false，
-    //     系统返回键于是落到 Dialog 自身的 cancel 逻辑 —— 直接关掉整个全屏窗，
-    //     而做不到「详情页返回只退一层」。现在改成**始终 enabled = true**，
-    //     由内部自行分流。
-    //  2. Dialog 的 `dismissOnBackPress` 默认 true，它会在 window 层先处理返回键
-    //     （触发 onDismissRequest），BackHandler 可能根本收不到。因此
-    //     `onDismissRequest` 也必须写同一套分流逻辑——两条路径谁先命中都正确，
-    //     且同一事件只可能走其中一条（被消费后不再下发）。
+    // 始终 enabled，由内部分流；Dialog 的 onDismissRequest 走同一套分流
     BackHandler(enabled = true) {
         if (detailVisible) {
-            // 只退一层：回到列表。**不清 detailContent**——AnimatedVisibility 的
-            // 退出动画还要用它渲染 220ms，清掉会滑出一块空白。
+            // 不清 detailContent，退出动画还要用它渲染
             detailVisible = false
         } else {
             onDismiss()
@@ -119,25 +79,21 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
     }
 
     Dialog(
-        // 返回键的第二条路径（见上方说明）：Dialog 可取消时，返回键在 window 层
-        // 被吃掉并回调到这里。必须与 BackHandler 分流逻辑保持一致。
+        // 返回键在 window 层先到 onDismissRequest，须与 BackHandler 同逻辑
         onDismissRequest = {
             if (detailVisible) detailVisible = false else onDismiss()
         },
-        // 全屏三件套：不用平台默认宽度（否则会留一圈 20dp 边距、内容被压窄），
-        // 也不画系统背景 → 由下方 Surface 铺满并填充安全区。
+        // usePlatformDefaultWidth=false 才不留平台默认边距
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
-            dismissOnClickOutside = false, // 全屏页没有「外部」可点，关掉避免误触
-            decorFitsSystemWindows = false, // 自己用 Scaffold 的 insets 处理，避免双重留白
+            dismissOnClickOutside = false,
+            decorFitsSystemWindows = false,
         ),
     ) {
         Scaffold(
             modifier = Modifier.fillMaxSize(),
             containerColor = MaterialTheme.colorScheme.background,
             topBar = {
-                // 详情页时标题换成库名，返回箭头从「关闭」变「退回列表」——
-                // 同一个按钮位承担两种语义，符合二级页面的通行约定
                 TopAppBar(
                     title = {
                         Text(
@@ -174,8 +130,7 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
                 )
             },
         ) { innerPadding ->
-            // 两级页面叠放：列表始终在组合树里（保留滚动位置），详情层覆盖其上。
-            // 用 AnimatedVisibility 而非 if：退出动画期间列表仍在，不会先闪白。
+            // 列表常驻组合树保留滚动位置，详情层用 AnimatedVisibility 覆盖其上
             Box(
                 modifier = Modifier
                     .padding(innerPadding)
@@ -183,18 +138,13 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
             ) {
                 LicenseList(
                     onSelect = { library ->
-                        // 写入点全部在事件回调里：先定内容，再置可见
+                        // 先定内容再置可见，写入点都在事件回调里
                         detailContent = library
                         detailVisible = true
                     }
                 )
 
-                // 详情层：content 只在点击时写入、收起时不清理，
-                // 因此退出动画播放全程都有完整内容可渲染（不会滑走一块白板）。
-                //
-                // ★ zIndex(1f)：列表在 z=0、详情在 z=1，保证详情画在列表**之上**。
-                //   同层 Box 默认按组合顺序绘制，这里显式抬高是为了让层级意图明确，
-                //   避免将来有人在下方再插一层内容时把详情压到列表底下。
+                // zIndex(1f) 确保详情画在列表之上
                 AnimatedVisibility(
                     visible = detailVisible,
                     enter = slideInHorizontally(
@@ -212,18 +162,7 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
     }
 }
 
-/**
- * 一级列表：分「核心平台 / 开源库」两段展示「库名 + 协议名」。
- *
- * 为什么是分区而非一个拉平列表：这两类条目性质不同——核心平台是专有 SDK 或仅接口
- * 互操作的第三方服务，开源库是真正随包分发的 Apache-2.0 代码。混排会让用户误以为
- * 华为 AR Engine 也是开源软件。分区顺序按 [licenseSections] 的声明顺序（核心平台在前），
- * 段内保持手写顺序，不再做字母序重排——「AndroidX → Kotlin → OkHttp → Gson」这种
- * 由底层到业务层的排列比字母序更有信息量。
- *
- * 行内信息取舍：不展示 version/url，只留库名与协议名两列——列表页的职责是
- * 「快速找到某个库」，详细信息都在详情页。多塞两列会让窄屏上的库名被迫截断。
- */
+/** 分级列表：核心平台 / 开源库两段，段内保持 licenseSections 手写顺序 */
 @Composable
 private fun LicenseList(onSelect: (OpenSourceLibrary) -> Unit) {
     val sections = remember { licenseSections }
@@ -241,8 +180,6 @@ private fun LicenseList(onSelect: (OpenSourceLibrary) -> Unit) {
             )
         }
         sections.forEach { section ->
-            // 分类标题：Material 3 的 titleSmall + 加粗 + onSurfaceVariant（略暗），
-            // 与内容行（bodyLarge / onSurface）形成明确层级，但不抢主标题。
             item(key = "section-${section.titleRes}") {
                 Text(
                     text = stringResource(section.titleRes),
@@ -276,7 +213,6 @@ private fun LicenseList(onSelect: (OpenSourceLibrary) -> Unit) {
     }
 }
 
-/** 列表单行：库名（主）/ 协议名（次），右侧箭头暗示可点。 */
 @Composable
 private fun LicenseRow(library: OpenSourceLibrary, onClick: () -> Unit) {
     Surface(
@@ -306,7 +242,7 @@ private fun LicenseRow(library: OpenSourceLibrary, onClick: () -> Unit) {
             Spacer(Modifier.width(8.dp))
             Icon(
                 imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                contentDescription = null, // 装饰性：整行可点，语义由 Surface(onClick) 承担
+                contentDescription = null,
                 tint = MaterialTheme.colorScheme.onSurfaceVariant,
                 modifier = Modifier.size(18.dp),
             )
@@ -314,22 +250,12 @@ private fun LicenseRow(library: OpenSourceLibrary, onClick: () -> Unit) {
     }
 }
 
-/**
- * 二级详情：协议头部信息（库名/版本/协议/来源）+ 全文。
- *
- * 全文用等宽字体 + 可滚动：许可文本是有缩进层级的法律条文，比例字体会让
- * 条款编号与缩进错位、极难扫读。
- */
+/** 详情页：头部信息 + 等宽字体的协议全文 */
 @Composable
 private fun LicenseDetail(library: OpenSourceLibrary) {
     val uriHandler = LocalUriHandler.current
 
-    // ★ 不透明底色：本页与列表页同处一个 Box 叠放，两者都在组合/绘制中。
-    //   根节点若只是个裸 Column（透明），列表的库名与这里的协议全文会直接叠印在
-    //   一起 —— 就是用户截图里那团糊字。Surface 的 color 会实际填充背景像素，
-    //   把下层彻底盖住；同时它自带 clip + 语义，比手写 background() 更稳。
-    //   注意用 `Modifier.fillMaxSize()` 让 Surface 铺满整个内容区：
-    //   如果只包住内容高度，滑入动画过程中右侧未覆盖区域仍会漏出列表文字。
+    // 必须不透明底色并 fillMaxSize，否则下层列表文字会叠印或从右侧漏出
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -340,7 +266,6 @@ private fun LicenseDetail(library: OpenSourceLibrary) {
                 .verticalScroll(rememberScrollState())
                 .padding(horizontal = 16.dp, vertical = 12.dp),
         ) {
-            // ---- 头部信息卡 ----
             Surface(
                 modifier = Modifier.fillMaxWidth(),
                 shape = RoundedCornerShape(12.dp),
@@ -367,10 +292,7 @@ private fun LicenseDetail(library: OpenSourceLibrary) {
                             onClick = { runCatching { uriHandler.openUri(library.url) } }
                         ) {
                             Icon(
-                                // OpenInNew 在 material-icons-extended 里，本工程只依赖 core 集
-                                // （见 libs.versions.toml 注释：「m3 1.4.0 不传递暴露 icons」）。
-                                // 为这一个图标引入整个 extended 包（约 1.5MB）不划算，
-                                // 用 core 里语义最接近的 Share（对外跳转）代替。
+                                // 本工程只依赖 material-icons-core，无 OpenInNew，用 Share 代替
                                 imageVector = Icons.Filled.Share,
                                 contentDescription = stringResource(R.string.oss_open_link),
                                 tint = MaterialTheme.colorScheme.primary,
@@ -393,7 +315,7 @@ private fun LicenseDetail(library: OpenSourceLibrary) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(Modifier.height(16.dp))
 
-            // ---- 协议全文 ----
+            // 等宽字体 + lineHeight 18sp，保持条款缩进对齐
             Text(
                 text = library.licenseText,
                 style = MaterialTheme.typography.bodySmall.copy(
@@ -407,7 +329,6 @@ private fun LicenseDetail(library: OpenSourceLibrary) {
     }
 }
 
-/** 详情页头部的一行「键：值」。 */
 @Composable
 private fun InfoLine(label: String, value: String) {
     Row(modifier = Modifier.fillMaxWidth().padding(vertical = 1.dp)) {

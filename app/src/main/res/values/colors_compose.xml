@@ -1,14 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!--
-      Compose 双前缀色板：Light/Dark 显式后缀，由 Theme.kt 的 arvColorScheme(dark) 按
-      isDark 二选一，不经资源限定符（values-night 只服务 XML 层窗口首帧）。取色规则：
-      - ColorScheme 槽内 → MaterialTheme.colorScheme.xxx；
-      - 槽外自定义（colorCardContainer）→ themedColorResource(Dark, Light)（Theme.kt）。
-      本文件禁止引用方使用单名条目；派生槽（onSecondary/tertiary 本体/surfaceDim 等）
-      的派生规则见 Theme.kt 注释。
-    -->
-    <!-- ===== 主色 ===== -->
+    <!-- Light/Dark 显式后缀，Theme.kt 按 isDark 二选一；values-night 只服务 XML 层 -->
     <color name="colorPrimaryLight">#245CB2</color>
     <color name="colorPrimaryDark">#B6C4FF</color>
     <color name="colorOnPrimaryLight">#FFFFFF</color>
@@ -18,7 +10,6 @@
     <color name="colorOnPrimaryContainerLight">#061B3C</color>
     <color name="colorOnPrimaryContainerDark">#DCE1FD</color>
 
-    <!-- ===== 次色系（onSecondary 板上未给，派生 = onPrimary 同值） ===== -->
     <color name="colorSecondaryLight">#555D7E</color>
     <color name="colorSecondaryDark">#BEC5EA</color>
     <color name="colorOnSecondaryLight">#FFFFFF</color>
@@ -32,7 +23,6 @@
     <color name="colorOnTertiaryContainerLight">#3A0427</color>
     <color name="colorOnTertiaryContainerDark">#FDD9EB</color>
 
-    <!-- ===== 背景 / 面层 ===== -->
     <color name="colorBackgroundLight">#F8F9FF</color>
     <color name="colorBackgroundDark">#121317</color>
     <color name="colorOnBackgroundLight">#1B1B1F</color>
@@ -56,11 +46,9 @@
     <color name="colorOutlineVariantLight">#C4C6D3</color>
     <color name="colorOutlineVariantDark">#444651</color>
 
-    <!-- ===== 设置页卡片容器（深=Container 档亮 2 档、浅=High 档暗 3 档） ===== -->
     <color name="colorCardContainerLight">#E7E8EE</color>
     <color name="colorCardContainerDark">#1F1F23</color>
 
-    <!-- ===== 错误 ===== -->
     <color name="colorErrorLight">#B3261E</color>
     <color name="colorErrorDark">#F2B8B5</color>
     <color name="colorOnErrorLight">#FFFFFF</color>
@@ -70,7 +58,6 @@
     <color name="colorOnErrorContainerLight">#410E0B</color>
     <color name="colorOnErrorContainerDark">#F9DEDC</color>
 
-    <!-- ===== 反色 ===== -->
     <color name="colorInverseSurfaceLight">#2F3034</color>
     <color name="colorInverseSurfaceDark">#E1E2E8</color>
     <color name="colorInverseOnSurfaceLight">#F0F0F6</color>

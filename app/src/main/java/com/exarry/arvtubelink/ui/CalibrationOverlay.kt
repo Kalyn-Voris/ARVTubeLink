@@ -18,19 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
 
-/**
- * 校准对准视图：全屏遮罩 + 底部面板（人脸状态 + 提示 + 确认/取消）。
- *
- * 纯 UI 组件，零业务逻辑：
- *  - [visible] 由 MainActivity 的 calibrationActive 状态驱动（enter/close 校验与
- *    faceRenderer.setCalibrationMode 的 @Volatile 写入都在 Activity 侧）；
- *  - [facePresent] 来自渲染器 onFacePresenceChanged 回调（已 post 到主线程写入 Compose state）：
- *    null = 尚未收到首帧回调（显示「正在检测人脸…」过渡文案）；
- *  - 确认/取消全部上收 MainActivity（快照捕获/持久化/收尾）。
- *
- * 主题：面板色取 colorScheme.background 半透明。GL 网格/十字仍由 GlSurfaceHost 的
- * GLSurfaceView 在其下渲染（GlSurfaceHost 带 zIndex(-1f)，面板在其上）。
- */
+/** 底部半透明面板叠在 GlSurfaceHost 的 GL 网格之上；facePresent 为 null 表示首帧回调尚未到达 */
 @Composable
 fun CalibrationOverlay(
     visible: Boolean,

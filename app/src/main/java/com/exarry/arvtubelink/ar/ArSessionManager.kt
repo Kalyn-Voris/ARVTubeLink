@@ -20,21 +20,15 @@ import com.huawei.hiar.exceptions.ARUnSupportedConfigurationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** 华为 AR Engine 可用状态。 */
 sealed class ArEngineState {
-    /** AR Engine 服务已就绪，可创建会话。 */
     data object Available : ArEngineState()
 
-    /** 设备支持但服务未安装/过旧，需到华为应用市场安装或更新。 */
     data object NotInstalled : ArEngineState()
 
-    /** 设备不支持 AR Engine（非华为机型/EMUI 能力不足/检测失败）。 */
     data object Unsupported : ArEngineState()
 }
 
-/**
- * AR 引擎层：可用性检测、人脸追踪会话生命周期管理。不做相机渲染。
- */
+/** 人脸追踪会话生命周期管理，不做相机渲染 */
 class ArSessionManager(private val context: Context) {
 
     var state: ArEngineState = ArEngineState.NotInstalled
@@ -42,7 +36,7 @@ class ArSessionManager(private val context: Context) {
 
     private var session: ARSession? = null
 
-    /** 异步检测 AR Engine 服务是否已安装/可用。 */
+    /** 在 Default 调度器检测，UNKNOWN_* 一律按 Unsupported */
     @Suppress("DEPRECATION") // checkAvailability/ARAvailability 已过时，但仍是唯一能区分三态的 API
     suspend fun checkAvailability(): ArEngineState = withContext(Dispatchers.Default) {
         val result = if (AREnginesApk.isAREngineApkReady(context)) {
@@ -51,7 +45,6 @@ class ArSessionManager(private val context: Context) {
             when (AREnginesApk.checkAvailability(context)) {
                 ARAvailability.SUPPORTED_NOT_INSTALLED,
                 ARAvailability.SUPPORTED_APK_TOO_OLD -> ArEngineState.NotInstalled
-                // UNSUPPORTED_* 及 UNKNOWN_*（检测中/超时/错误）：按不支持降级
                 else -> ArEngineState.Unsupported
             }
         }
@@ -59,12 +52,11 @@ class ArSessionManager(private val context: Context) {
         result
     }
 
-    /** 相机权限是否已授予（AR Engine 人脸追踪必需）。 */
     fun hasCameraPermission(): Boolean =
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
-    /** 创建人脸追踪会话（前置摄像头，开启 BlendShape 表情系数输出）。 */
+    /** 已存在会话时直接返回；配置为前置摄像头 + BlendShape */
     fun createArSession(): ARSession? {
         if (!hasCameraPermission()) {
             InAppLog.w(TAG, "camera permission not granted")
@@ -77,7 +69,6 @@ class ArSessionManager(private val context: Context) {
         return try {
             val newSession = ARSession(context)
             val config = ARFaceTrackingConfig(newSession).apply {
-                // 按位或组合：默认人脸检测 + 表情系数（BlendShapes）
                 setFaceDetectMode(
                     ARConfigBase.FaceDetectMode.FACE_ENABLE_DEFAULT.enumValue or
                         ARConfigBase.FaceDetectMode.FACE_ENABLE_BLEND_SHAPE.enumValue
@@ -115,7 +106,7 @@ class ArSessionManager(private val context: Context) {
         }
     }
 
-    /** 恢复会话（须在 GLSurfaceView 渲染启动前调用）。 */
+    /** 须在 GLSurfaceView 渲染启动前调用 */
     fun resumeSession(): Boolean = try {
         session?.resume()
         session != null
@@ -128,7 +119,7 @@ class ArSessionManager(private val context: Context) {
         false
     }
 
-    /** 暂停会话（须先 glSurfaceView.onPause() 停掉渲染线程）。 */
+    /** 须先 glSurfaceView.onPause() 停渲染线程 */
     fun pauseSession() {
         try {
             session?.pause()
@@ -137,7 +128,6 @@ class ArSessionManager(private val context: Context) {
         }
     }
 
-    /** 彻底停止并释放会话，之后需重新 createArSession()。 */
     fun releaseSession() {
         try {
             session?.stop()
@@ -149,7 +139,6 @@ class ArSessionManager(private val context: Context) {
 
     fun getSession(): ARSession? = session
 
-    /** 渲染 surface 尺寸变化时同步显示几何。 */
     fun setDisplayGeometry(rotation: Int, width: Int, height: Int) {
         try {
             session?.setDisplayGeometry(rotation, width, height)

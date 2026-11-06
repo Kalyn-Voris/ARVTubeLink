@@ -18,7 +18,6 @@ dependencyResolutionManagement {
     repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
         google()
-        // 华为 AR Engine SDK 仓库（https://developer.huawei.com/repo/）
         maven {
             url = uri("https://developer.huawei.com/repo/")
         }

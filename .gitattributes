@@ -1,3 +1,2 @@
-# GitHub Linguist 语言统计配置
-# tools/ 下是开发期一次性 Python 探针/校验脚本（VTS 参数探测、校准扫描等），不是 App 的组成部分。标记为 vendored 不把它们计入语言占比
+# tools/ 为开发期探针脚本，不计入语言统计
 tools/** linguist-vendored

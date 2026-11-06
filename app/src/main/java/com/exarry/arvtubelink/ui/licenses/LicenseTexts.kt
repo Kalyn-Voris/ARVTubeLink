@@ -1,31 +1,9 @@
 package com.exarry.arvtubelink.ui.licenses
 
-/**
- * 开源许可全文常量集合。
- *
- * ## 为什么把全文硬编码进代码而不是读 APK 里的 META-INF
- * 本工程 release 构建在 `packaging.resources.excludes` 里剔除了
- * `META-INF/**/LICENSE.txt`（5 份重复文本 ≈ 50 KB，见 app/build.gradle.kts）。
- * 既然运行时已经拿不到那些文件，就把**真正需要展示的**几种协议原文内嵌为常量：
- * 体积由 R8 决定（这些字符串是 `licenses` 列表的强引用，不会被裁），
- * 换来的是「许可页永远可用、不依赖 APK 内资源布局」这个确定性。
- *
- * ## 为什么 Apache 2.0 只写一份
- * 本项目 8 个依赖里有 6 个用 Apache-2.0。为每个库复制一遍全文会让代码多出几万字符、
- * APK 多出几十 KB，且一旦要修订就得改 N 处。[OpenSourceLibrary.licenseText] 的
- * 设计就是「指向共享常量」，列表里各库复用同一个 String 实例。
- *
- * ## 关于全文的准确性与完整性
- * 下面收录的是 Apache License 2.0 的**完整正文**（含 1-9 条与附录）。个别段落的
- * 折行/缩进按展示可读性做过整理，条文本身未删改。若法务要求按字节一致，
- * 请以 https://www.apache.org/licenses/LICENSE-2.0.txt 为准替换本常量。
- */
+/** release 构建剔除了 META-INF 下的 LICENSE.txt，全文以常量内嵌；多库共用同一 String 实例 */
 object LicenseTexts {
 
-    /**
-     * Apache License, Version 2.0 全文。
-     * 适用于：OkHttp、Okio、Gson、Kotlin Coroutines、Jetpack Compose / AndroidX。
-     */
+    /** Apache-2.0 全文，供 OkHttp / Okio / Gson / Coroutines / Compose 复用 */
     const val APACHE_2_0: String = """
                                  Apache License
                            Version 2.0, January 2004
@@ -230,14 +208,7 @@ object LicenseTexts {
    limitations under the License.
 """
 
-    /**
-     * 华为 AR Engine SDK 的专有许可说明。
-     *
-     * 注意：华为 AR Engine **不是**开源项目，没有可展示的开源协议原文。这里放的是一段
-     * 明确说明其**专有性质**与使用约束的文本，避免用户误以为它是 Apache/MIT 之类的
-     * 自由许可。真正的约束条款在华为开发者联盟的《HUAWEI AR Engine 服务协议》中，
-     * 本文件不复制其原文（那属于商业合同文本，且会随华为版本更新而变化）。
-     */
+    /** 华为 AR Engine 为专有 SDK，此处只放性质说明，不复制商业协议原文 */
     const val HUAWEI_PROPRIETARY: String = """
                         HUAWEI AR Engine SDK
 
@@ -274,13 +245,7 @@ object LicenseTexts {
     affiliated with, endorsed by, or sponsored by Huawei Technologies Co., Ltd.
 """
 
-    /**
-     * VTube Studio 的商标/接口说明。
-     *
-     * ARVTubeLink 不链接、不分发 VTube Studio 的任何代码——它只是通过 VTube Studio
-     * 公开的 WebSocket API 与之通信。这类「仅通过公开网络协议互操作」的集成不构成
-     * 对上游代码的衍生，故本条目只做事实陈述，不附许可全文。
-     */
+    /** 仅经公开 WebSocket API 互操作，不链接也不分发 VTube Studio 代码 */
     const val VTUBE_STUDIO_INTEROP: String = """
                             VTube Studio
 
