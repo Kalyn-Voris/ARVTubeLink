@@ -148,7 +148,20 @@ class MainActivity : AppCompatActivity() {
     // 自动发现客户端（v1.2.5）：只做 UDP 广播监听 + TCP 端口兜底探测，不持连接状态；
     // 命中后由 UI 层复用 connectVts 走既有链路。lazy 同 vtsClient（构造期 base context
     // 未 attach，getSystemService 需等 onCreate 之后）
-    private val discoveryClient by lazy { VtsDiscoveryClient(this) }
+    //
+    // v1.2.6 缓存优先直连：注入 appPrefs 里的上次地址（KEY_VTS_IP/KEY_VTS_PORT 由 AppRoot
+    // 每次输入变化落盘）。注意 provider 是惰性求值——discover() 时才知道缓存，
+    // 所以这里拿到的必定是「用户最后一次确认过的地址」，不会因 lazy 构造时序取到旧值。
+    private val discoveryClient by lazy {
+        VtsDiscoveryClient(
+            context = this,
+            cachedAddressProvider = {
+                val ip = appPrefs.getString(KEY_VTS_IP, null)
+                val port = appPrefs.getInt(KEY_VTS_PORT, 0)
+                if (ip.isNullOrBlank() || port == 0) null else ip to port
+            },
+        )
+    }
 
     // 自动发现连接标记：AppRoot 命中且 API 开启时经 onAutoConnectStarted 置 true；
     // onVtsStateChanged 到 Authenticated 消费弹 Toast，Disconnected 清除防陈旧标记
@@ -490,6 +503,7 @@ class MainActivity : AppCompatActivity() {
                 onConfirmCalibration = { onConfirmCalibration() },
                 onDismissCalibration = { closeCalibration() },
                 showCalibrationGuide = showCalibrationGuideState,
+                calibrationDone = calibrationDoneState,
                 onStartCalibrationFromHome = { startCalibrationFromHome() },
                 onDismissCalibrationGuide = { dismissCalibrationGuide() },
                 onCalibrationReset = {

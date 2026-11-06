@@ -74,8 +74,8 @@ android {
         applicationId = "com.exarry.arvtubelink"
         minSdk = 26
         targetSdk = 37
-        versionCode = 8
-        versionName = "1.2.5 (20261101)"
+        versionCode = 9
+        versionName = "1.2.6 (20261102)"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -140,18 +140,27 @@ android {
         targetCompatibility = JavaVersion.VERSION_11
     }
     buildFeatures {
-        viewBinding = true
+        // v1.2.6：全 Compose 项目，res/layout 为空目录、零 viewBinding 引用 → 关闭以省构建期代码生成
+        viewBinding = false
         compose = true
+    }
+
+    packaging {
+        resources {
+            // 剔除依赖库重复携带的第三方许可文本（5 份 LICENSE.txt ≈ 50 KB 纯重复）。
+            // 注意：这些文本仅在 APK 内，不属于本仓库的 LICENSE / NOTICE 合规声明。
+            excludes += "META-INF/**/LICENSE.txt"
+            // OkHttp 的 publicsuffixes.gz（≈41 KB）仅供 Cookie 域匹配使用；
+            // 本项目零 Cookie 处理（无 CookieJar、无 Set-Cookie 解析），属纯死重。
+            excludes += "okhttp3/internal/publicsuffix/publicsuffixes.gz"
+        }
     }
 }
 
 dependencies {
     implementation(libs.androidx.activity.ktx)
     implementation(libs.androidx.appcompat)
-    implementation(libs.androidx.constraintlayout)
     implementation(libs.androidx.core.ktx)
-    implementation(libs.androidx.navigation.fragment.ktx)
-    implementation(libs.androidx.navigation.ui.ktx)
     implementation(libs.material)
 
     // Compose（版本选型依据见 libs.versions.toml 注释；ui/material3 由 BOM 管理）

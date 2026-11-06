@@ -1,5 +1,11 @@
 package com.exarry.arvtubelink.ui
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -24,7 +30,6 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Clear
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Warning
 import androidx.compose.material3.AlertDialog
@@ -82,6 +87,12 @@ private val CardCornerRadius = 12.dp
 
 /** 圆点 7dp，比推流卡 chip 的 6dp 大一档：这里裸放没有底板衬托。 */
 private val StatusDotSize = 7.dp
+
+/**
+ * 首页卡片增删的过渡时长（ms）。与 OnboardingGuide 的 ONBOARDING_ANIM_MS 同值，
+ * 但两处各自 private 定义——它们分属不同文件的不同视觉语境，将来可独立调整。
+ */
+private const val ONBOARDING_ANIM_MS = 300
 
 /** 与 OutlinedTextField 最小高 56dp 等高，Row 居中对齐才不歪。 */
 private val AutoDiscoverButtonSize = 56.dp
@@ -155,11 +166,30 @@ fun HomeContent(
     configuredHz: Int,
     /** VTS 是否已认证连接（推流卡 chip 用）。 */
     vtsConnected: Boolean,
+    /**
+     * VTS 是否正处于握手过程（Connecting / WaitingForTokenApproval / Authenticating /
+     * Reconnecting 之一）。用于把新手引导钉在步骤 3，避免瞬时状态抖动引发卡片抽搐，
+     * 详见 [currentOnboardingStep] 的 vtsInFlight 参数说明。
+     */
+    vtsInFlight: Boolean = false,
     /** VTS 异常/等待态文案（null = 不显示；由 AppRoot 按 VtsState 条件求值后传入）。 */
     vtsWarning: String? = null,
     /** 该警示是否属于错误级（决定推流卡用 error 色还是次级文字色）。 */
     vtsWarningIsError: Boolean = false,
+    /** VTS 是否正等待用户授权（v1.2.6：决定是否弹出醒目授权高亮卡）。 */
+    vtsAwaitingApproval: Boolean = false,
+    /** 是否已完成零点校准（新手引导步骤 2 的完成标记）。 */
+    calibrated: Boolean = false,
 ) {
+    // 新手引导当前步骤：三步全部完成即 DONE，卡片自动收起。
+    // vtsInFlight：握手期一律钉在步骤 3（修复「点连接时卡片抽搐」，见 currentOnboardingStep）
+    val onboardingStep = currentOnboardingStep(
+        arReady = arReady,
+        calibrated = calibrated,
+        vtsConnected = vtsConnected,
+        vtsInFlight = vtsInFlight,
+    )
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -167,7 +197,37 @@ fun HomeContent(
             .padding(PagePadding),
         verticalArrangement = Arrangement.spacedBy(SectionSpacing),
     ) {
-        if (showCalibrationGuide) {
+        // 等待授权放在最顶部：这是首次连接最高频的卡点，必须第一眼看到。
+        //
+        // ★ v1.2.6 抽搐修复（第二处根因）：这里原来是裸 `if`。`WaitingForTokenApproval`
+        //   在点击「连接 VTS」后 1 次网络往返内就到，于是这张卡会在**一帧之内**凭空
+        //   插到步骤卡上方，把下面整列内容（含新手引导卡）向下顶掉一整张卡的高度。
+        //   紧跟着 token 看门狗重发、或用户点了允许让状态跳走，卡片又被瞬间抽走、
+        //   内容弹回原位——这一顶一弹正是用户描述的「弹出又缩回去抽搐一下」。
+        //   改用 AnimatedVisibility 展开/收起，高度变化在 300ms 内连续插值，
+        //   下面所有卡片的位移都变成平滑滑动而非瞬移。
+        AnimatedVisibility(
+            visible = vtsAwaitingApproval,
+            enter = expandVertically(animationSpec = tween(ONBOARDING_ANIM_MS)) +
+                fadeIn(animationSpec = tween(ONBOARDING_ANIM_MS)),
+            exit = shrinkVertically(animationSpec = tween(ONBOARDING_ANIM_MS)) +
+                fadeOut(animationSpec = tween(ONBOARDING_ANIM_MS)),
+        ) {
+            VtsApprovalCard()
+        }
+
+        OnboardingStepCard(
+            step = onboardingStep,
+            onCheckAr = onCheckAr,
+            onStartCalibration = onStartCalibration,
+            onAutoDiscover = onAutoDiscover,
+        )
+
+        // 首次校准引导卡与新手步骤卡在「步骤 2（校准）」时内容重叠，同时出现会变成
+        // 两张讲同一件事的卡。规则：步骤卡正停在 CALIBRATION 时由它独占（它还带
+        // 全局进度感），此时隐藏旧引导卡；其余步骤下旧卡照旧（它多做一件事：
+        // 支持「稍后」延后到下次启动，步骤卡无此语义）。
+        if (showCalibrationGuide && onboardingStep != OnboardingStep.CALIBRATION) {
             CalibrationGuideCard(
                 onStartCalibration = onStartCalibration,
                 onDismiss = onDismissCalibrationGuide,
@@ -462,14 +522,17 @@ private fun VtsConnectCard(
 }
 
 /**
- * 自动发现按钮：垂直排布，上方刷新图标、下方 "AUTO"。
+ * 局域网发现按钮：垂直排布，上方搜索图标、下方 "LAN"。
+ *
+ * 图标用 Search 而非 Refresh（v1.2.6）：语义是"在局域网里找 VTS"，不是"重新加载"；
+ * 文字同步由 "AUTO" 改为 "LAN"，与图标一起把"发现方式 = 局域网扫描"讲清楚。
  *
  * 56dp 高与左侧 [OutlinedTextField] 对齐。用 [Modifier.clickable] 而非 IconButton：
  * 后者自带圆形水波纹与固定图标槽位，装不下两行内容。
  *
  * 忙碌态用 18dp 转圈替换图标（同尺寸，文字不跳动），主反馈仍由 [DiscoveryRadarBand] 承担。
  *
- * "AUTO" 是缩写，故给整个 Column 挂 contentDescription 为完整功能名，供读屏使用。
+ * "LAN" 是缩写（局域网发现），故给整个 Column 挂 contentDescription 为完整功能名，供读屏使用。
  */
 @Composable
 private fun AutoDiscoverButton(
@@ -500,7 +563,7 @@ private fun AutoDiscoverButton(
                 )
             } else {
                 Icon(
-                    imageVector = Icons.Filled.Refresh,
+                    imageVector = Icons.Filled.Search,
                     contentDescription = null,
                     tint = MaterialTheme.colorScheme.primary,
                     modifier = Modifier.size(StatusIconSize),

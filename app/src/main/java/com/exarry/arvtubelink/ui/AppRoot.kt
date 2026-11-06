@@ -149,6 +149,8 @@ fun AppRoot(
     onDismissCalibration: () -> Unit,
     /** 首页首次校准引导卡是否显示（MainActivity 用校准状态 + 忽略标记求值）。 */
     showCalibrationGuide: State<Boolean>,
+    /** 是否已完成零点校准（v1.2.6 新手引导步骤 2 的完成标记，源于持久化校准数据）。 */
+    calibrationDone: State<Boolean>,
     /** 引导卡「开始校准」（未追踪时由 MainActivity 自动开追踪再拉起对准视图）。 */
     onStartCalibrationFromHome: () -> Unit,
     /** 引导卡「稍后」（落盘忽略标记，冷启动重现）。 */
@@ -218,6 +220,19 @@ fun AppRoot(
     // AuthFailed 与 onError 是故障取 error 色；等待授权/重连是过程态，别渲染成故障
     val vtsWarningIsError = vtsError.value ||
         vtsState.value is VtsState.AuthenticationFailed
+
+    // VTS 是否处于握手过程（v1.2.6 引导卡抽搐修复）：
+    // WaitingForTokenApproval 是「已连上、等用户在电脑端点允许」——用户视角这仍是
+    // 「点了连接、还没成功」的同一件事，必须算握手；Reconnecting 同理。
+    // 注意 AuthenticationFailed 不算：那是明确失败，卡片应停在步骤 3 供用户重试，
+    // 而 currentOnboardingStep 对非 DONE 的处理本就是「保留步骤 3」，无需特殊化。
+    val vtsInFlight = when (vtsState.value) {
+        VtsState.Connecting,
+        VtsState.WaitingForTokenApproval,
+        VtsState.Authenticating,
+        is VtsState.Reconnecting -> true
+        else -> false
+    }
 
     // 配置频率：设置页改动后需立刻反映到首页仪表盘量程/参考虚线。
     // appPrefs 不是 Compose 可观察源，故以「当前 Tab 是否首页」为 key 重读——
@@ -401,6 +416,10 @@ fun AppRoot(
                                         telemetry = telemetry,
                                         configuredHz = configuredHz,
                                         vtsConnected = vtsConnected.value,
+                                        vtsInFlight = vtsInFlight,
+                                        vtsAwaitingApproval = vtsState.value ==
+                                            VtsState.WaitingForTokenApproval,
+                                        calibrated = calibrationDone.value,
                                         vtsWarning = vtsStatus.value
                                             .takeIf { vtsWarningVisible },
                                         vtsWarningIsError = vtsWarningIsError,
