@@ -21,6 +21,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONObject
 
@@ -55,7 +56,15 @@ import org.json.JSONObject
  * 红线①：搜索逻辑唯一落点在本文件，不动 VtsWsClient / VtsProtocol——命中后由 UI 层
  * 复用既有 connectVts 链路建连。
  */
-class VtsDiscoveryClient(context: Context) {
+class VtsDiscoveryClient(
+    context: Context,
+    /**
+     * 上次成功连接的地址（ip to port）提供者，v1.2.6「缓存优先直连」用。
+     * 由调用方注入而非本类直接读 SharedPreferences：保持 network 层不依赖 ui 层常量，
+     * 也便于测试注入固定值。返回 null / 空串表示无缓存，直接走完整发现流程。
+     */
+    private val cachedAddressProvider: () -> Pair<String, Int>? = { null },
+) {
 
     /** 只持 applicationContext：防 Activity 泄漏（MulticastLock/WifiManager 由此取）。 */
     private val appContext: Context = context.applicationContext
@@ -80,8 +89,26 @@ class VtsDiscoveryClient(context: Context) {
     /**
      * 执行一次发现（挂起，可随时取消）。调用方约定：同一时间只应有一个在跑（UI 层
      * 状态守卫防重入）；重复调用各自独立，互不共享套接字。
+     *
+     * v1.2.6 增加「缓存优先直连」：优先用上次成功连接的地址做 300ms 快速试连，
+     * 命中则完全跳过 UDP 监听与 TCP 全网段扫描（热路径约 300ms 内出结果）。
      */
     suspend fun discover(): DiscoveryResult = coroutineScope {
+        // ① 缓存优先直连：绝大多数日常使用都是「同一台电脑、同一网段」，UDP 广播
+        //    与 TCP 全扫属于纯浪费。缓存地址不通（换了网络 / 电脑改 IP / 电脑关机）
+        //    才回落到完整发现流程。
+        //    withContext(IO) 不可省：probeTcp 是阻塞 Socket.connect，而 discover() 的
+        //    协程上下文继承自调用方（UI 层 rememberCoroutineScope → 主线程）。
+        //    直接在这里调用会把主线程阻塞最多 300ms。
+        cachedAddress()?.let { (ip, port) ->
+            val reachable = withContext(Dispatchers.IO) {
+                probeTcp(ip, port, CACHED_PROBE_TIMEOUT_MS)
+            }
+            if (reachable) {
+                return@coroutineScope DiscoveryResult.Found(ip, port, isApiActive = true)
+            }
+        }
+
         val localIp = pickPrivateIpv4()
             ?: return@coroutineScope DiscoveryResult.Failed(DiscoveryResult.Reason.NO_NETWORK)
         val subnetPrefix = subnetPrefixOf(localIp)
@@ -172,13 +199,7 @@ class VtsDiscoveryClient(context: Context) {
                     gate.withPermit {
                         if (hit.isCompleted) return@withPermit
                         val ip = "$subnetPrefix.$last"
-                        val reachable = runCatching {
-                            Socket().use { socket ->
-                                socket.connect(InetSocketAddress(ip, TCP_SCAN_PORT), TCP_CONNECT_TIMEOUT_MS)
-                            }
-                            true
-                        }.getOrDefault(false)
-                        if (reachable) {
+                        if (probeTcp(ip, TCP_SCAN_PORT, TCP_CONNECT_TIMEOUT_MS)) {
                             // complete 幂等（已完成返回 false）：多路并发命中时先到先得
                             hit.complete(DiscoveryResult.Found(ip, TCP_SCAN_PORT, isApiActive = true))
                         }
@@ -186,6 +207,31 @@ class VtsDiscoveryClient(context: Context) {
                 }
             }
         }
+    }
+
+    /**
+     * 单点 TCP 可达性探测（v1.2.6 抽出，缓存直连与网段扫描共用）。
+     * 阻塞调用，须在 IO 线程执行；任何异常一律视为不可达。
+     */
+    private fun probeTcp(ip: String, port: Int, timeoutMs: Int): Boolean = runCatching {
+        Socket().use { socket ->
+            socket.connect(InetSocketAddress(ip, port), timeoutMs)
+        }
+        true
+    }.getOrDefault(false)
+
+    /**
+     * 取缓存的上次连接地址。只接受合法 IPv4 与非空端口——
+     * 用户可能把输入框清空或写进非法值，此时按「无缓存」处理，不浪费一次 300ms 试连。
+     */
+    private fun cachedAddress(): Pair<String, Int>? {
+        val (rawIp, port) = runCatching { cachedAddressProvider() }.getOrNull() ?: return null
+        val ip = rawIp.trim()
+        if (ip.isEmpty() || port !in 1..65535) return null
+        // 仅接受 IPv4 字面量：域名/脏值交给后续正常流程，避免 DNS 解析拖慢 300ms 预算
+        val isIpv4 = ip.count { it == '.' } == 3 &&
+            ip.split('.').all { part -> part.toIntOrNull()?.let { it in 0..255 } == true }
+        return if (isIpv4) ip to port else null
     }
 
     /**
@@ -279,10 +325,13 @@ class VtsDiscoveryClient(context: Context) {
         private const val UDP_POLL_INTERVAL_MS = 500L
 
         /**
-         * TCP 兜底延迟：UDP 3s 无果才启动（UDP 首包期望 ≤2s，典型路径走不到兜底）。
+         * TCP 兜底延迟（v1.2.6 由 3s 提前到 1.5s）：UDP 1.5s 无果即启动兜底。
+         * 依据：VTS 广播周期 2s，1.5s 内无包说明大概率不在广播可达范围（或错过首个
+         * 周期），此时继续干等收益低于尽早并发扫描；UDP 路不取消，仍会并行收包，
+         * 谁先命中谁赢——所以提前不会损失 UDP 命中机会，只是让 TCP 更早参与竞速。
          * public：UI 层 Scanning 态镜像转移引用同值，防两处时序漂移。
          */
-        const val TCP_FALLBACK_DELAY_MS = 3_000L
+        const val TCP_FALLBACK_DELAY_MS = 1_500L
 
         /** UDP 端口被占（bind 失败）时 TCP 兜底提前量：UDP 路已死，无需再等。 */
         private const val TCP_EARLY_FALLBACK_DELAY_MS = 500L
@@ -293,8 +342,21 @@ class VtsDiscoveryClient(context: Context) {
         /** TCP 兜底扫描参数：VTS 默认 WS 端口 / 单点连接超时 / 并发协程数 / 网段末位上界。 */
         private const val TCP_SCAN_PORT = 8001
         private const val TCP_CONNECT_TIMEOUT_MS = 200
-        private const val TCP_SCAN_CONCURRENCY = 32
+
+        /**
+         * TCP 扫描并发数（v1.2.6 由 32 提升到 64）：/24 段 254 个目标、单点 200ms 超时，
+         * 32 并发最坏约 8 轮 ≈1.6s；64 并发约 4 轮 ≈0.8s。
+         * 上限考量：Wi-Fi 上 64 条并发 SYN 在消费级路由器可承受（远低于 254 全并发），
+         * 再高收益递减且可能触发路由器的连接抑制。
+         */
+        private const val TCP_SCAN_CONCURRENCY = 64
         private const val TCP_SCAN_LAST_HOST = 254
+
+        /**
+         * 缓存优先直连的超时（v1.2.6）：局域网内 RTT 通常 <10ms，
+         * 300ms 足够覆盖 Wi-Fi 省电模式唤醒等异常抖动；超时即判不通，回落完整发现。
+         */
+        private const val CACHED_PROBE_TIMEOUT_MS = 300
 
         /** UDP 收包缓冲上限（官方广播包体不足 300 字节，余量充足）。 */
         private const val MAX_PACKET_BYTES = 1024

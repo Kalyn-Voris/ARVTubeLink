@@ -22,7 +22,7 @@
     <string name="settings_stream_frequency_desc">Throttle rate for data sent to VTS</string>
 
     <!-- ===== Settings dialogs ===== -->
-    <string name="settings_calibration_intro">Calibration opens a full-screen alignment view. Align the mesh, then tap \"Confirm calibration\";\nthe pose and expression at that moment become the mapping zero point (sensitivity 0.10x ~ 3.00x)</string>
+    <string name="settings_calibration_intro">Calibration records your current expression and head pose as the neutral zero point. Without it, the model will have an initial offset. Takes about 10 seconds.</string>
     <string name="settings_calib_status_calibrated">Calibration: calibrated (the pose and expression at calibration time are the zero point)</string>
     <string name="settings_calib_status_uncalibrated">Calibration: not calibrated (raw values passed through, neutral default)</string>
     <string name="sensitivity_head">Head sensitivity (FaceAngle)</string>
@@ -48,8 +48,9 @@
 
     <!-- ===== Auto-discovery (network/VtsDiscoveryClient: UDP 47779 broadcast + TCP 8001 fallback) ===== -->
     <string name="action_auto_discover">Auto-discover VTS</string>
-    <!-- 10sp short label under the icon (vertical icon + text layout) -->
-    <string name="action_auto_discover_short">AUTO</string>
+    <!-- 10sp short label under the icon (vertical icon + text layout).
+         LAN makes it clearer that we look for VTS on the local network. -->
+    <string name="action_auto_discover_short">LAN</string>
     <string name="discovery_status_searching">Searching for VTS on the LAN…</string>
     <string name="discovery_status_scanning">No UDP broadcast received, scanning LAN ports…</string>
     <string name="discovery_status_found_connecting">VTS found at %1$s, connecting…</string>
@@ -103,6 +104,33 @@
     <string name="switch_burn_in_mask_desc">Dims after 2s of inactivity to protect OLED screens</string>
 
     <string name="about_app_intro">ARVTubeLink uses Huawei AR Engine to capture facial expressions and head pose, mapping them in real time into VTube Studio so your Live2D model follows your face.</string>
+
+    <!-- ===== Used projects / licenses (v1.3.x rework) =====
+         Entry lives inside the About card; the library list is in
+         ui/licenses/OpenSourceLibrary.kt. Library names (OkHttp, Gson, ...) stay
+         in English on purpose — that is their official upstream identifier.
+         The list has two sections: core platforms (proprietary / API-only
+         interop) first, then open source libraries. -->
+    <string name="settings_oss_label">Used Projects</string>
+    <string name="settings_oss_desc">ARVTubeLink relies on these projects</string>
+    <string name="oss_title">Licenses</string>
+    <string name="oss_section_core_platforms">Core Platforms</string>
+    <string name="oss_section_open_source">Open Source Libraries</string>
+    <string name="oss_intro">This app uses the following third-party projects. Tap any entry to read the full license text.</string>
+    <string name="oss_footer">All names are trademarks or registered trademarks of their respective owners. ARVTubeLink is not affiliated with these projects.</string>
+    <string name="oss_back">Back to list</string>
+    <string name="oss_close">Close</string>
+    <string name="oss_label_version">Version</string>
+    <string name="oss_label_license">License</string>
+    <string name="oss_open_link">Open in browser</string>
+
+    <!-- One line per library explaining why this app needs it -->
+    <string name="oss_lib_androidx">The UI foundation: AppCompat, Activity, Lifecycle and Compose UI / Material 3 build every screen in this app.</string>
+    <string name="oss_lib_gson">Serializes and parses the JSON messages exchanged with VTube Studio over WebSocket.</string>
+    <string name="oss_lib_arengine">Provides facial expression and head pose tracking. A proprietary SDK by Huawei — not open source.</string>
+    <string name="oss_lib_kotlin">The Kotlin runtime and coroutine scheduler: reconnect backoff, the parameter probing pipeline, and the UI-side suspend functions.</string>
+    <string name="oss_lib_okhttp">The WebSocket client used to talk to VTube Studio, plus its low-level I/O (Okio, bundled as an implementation dependency); it also handles reconnects and heartbeats.</string>
+    <string name="oss_lib_vtubestudio">Interoperated with through its public WebSocket API; no code from it is bundled.</string>
 
     <!-- ===== Language card ===== -->
     <string name="settings_card_language">Language</string>
@@ -187,4 +215,22 @@
     <string name="calib_guide_action_later">Later</string>
     <string name="calib_guide_dismiss_desc">Hide the calibration guide for now (it returns on the next launch)</string>
     <string name="calib_guide_starting">Starting tracking and entering calibration…</string>
+
+    <!-- ===== First-run onboarding steps (v1.2.6) ===== -->
+    <string name="onboard_title">Guide · 3 Steps to Complete</string>
+    <string name="onboard_step_ar_title">Step 1: Check the AR engine</string>
+    <string name="onboard_step_ar_body">This app relies on Huawei AR Engine for face tracking. Make sure your device supports it and the service is installed.</string>
+    <string name="onboard_step_calib_title">Step 2: Run zero-point calibration</string>
+    <string name="onboard_step_calib_body">Record neutral zero point for expressions and head pose to eliminate initial offsets.</string>
+    <string name="onboard_step_vts_title">Connect VTS</string>
+    <string name="onboard_step_vts_body">Ensure phone and PC are on the same Wi-Fi and VTS API is enabled. Tap \"LAN\" or enter the address manually.</string>
+    <string name="onboard_action_check_ar">Check AR engine</string>
+    <string name="onboard_action_calibrate">Start calibration</string>
+    <string name="onboard_action_discover">Auto-discover</string>
+    <string name="onboard_done_badge">Done</string>
+
+    <!-- Waiting for authorization: the most common first-connection blocker -->
+    <string name="vts_approval_title">VTS is waiting for authorization</string>
+    <string name="vts_approval_body">Go to the VTube Studio window on your PC and click “Allow”. Streaming cannot start until you approve.</string>
+    <string name="vts_approval_hint">Can’t find the dialog? Make sure VTS isn’t covered by another window, or retry the connection.</string>
 </resources>

@@ -6,7 +6,6 @@ import android.content.SharedPreferences
 import android.net.Uri
 import android.widget.Toast
 import androidx.compose.animation.AnimatedVisibility
-import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -23,17 +22,14 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.selection.selectable
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
-import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.RadioButton
-import androidx.compose.material3.Slider
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -48,12 +44,8 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.rotate
-import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -76,7 +68,6 @@ import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import java.util.Locale
-import kotlin.math.max
 import kotlin.math.roundToInt
 
 /** 应用级设置 prefs 的 Key（MainActivity 启动同步也引用）。 */
@@ -279,6 +270,10 @@ fun SettingsContent(
     // 但请注意：本值不是 Bug 根因（见下方 pendingLanguageTag 的注释），改成 remember
     // 已经是现状，单靠它修不好真机现象。
     var languageDialogVisible by remember { mutableStateOf(false) }
+
+    // 开源许可全屏页：同样用 remember 而非 rememberSaveable——许可页是「看一眼就关」
+    // 的临时层，Activity 重建（主题/语言切换）后恢复到打开状态反而突兀。
+    var ossDialogVisible by remember { mutableStateOf(false) }
 
     // 待生效语言：把「应用 locale」从点击事件里摘出来，推迟到弹窗窗口真正移除之后再执行。
     //
@@ -674,6 +669,19 @@ fun SettingsContent(
                         }
                     },
                 )
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 8.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant,
+                )
+                // 开源依赖入口：放在关于卡**内部**而非另起一卡。
+                // 许可声明在语义上是「关于本应用」的一部分（谁写了它、它由什么构成），
+                // 单独成卡会让设置页多出一张只有一行的空卡片。
+                ClickableValueRow(
+                    label = stringResource(R.string.settings_oss_label),
+                    subtitle = stringResource(R.string.settings_oss_desc),
+                    value = "",
+                    onClick = { ossDialogVisible = true },
+                )
             }
         }
     }
@@ -695,6 +703,14 @@ fun SettingsContent(
                 }
             },
             onDismiss = { languageDialogVisible = false },
+        )
+    }
+
+    // 开源许可全屏页：独立全屏 Dialog（usePlatformDefaultWidth = false），
+    // 内部自带两级页面与返回键处理，此处只负责显隐。
+    if (ossDialogVisible) {
+        com.exarry.arvtubelink.ui.licenses.OpenSourceLicensesDialog(
+            onDismiss = { ossDialogVisible = false },
         )
     }
 }
@@ -843,21 +859,17 @@ private fun SwitchRow(
 }
 
 /**
- * 一行灵敏度滑块：标签 + 数值 + Slider（m3 简单重载）。
+ * 一行灵敏度滑块：标签 + 数值 + [ARVSlider]。
  * 值域 [BlendShapeMapper.SENSITIVITY_MIN]..[BlendShapeMapper.SENSITIVITY_MAX]（0.10x ~ 3.00x），
- * 步进 0.01（m3 steps=289：区间内含两端共 291 个离散值）；
- * onValueChange 先做两位小数吸附再写透 mapper（下一帧立即生效），onValueChangeFinished 整体落盘。
+ * 步进 0.01（steps=289：区间内含两端共 291 个离散值），与 ARVSlider 内部吸附网格一致
+ * （(3.00-0.10)/290 = 0.01）。
+ * onValueChange 先把两位小数吸附再写透 mapper（下一帧立即生效），onValueChangeFinished 整体落盘。
  *
- * m3 1.4.0 实测（javap material3-android-1.4.0）：简单重载带 thumb/track 槽，且内部每次重组执行
- * state.value = value 回填——外部 value 即唯一真源，滑块位置恒跟随数值（受控语义）；
- * SliderState 重载在 onValueChange 非空时 state 不自写值，位置会冻结，故弃用。
- *
- * 样式（华为 InSetSlider 规格）：轨道 4dp 等高（active/inactive 无中缝）、两端完整
- * 圆角、无 stop indicator、无刻度点；inactive = outlineVariant（不用 surfaceVariant——
- * 浅色主题下与卡片 ContainerHigh 背景同色会隐形）；thumb 16dp 纯色圆无阴影。
- * fraction 手算自受控 value（0.01 吸附后的精确真源），与 thumb 位置同源派生、严格对齐。
+ * v1.2.6：原 m3 `Slider` + 静态 thumb/track 槽换成自绘 [ARVSlider]。原实现拿不到
+ * 「正在拖拽」这一层状态，无法实现粗细/尺寸随手指形变；新组件用 InteractionSource
+ * 监听 DragInteraction.Start/Stop 驱动 4dp↔12dp、12dp↔20dp 的 150ms 过渡，
+ * 并把触摸热区拉到 48dp（视觉轨道仍只有 4dp）。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun SensitivitySlider(
     label: String,
@@ -873,12 +885,7 @@ private fun SensitivitySlider(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        // fraction 手算：受控 value 是 0.01 吸附后的精确值（唯一真源），与 thumb 位置同源
-        // 派生、严格对齐，不依赖 m3 SliderState 内部属性
-        val fraction = ((value - BlendShapeMapper.SENSITIVITY_MIN) /
-            (BlendShapeMapper.SENSITIVITY_MAX - BlendShapeMapper.SENSITIVITY_MIN))
-            .coerceIn(0f, 1f)
-        Slider(
+        ARVSlider(
             value = value,
             onValueChange = { raw ->
                 // 两位小数吸附：tick 值带 ~1e-7 浮点尾差（如 0.9999999f），吸附后才是
@@ -893,63 +900,25 @@ private fun SensitivitySlider(
             onValueChangeFinished = onFinished,
             steps = SENSITIVITY_STEPS,
             valueRange = BlendShapeMapper.SENSITIVITY_MIN..BlendShapeMapper.SENSITIVITY_MAX,
-            thumb = {
-                Box(
-                    Modifier
-                        .size(InSetThumbSize)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary, CircleShape)
-                )
-            },
-            track = { _ ->
-                // 颜色在组合期读取（DrawScope 内不可读 MaterialTheme）
-                val activeColor = MaterialTheme.colorScheme.primary
-                val inactiveColor = MaterialTheme.colorScheme.outlineVariant
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(InSetTrackHeight)
-                        .drawBehind {
-                            val stroke = InSetTrackHeight.toPx()
-                            val corner = CornerRadius(stroke / 2f)
-                            // ① 整条 inactive 底轨（两端完整圆角，4dp 等高无中缝）
-                            drawRoundRect(color = inactiveColor, cornerRadius = corner)
-                            // ② active 段覆盖：最小宽度 = stroke，value=MIN 时呈圆头起步
-                            drawRoundRect(
-                                color = activeColor,
-                                size = Size(max(size.width * fraction, stroke), stroke),
-                                cornerRadius = corner,
-                            )
-                        },
-                )
-            },
         )
     }
 }
 
-/** Slider 步进配置：(MAX-MIN)/0.01 = 290 段 → 含两端 291 个离散值 → m3 steps = 291 - 2。 */
+/** Slider 步进配置：(MAX-MIN)/0.01 = 290 段 → 含两端 291 个离散值 → steps = 291 - 2。 */
 private const val SENSITIVITY_STEPS = 289
 
-/** 推流频率滑块档位（Hz）：10..60 每 5Hz 一档共 11 档，m3 steps = 10 段 - 2 = 9。 */
+/** 推流频率滑块档位（Hz）：10..60 每 5Hz 一档共 11 档，steps = 10 段 - 2 = 9。 */
 private const val FREQUENCY_MIN = 10f
 private const val FREQUENCY_MAX = 60f
 private const val FREQUENCY_STEPS = 9
 
-/** InSetSlider 规格（华为 UX）：轨道高 4dp（active/inactive 等高无缝）、thumb 16dp。 */
-private val InSetTrackHeight = 4.dp
-private val InSetThumbSize = 16.dp
-
 /**
- * 一行推流频率离散滑块：标签 + 数值 + 说明 + Slider。结构/样式对齐 [SensitivitySlider]
- * （m3 简单重载受控语义、InSetSlider 规格 thumb/track），差异仅两处：值显示为整数 Hz、
- * 多一行说明文本（需求要求，样式同 intro 的 bodySmall/onSurfaceVariant）。
+ * 一行推流频率离散滑块：标签 + 数值 + 说明 + [ARVSlider]。结构与 [SensitivitySlider] 一致
+ * （同一自绘组件、同一形变规格），差异仅两处：值显示为整数 Hz、多一行说明文本。
  * 档位 10/15/…/60 Hz 每 5Hz 一档共 11 档（steps=9：10..60 共 10 段）；onValueChange 吸附
  * 5Hz 网格（tick 值带浮点尾差，吸附后才是精确档位）并写透渲染器（下一帧生效），
  * onValueChangeFinished 落盘。
- * thumb/track 槽复制自 [SensitivitySlider] 而非抽公共组件：灵敏度滑块真机回归已过，
- * 只加不改，避免回归失效。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun FrequencySlider(
     label: String,
@@ -970,9 +939,7 @@ private fun FrequencySlider(
             style = MaterialTheme.typography.bodySmall,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // fraction 手算：受控 value 是 10Hz 吸附后的精确真源，与 thumb 位置同源派生
-        val fraction = ((value - FREQUENCY_MIN) / (FREQUENCY_MAX - FREQUENCY_MIN)).coerceIn(0f, 1f)
-        Slider(
+        ARVSlider(
             value = value.toFloat(),
             onValueChange = { raw ->
                 onValueChange(
@@ -983,36 +950,6 @@ private fun FrequencySlider(
             onValueChangeFinished = onFinished,
             steps = FREQUENCY_STEPS,
             valueRange = FREQUENCY_MIN..FREQUENCY_MAX,
-            thumb = {
-                Box(
-                    Modifier
-                        .size(InSetThumbSize)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary, CircleShape)
-                )
-            },
-            track = { _ ->
-                // 颜色在组合期读取（DrawScope 内不可读 MaterialTheme）
-                val activeColor = MaterialTheme.colorScheme.primary
-                val inactiveColor = MaterialTheme.colorScheme.outlineVariant
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(InSetTrackHeight)
-                        .drawBehind {
-                            val stroke = InSetTrackHeight.toPx()
-                            val corner = CornerRadius(stroke / 2f)
-                            // ① 整条 inactive 底轨（两端完整圆角，4dp 等高无中缝）
-                            drawRoundRect(color = inactiveColor, cornerRadius = corner)
-                            // ② active 段覆盖：最小宽度 = stroke，value=MIN 时呈圆头起步
-                            drawRoundRect(
-                                color = activeColor,
-                                size = Size(max(size.width * fraction, stroke), stroke),
-                                cornerRadius = corner,
-                            )
-                        },
-                )
-            },
         )
     }
 }
@@ -1166,10 +1103,9 @@ private fun ManualMappingSection(
 }
 
 /**
- * 一行通用范围滑块（手动映射区专用）：标签 + 数值 + Slider。结构与 InSetSlider 规格
- * （轨道 4dp 等高无缝、thumb 16dp）复制自 [SensitivitySlider]。后者的 fraction 死绑
- * SENSITIVITY_MIN/MAX 常量，无法参数化，故另建一个而非改它，避免动到已回归的路径。
- * m3 简单重载受控语义（外部 value 唯一真源）。
+ * 一行通用范围滑块（手动映射区专用）：标签 + 数值 + [ARVSlider]。
+ * 自绘组件统一了样式与交互动画（4dp↔12dp 轨道、12dp↔20dp thumb、48dp 热区），
+ * 本函数只负责标签行与各滑块的吸附策略。
  *
  * 吸附：[step] 为**显式**吸附步长（由调用方按各滑块网格给定，见 [MANUAL_SENSITIVITY_STEP] /
  * [MANUAL_NEUTRAL_STEP]），零锚定 `(raw / step).roundToInt() * step`——与 [FrequencySlider]
@@ -1177,7 +1113,6 @@ private fun ManualMappingSection(
  * 是 n 个内部刻度切成 n+1 段，反推分母会多算一段，使 1.00x 这类非零整数倍锚点吸附不到。
  * 三个滑块的端点都是步长整数倍，故无需从 start 起算。
  */
-@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ManualRangeSlider(
     label: String,
@@ -1198,9 +1133,7 @@ private fun ManualRangeSlider(
                 style = MaterialTheme.typography.bodySmall,
             )
         }
-        val fraction = ((value - valueRange.start) / (valueRange.endInclusive - valueRange.start))
-            .coerceIn(0f, 1f)
-        Slider(
+        ARVSlider(
             value = value,
             onValueChange = { raw ->
                 // 零锚定吸附：端点与常用锚点（1.00x / 0.50）均为 step 整数倍，精准可达
@@ -1213,34 +1146,6 @@ private fun ManualRangeSlider(
             enabled = enabled,
             steps = steps,
             valueRange = valueRange,
-            thumb = {
-                Box(
-                    Modifier
-                        .size(InSetThumbSize)
-                        .clip(CircleShape)
-                        .background(MaterialTheme.colorScheme.primary, CircleShape)
-                )
-            },
-            track = { _ ->
-                // 颜色在组合期读取（DrawScope 内不可读 MaterialTheme）
-                val activeColor = MaterialTheme.colorScheme.primary
-                val inactiveColor = MaterialTheme.colorScheme.outlineVariant
-                Box(
-                    Modifier
-                        .fillMaxWidth()
-                        .height(InSetTrackHeight)
-                        .drawBehind {
-                            val stroke = InSetTrackHeight.toPx()
-                            val corner = CornerRadius(stroke / 2f)
-                            drawRoundRect(color = inactiveColor, cornerRadius = corner)
-                            drawRoundRect(
-                                color = activeColor,
-                                size = Size(max(size.width * fraction, stroke), stroke),
-                                cornerRadius = corner,
-                            )
-                        },
-                )
-            },
         )
     }
 }
