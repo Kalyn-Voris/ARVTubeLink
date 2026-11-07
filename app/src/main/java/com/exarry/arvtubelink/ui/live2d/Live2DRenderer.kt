@@ -34,8 +34,21 @@ private const val TAG = "Live2D"
  */
 class Live2DRenderer(
     private val assetManager: AssetManager,
-    private val mocAssetPath: String = DEFAULT_MOC_PATH,
+    mocAssetPath: String = DEFAULT_MOC_PATH,
 ) : GLSurfaceView.Renderer {
+
+    /**
+     * 当前模型的 .moc3 路径。
+     *
+     * 两种形态：
+     *  - **assets 相对路径**（内置模型，如 `live2d_demo/model/sample/xxx.moc3`）；
+     *  - **本地绝对路径**（用户导入的模型，如 `/data/.../live2d_models/1730/xxx.moc3`）。
+     *
+     * 用是否以 `/` 开头区分，见 [loadModel]。
+     */
+    @Volatile
+    var mocAssetPath: String = mocAssetPath
+        private set
 
     /** 模型是否已成功加载（false 时 [onDrawFrame] 只清屏）。 */
     @Volatile
@@ -69,12 +82,7 @@ class Live2DRenderer(
         }
         initAttempted = true
 
-        val error = try {
-            nativeInit(assetManager, mocAssetPath)
-        } catch (t: Throwable) {
-            // UnsatisfiedLinkError / native 侧异常
-            "nativeInit 异常: ${t.javaClass.simpleName}: ${t.message}"
-        }
+        val error = loadNative(mocAssetPath)
 
         if (error == null) {
             modelReady = true
@@ -85,6 +93,59 @@ class Live2DRenderer(
             modelReady = false
             lastError = error
             InAppLog.e(TAG, "Purism Core 模型加载失败: $error")
+        }
+        return modelReady
+    }
+
+    /**
+     * 调用 native 加载模型（不改变任何状态，只返回错误串）。
+     *
+     * 路径形态决定入口：以 `/` 开头 = 本地绝对路径 → [nativeLoadModelFromPath]；
+     * 否则按 assets 相对路径 → [nativeInit]。
+     */
+    private fun loadNative(path: String): String? = try {
+        if (path.startsWith("/")) {
+            nativeLoadModelFromPath(path)
+        } else {
+            nativeInit(assetManager, path)
+        }
+    } catch (t: Throwable) {
+        "加载模型异常: ${t.javaClass.simpleName}: ${t.message}"
+    }
+
+    /**
+     * 切换到另一个模型（内置或本地导入）。
+     *
+     * 与 [init] 的区别：这里**允许重复调用**，且会清掉参数绑定缓存与 init 重试
+     * 标记 —— 新模型的参数表与旧模型不同，必须重新解析。
+     *
+     * @param path `.moc3` 路径：以 `/` 开头 = 本地绝对路径，否则按 assets 相对路径处理
+     * @return true = 新模型已加载（GL 侧由 native 在下一帧重建）
+     */
+    fun loadModel(path: String): Boolean = synchronized(initLock) {
+        if (!libraryLoaded) {
+            lastError = libraryError ?: "liblive2d_jni.so 加载失败"
+            return false
+        }
+
+        val error = loadNative(path)
+
+        // 无论成败，参数缓存都必须失效：旧下标对新模型没有意义
+        parameterIndices.clear()
+        parametersBound = false
+        initAttempted = true
+
+        if (error == null) {
+            mocAssetPath = path
+            modelReady = true
+            lastError = null
+            InAppLog.i(TAG, "模型切换成功: $path")
+            InAppLog.i(TAG, "native 统计: ${runCatching { nativeStats() }.getOrDefault("n/a")}")
+        } else {
+            // 加载失败时旧模型已被 native 侧清空，只能标记不可用
+            modelReady = false
+            lastError = error
+            InAppLog.e(TAG, "模型切换失败: $error ($path)")
         }
         return modelReady
     }
@@ -115,6 +176,7 @@ class Live2DRenderer(
         initAttempted = false
         lastError = null
         parameterIndices.clear()
+        parametersBound = false
     }
 
     // ---------------- P3：参数驱动 ----------------
@@ -335,6 +397,7 @@ class Live2DRenderer(
     }
 
     private external fun nativeInit(assetManager: AssetManager, mocPath: String): String?
+    private external fun nativeLoadModelFromPath(mocPath: String): String?
     private external fun nativeSurfaceCreated()
     private external fun nativeSurfaceChanged(width: Int, height: Int)
     private external fun nativeDrawFrame()

@@ -283,6 +283,16 @@ bool g_verticesDirty = false;
 int g_vboVertexCount = 0;
 
 /**
+ * 模型已换、GL 侧资源必须整体重建（P6 自定义模型导入）。
+ *
+ * 为什么不能像 nativeInit 那样「什么都不做、等 surfaceCreated」：
+ * 导入新模型时 EGL context 是**活着**的，surfaceCreated 不会再次触发，
+ * 旧 VBO/IBO 仍是上一个模型的拓扑，纹理句柄也指向旧图集。
+ * drawFrame 看到这个标记就重新上传纹理、重建 VBO/IBO（GL 线程内完成）。
+ */
+bool g_glModelDirty = false;
+
+/**
  * 参数 id -> 参数下标缓存（P3）。
  *
  * 本版本 Purism Core 没有 csmSetParameterValueById，只能写
@@ -774,9 +784,58 @@ std::string modelJsonPathFor(const std::string &mocPath) {
     return std::string();
 }
 
-/** 把整个 asset 读成字节数组（纹理/model3.json 用，不需要对齐）。 */
-bool readAssetBytes(AAssetManager *manager, const std::string &path, std::vector<uint8_t> *out) {
-    AAsset *asset = AAssetManager_open(manager, path.c_str(), AASSET_MODE_BUFFER);
+/**
+ * 资源来源：APK assets 或设备本地目录。
+ *
+ * 为什么需要这层抽象：内置模型在 APK 里（只能经 AAssetManager 读），用户导入的
+ * 模型在 filesDir 下（普通文件路径）。两者的读取原语完全不同，但上层的
+ * model3/motion3/physics3 解析、纹理解码、MOC 校验应当只有一份实现——
+ * 否则「内置能跑、导入的跑不起来」这类差异会反复出现。
+ *
+ * 约定：
+ *  - `manager != nullptr` → assets 模式，path 是 assets 相对路径；
+ *  - `manager == nullptr` → 文件模式，path 是**绝对路径**。
+ *
+ * 安全性：文件模式下的 path 全部由 Kotlin 侧的安全解压目录拼出
+ * （Zip Slip 已在解压阶段拦掉 `..` / 绝对路径条目），这里不再做路径穿越检查，
+ * 但会拒绝空路径与非普通文件，避免把目录/设备节点当模型读。
+ */
+struct ResourceSource {
+    AAssetManager *manager = nullptr;
+    std::string rootDir;  // 文件模式：模型所在绝对目录（带结尾 '/'）；assets 模式留空
+
+    bool fromFile() const { return manager == nullptr; }
+};
+
+/** 把整个资源读成字节数组（纹理 / json / moc3 共用，不需要对齐）。 */
+bool readResource(const ResourceSource &src, const std::string &path,
+                  std::vector<uint8_t> *out) {
+    if (path.empty()) return false;
+
+    if (src.fromFile()) {
+        FILE *file = std::fopen(path.c_str(), "rb");
+        if (!file) return false;
+
+        // 先 seek 到末尾拿长度：导入的模型文件大小不可信，按实际长度读，
+        // 避免「读到一半才发现比预期短」的半截缓冲区。
+        if (std::fseek(file, 0, SEEK_END) != 0) {
+            std::fclose(file);
+            return false;
+        }
+        const long length = std::ftell(file);
+        if (length <= 0) {
+            std::fclose(file);
+            return false;
+        }
+        std::rewind(file);
+
+        out->resize(static_cast<size_t>(length));
+        const size_t read = std::fread(out->data(), 1, static_cast<size_t>(length), file);
+        std::fclose(file);
+        return read == static_cast<size_t>(length);
+    }
+
+    AAsset *asset = AAssetManager_open(src.manager, path.c_str(), AASSET_MODE_BUFFER);
     if (!asset) return false;
 
     const off64_t length = AAsset_getLength64(asset);
@@ -791,19 +850,27 @@ bool readAssetBytes(AAssetManager *manager, const std::string &path, std::vector
     return read == static_cast<int>(length);
 }
 
+/** 把资源读成文本（json 用，失败返回 false，不区分原因）。 */
+bool readResourceText(const ResourceSource &src, const std::string &path, std::string *out) {
+    std::vector<uint8_t> bytes;
+    if (!readResource(src, path, &bytes)) return false;
+    out->assign(reinterpret_cast<const char *>(bytes.data()), bytes.size());
+    return true;
+}
+
 /**
  * 解码一张 PNG 到 [TextureImage]。
  *
  * stb_image 的接口选择：用 stbi_load_from_memory 而不是 stbi_load，
- * 因为 Android 上 assets 不是普通文件路径（APK 内的压缩条目没有文件系统路径），
- * 我们已经用 AAssetManager 把字节读进内存了。
+ * 因为两种来源（assets 内存块 / 本地文件）都已读成字节数组，统一走内存接口
+ * 可以完全避开 STBI_NO_STDIO（本工程裁掉了 stb 的文件 IO 以减小 .so）。
  *
  * 强制 4 通道：Purism Core 的 UV/取样假设 RGBA，缺 alpha 通道的 PNG 若按 3 通道
  * 上传会被 GL 补成 alpha=1，看似没问题但容易在后续加遮罩时埋坑。
  */
-bool loadTexture(AAssetManager *manager, const std::string &path, TextureImage *out) {
+bool loadTexture(const ResourceSource &src, const std::string &path, TextureImage *out) {
     std::vector<uint8_t> encoded;
-    if (!readAssetBytes(manager, path, &encoded)) {
+    if (!readResource(src, path, &encoded)) {
         LOGW("纹理读取失败: %s", path.c_str());
         return false;
     }
@@ -833,11 +900,11 @@ bool loadTexture(AAssetManager *manager, const std::string &path, TextureImage *
 /**
  * 加载模型引用的全部纹理。
  *
- * @param mocPath  .moc3 的 assets 路径，用来推导同目录的 .model3.json
+ * @param mocPath  .moc3 的路径（assets 相对路径 或 绝对路径），用来推导同目录的 .model3.json
  * @param err      失败原因（纹理加载失败不致命，只记日志；完全没纹理时在调用方报错）
  * @return 至少成功加载一张纹理
  */
-bool loadTextures(AAssetManager *manager, const std::string &mocPath, std::string *err) {
+bool loadTextures(const ResourceSource &src, const std::string &mocPath, std::string *err) {
     g_textureImages.clear();
 
     const std::string jsonPath = modelJsonPathFor(mocPath);
@@ -845,7 +912,7 @@ bool loadTextures(AAssetManager *manager, const std::string &mocPath, std::strin
 
     if (!jsonPath.empty()) {
         std::vector<uint8_t> jsonBytes;
-        if (readAssetBytes(manager, jsonPath, &jsonBytes)) {
+        if (readResource(src, jsonPath, &jsonBytes)) {
             const std::string json(jsonBytes.begin(), jsonBytes.end());
             texturePaths = parseTextureList(json);
             LOGI("model3.json 解析到 %zu 张纹理 (%s)",
@@ -870,7 +937,7 @@ bool loadTextures(AAssetManager *manager, const std::string &mocPath, std::strin
     for (const std::string &relative : texturePaths) {
         // Textures 数组里的路径相对 model3.json 所在目录
         TextureImage image;
-        if (loadTexture(manager, dir + relative, &image)) {
+        if (loadTexture(src, dir + relative, &image)) {
             g_textureImages.push_back(std::move(image));
         } else {
             // 占位：保持下标与 csm 的 texture index 对齐，避免后续 drawable 取错纹理
@@ -896,14 +963,6 @@ bool loadTextures(AAssetManager *manager, const std::string &mocPath, std::strin
 // ---------------------------------------------------------------------------
 //  全部在 nativeInit 的锁内、GL 侧还没有资源时执行；解析失败的条目单独跳过，
 //  绝不因为某个 .motion3.json 损坏就让模型整体加载失败。
-
-/** 把 assets 里的文本文件读成 string（失败返回 false，不区分原因）。 */
-bool readAssetText(AAssetManager *manager, const std::string &path, std::string *out) {
-    std::vector<uint8_t> bytes;
-    if (!readAssetBytes(manager, path, &bytes)) return false;
-    out->assign(reinterpret_cast<const char *>(bytes.data()), bytes.size());
-    return true;
-}
 
 /**
  * 解析一条 motion3 曲线的 Segments 到 [flat] 尾部，追加一个 MotionCurve。
@@ -936,9 +995,9 @@ void appendCurve(const mjson::Value &segments, int paramIndex, int partIndex,
  * 参数 / 部件名 -> 下标的映射在 model 初始化完成后才能建立，因此这里只在
  * 名字能查到索引时才建曲线；查不到的曲线直接丢弃（该动作只对别的模型有意义）。
  */
-bool parseMotionFile(AAssetManager *manager, const std::string &path, MotionData *out) {
+bool parseMotionFile(const ResourceSource &src, const std::string &path, MotionData *out) {
     std::string text;
-    if (!readAssetText(manager, path, &text)) {
+    if (!readResourceText(src, path, &text)) {
         LOGW("动作文件读取失败: %s", path.c_str());
         return false;
     }
@@ -998,10 +1057,10 @@ bool parseMotionFile(AAssetManager *manager, const std::string &path, MotionData
 }
 
 /** 解析 model3.json 的 Motions 段：{ 组名: [ {File}, ... ] }。 */
-void loadMotions(AAssetManager *manager, const std::string &jsonPath,
+void loadMotions(const ResourceSource &src, const std::string &jsonPath,
                  const std::string &dir) {
     std::string text;
-    if (!readAssetText(manager, jsonPath, &text)) {
+    if (!readResourceText(src, jsonPath, &text)) {
         LOGW("model3.json 读取失败，动作不可用: %s", jsonPath.c_str());
         return;
     }
@@ -1030,7 +1089,7 @@ void loadMotions(AAssetManager *manager, const std::string &jsonPath,
             const mjson::Value *file = entry.find("File");
             if (!file) continue;
             MotionData motion;
-            if (parseMotionFile(manager, dir + file->stringOrEmpty(), &motion)) {
+            if (parseMotionFile(src, dir + file->stringOrEmpty(), &motion)) {
                 group.motions.push_back(std::move(motion));
                 ++loaded;
             }
@@ -1044,10 +1103,10 @@ void loadMotions(AAssetManager *manager, const std::string &jsonPath,
 }
 
 /** 解析一条 exp3.json 的参数表。 */
-bool parseExpressionFile(AAssetManager *manager, const std::string &path,
+bool parseExpressionFile(const ResourceSource &src, const std::string &path,
                          const std::string &name, Expression *out) {
     std::string text;
-    if (!readAssetText(manager, path, &text)) {
+    if (!readResourceText(src, path, &text)) {
         LOGW("表情文件读取失败: %s", path.c_str());
         return false;
     }
@@ -1086,10 +1145,10 @@ bool parseExpressionFile(AAssetManager *manager, const std::string &path,
 }
 
 /** 解析 model3.json 的 Expressions 段。 */
-void loadExpressions(AAssetManager *manager, const std::string &jsonPath,
+void loadExpressions(const ResourceSource &src, const std::string &jsonPath,
                      const std::string &dir) {
     std::string text;
-    if (!readAssetText(manager, jsonPath, &text)) return;
+    if (!readResourceText(src, jsonPath, &text)) return;
 
     mjson::Value root;
     if (!mjson::parse(text, &root)) return;
@@ -1107,7 +1166,7 @@ void loadExpressions(AAssetManager *manager, const std::string &jsonPath,
         if (!name || !file) continue;
 
         Expression exp;
-        if (parseExpressionFile(manager, dir + file->stringOrEmpty(),
+        if (parseExpressionFile(src, dir + file->stringOrEmpty(),
                                 name->stringOrEmpty(), &exp)) {
             g_expressions.push_back(std::move(exp));
         }
@@ -1124,9 +1183,9 @@ void loadExpressions(AAssetManager *manager, const std::string &jsonPath,
  * 这里把每个 Id 解析成 csm 部件下标；查不到就跳过该项，整组不足 2 项时
  * 也不丢弃（单项组等价于「强制该部件可见」）。
  */
-void loadPose(AAssetManager *manager, const std::string &jsonPath) {
+void loadPose(const ResourceSource &src, const std::string &jsonPath) {
     std::string text;
-    if (!readAssetText(manager, jsonPath, &text)) {
+    if (!readResourceText(src, jsonPath, &text)) {
         LOGW("pose3.json 读取失败，手臂互斥不生效: %s", jsonPath.c_str());
         return;
     }
@@ -1206,11 +1265,11 @@ void readNormalization(const mjson::Value *norm, const char *key,
  *
  * 失败的任何单条 setting 只跳过自身：物理是增强效果，不能让模型加载失败。
  */
-void loadPhysics(AAssetManager *manager, const std::string &jsonPath) {
+void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
     g_physicsChains.clear();
 
     std::string text;
-    if (!readAssetText(manager, jsonPath, &text)) {
+    if (!readResourceText(src, jsonPath, &text)) {
         LOGW("physics3.json 读取失败，物理不生效: %s", jsonPath.c_str());
         return;
     }
@@ -1305,44 +1364,30 @@ void loadPhysics(AAssetManager *manager, const std::string &jsonPath) {
 }
 
 // ---------------------------------------------------------------------------
-//  MOC3 读取（AAssetManager）
+//  MOC3 读取（assets / 本地文件共用）
 // ---------------------------------------------------------------------------
-bool readAsset(AAssetManager *manager, const char *path, AlignedBuffer *out, std::string *err) {
-    AAsset *asset = AAssetManager_open(manager, path, AASSET_MODE_BUFFER);
-    if (!asset) {
-        *err = std::string("无法打开 asset: ") + path;
+bool readMoc(const ResourceSource &src, const std::string &path,
+             AlignedBuffer *out, std::string *err) {
+    std::vector<uint8_t> bytes;
+    if (!readResource(src, path, &bytes)) {
+        *err = std::string("无法打开模型文件: ") + path;
         return false;
     }
 
-    const off64_t length = AAsset_getLength64(asset);
-    if (length <= 0) {
-        AAsset_close(asset);
-        *err = std::string("asset 长度非法: ") + path;
-        return false;
-    }
-
-    // 标准要求 MOC 缓冲区 64 字节对齐；AAsset_read 允许直接读进任意缓冲区
-    if (!out->alloc(csmAlignofMoc, static_cast<size_t>(length))) {
-        AAsset_close(asset);
+    // 标准要求 MOC 缓冲区 64 字节对齐：先读进临时缓冲再拷进对齐块
+    if (!out->alloc(csmAlignofMoc, bytes.size())) {
         *err = "MOC 缓冲区分配失败（内存不足？）";
         return false;
     }
-
-    const int read = AAsset_read(asset, out->ptr, static_cast<size_t>(length));
-    AAsset_close(asset);
-
-    if (read != static_cast<int>(length)) {
-        *err = "asset 读取不完整";
-        return false;
-    }
+    std::memcpy(out->ptr, bytes.data(), bytes.size());
     return true;
 }
 
 // ---------------------------------------------------------------------------
 //  模型加载 + CPU 几何组装
 // ---------------------------------------------------------------------------
-bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
-    if (!readAsset(manager, mocPath, &g_mocBuffer, err)) return false;
+bool loadModel(const ResourceSource &src, const std::string &mocPath, std::string *err) {
+    if (!readMoc(src, mocPath, &g_mocBuffer, err)) return false;
 
     const auto mocSize = static_cast<unsigned int>(g_mocBuffer.size);
 
@@ -1689,19 +1734,19 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
         g_expressions.clear();
         g_poseGroups.clear();
         if (!jsonPath.empty()) {
-            loadMotions(manager, jsonPath, dir);
-            loadExpressions(manager, jsonPath, dir);
+            loadMotions(src, jsonPath, dir);
+            loadExpressions(src, jsonPath, dir);
             // pose3 / physics3 路径不像 Motions/Expressions 那样由我们自己解析：
             // 直接在 model3.json 的 FileReferences 里找 "Pose" / "Physics" 字段。
             std::string jsonText;
-            if (readAssetText(manager, jsonPath, &jsonText)) {
+            if (readResourceText(src, jsonPath, &jsonText)) {
                 mjson::Value root;
                 if (mjson::parse(jsonText, &root)) {
                     const mjson::Value *refs = root.find("FileReferences");
                     const mjson::Value *pose = refs ? refs->find("Pose") : nullptr;
-                    if (pose) loadPose(manager, dir + pose->stringOrEmpty());
+                    if (pose) loadPose(src, dir + pose->stringOrEmpty());
                     const mjson::Value *physics = refs ? refs->find("Physics") : nullptr;
-                    if (physics) loadPhysics(manager, dir + physics->stringOrEmpty());
+                    if (physics) loadPhysics(src, dir + physics->stringOrEmpty());
                 }
             }
         }
@@ -2731,6 +2776,80 @@ int uploadTextures() {
 extern "C" {
 
 /**
+ * 清空上一份模型的全部 CPU 侧状态（调用方必须持 g_mutex）。
+ *
+ * 抽出来是因为「内置模型」与「本地导入模型」两条加载路径必须共享同一套复位
+ * 语义：漏清任何一项（参数表、物理链、动作时钟、手势变换）都会让新模型带着
+ * 旧模型的状态启动，表现为「导入后模型扭曲 / 头发炸开 / 位置偏移」。
+ *
+ * 不碰 GL 句柄：那属于 GL 线程，由 [g_glModelDirty] 通知它在下一帧重建。
+ */
+void resetModelStateLocked() {
+    g_model = nullptr;
+    g_moc = nullptr;
+    g_modelBuffer.free();
+    g_mocBuffer.free();
+    g_vertices.clear();
+    g_indices.clear();
+    g_batches.clear();
+    g_maskBatches.clear();
+    g_maskRefs.clear();
+    g_vertexSpans.clear();
+    g_paramIndexById.clear();
+    g_paramCount = 0;
+    g_paramDefaults.clear();
+    g_paramMin.clear();
+    g_paramMax.clear();
+    g_partIndexById.clear();
+    g_partDefaults.clear();
+    g_motionGroups.clear();
+    g_expressions.clear();
+    g_poseGroups.clear();
+    g_physicsChains.clear();
+    g_faceValues.clear();
+    g_faceDirty = false;
+    g_activeGroup = -1;
+    g_activeMotion = -1;
+    g_activeExpression = -1;
+    g_motionActive = false;
+    g_motionTime = 0.0;
+    g_lastTickSec = 0.0;
+    g_physicsDt = 0.0f;
+    g_modelOpacity = 1.0f;
+    g_modelDirty = true;
+    g_verticesDirty = false;
+    g_vboVertexCount = 0;
+    g_textureImages.clear();
+    g_drawableTotal = 0;
+    g_drawableDrawn = 0;
+    g_gesture.dx = 0.0f;
+    g_gesture.dy = 0.0f;
+    g_gesture.scale = 1.0f;
+
+    // 新模型的纹理/几何与旧的完全不同，GL 侧必须重建（含纹理句柄）
+    g_glModelDirty = true;
+}
+
+/**
+ * 从任意 [ResourceSource] 加载模型（调用方必须持 g_mutex）。
+ *
+ * @return null = 成功；非 null = 失败原因
+ */
+const char *loadModelLocked(const ResourceSource &src, const std::string &path,
+                            std::string *err) {
+    resetModelStateLocked();
+
+    csmSetLogFunction(&coreLog);
+    csmSetLogLevel(2);  // 2 = warning 及以上
+
+    // 先加载纹理：loadModel 需要知道哪些纹理槽位是有效的，
+    // 才能把引用了空槽位的 drawable 踢掉（而不是贴错图）
+    if (!loadTextures(src, path, err)) return err->c_str();
+    if (!loadModel(src, path, err)) return err->c_str();
+    return nullptr;
+}
+
+/**
  * 加载 assets 里的 .moc3 并组装 CPU 几何。
  *
  * @param assetManager 由 Kotlin 传入（AssetManager 实例）
@@ -2756,86 +2875,85 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
     const std::string path(pathChars);
     env->ReleaseStringUTFChars(mocPath, pathChars);
 
-    // 重复 init（例如重建 Renderer）先释放上一份模型
-    g_model = nullptr;
-    g_moc = nullptr;
-    g_modelBuffer.free();
-    g_mocBuffer.free();
-    g_vertices.clear();
-    g_indices.clear();
-
-    csmSetLogFunction(&coreLog);
-    csmSetLogLevel(2);  // 2 = warning 及以上
+    ResourceSource src;
+    src.manager = manager;
 
     // 与 GL 线程互斥：GL 线程可能正在绘制上一帧几何
     std::string err;
-    bool ok;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        // 重复 init（例如重建 Renderer）先释放上一份模型。
-        // 注意：这里不碰 GL 句柄——GL 资源属于 GL 线程，累积的旧 buffer 会随
-        // GLSurfaceView 销毁（EGL context teardown）一起被系统回收。
-        g_model = nullptr;
-        g_moc = nullptr;
-        g_modelBuffer.free();
-        g_mocBuffer.free();
-        g_vertices.clear();
-        g_indices.clear();
-        g_batches.clear();
-        g_maskBatches.clear();
-        g_maskRefs.clear();
-        g_vertexSpans.clear();
-        g_paramIndexById.clear();
-        g_paramCount = 0;
-        g_paramDefaults.clear();
-        g_paramMin.clear();
-        g_paramMax.clear();
-        g_partIndexById.clear();
-        g_partDefaults.clear();
-        g_motionGroups.clear();
-        g_expressions.clear();
-        g_poseGroups.clear();
-        g_physicsChains.clear();
-        g_faceValues.clear();
-        g_faceDirty = false;
-        g_activeGroup = -1;
-        g_activeMotion = -1;
-        g_activeExpression = -1;
-        g_motionActive = false;
-        g_motionTime = 0.0;
-        g_lastTickSec = 0.0;
-        g_physicsDt = 0.0f;
-        g_modelOpacity = 1.0f;
-        g_modelDirty = true;
-        g_verticesDirty = false;
-        g_vboVertexCount = 0;
-        g_textureImages.clear();
-        g_drawableTotal = 0;
-        g_drawableDrawn = 0;
-        g_gesture.dx = 0.0f;
-        g_gesture.dy = 0.0f;
-        g_gesture.scale = 1.0f;
-
-        csmSetLogFunction(&coreLog);
-        csmSetLogLevel(2);  // 2 = warning 及以上
-
-        // 先加载纹理：loadModel 需要知道哪些纹理槽位是有效的，
-        // 才能把引用了空槽位的 drawable 踢掉（而不是贴错图）
-        g_textureImages.clear();
-        if (!loadTextures(manager, path, &err)) {
-            ok = false;
-        } else {
-            ok = loadModel(manager, path.c_str(), &err);
-        }
+        loadModelLocked(src, path, &err);
     }
-    if (!ok) {
+
+    if (!err.empty()) {
         g_lastError = err;
         LOGE("nativeInit 失败: %s", err.c_str());
         return env->NewStringUTF(err.c_str());
     }
-
     return nullptr;
 }
+
+/**
+ * 从设备本地文件加载模型（自定义模型导入）。
+ *
+ * @param mocPath  .moc3 的**绝对路径**，例如
+ *                 `/data/data/com.exarry.arvtubelink/files/live2d_models/1730.../xxx.moc3`
+ * @return null = 成功；非 null = 失败原因
+ *
+ * 与 [nativeInit] 的区别只有资源读取原语（fopen 而非 AAssetManager）：
+ * model3.json / motion3 / exp3 / pose3 / physics3 的解析、几何组装、物理复位
+ * 全部走同一套代码，避免两条路径的行为漂移。
+ *
+ * 安全边界：路径由 Kotlin 侧的安全解压目录拼出（Zip Slip 已在解压阶段拦截）。
+ * 这里只额外拒绝空路径与非 .moc3 后缀，防止误把目录当模型读。
+ *
+ * 线程：任意线程可调用；GL 资源由 [g_glModelDirty] 通知 GL 线程在下一帧重建。
+ */
+JNIEXPORT jstring JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeLoadModelFromPath(
+        JNIEnv *env, jobject /*thiz*/, jstring mocPath) {
+    g_lastError.clear();
+
+    if (!mocPath) return env->NewStringUTF("模型路径为空");
+
+    const char *pathChars = env->GetStringUTFChars(mocPath, nullptr);
+    if (!pathChars) return env->NewStringUTF("模型路径读取失败");
+    const std::string path(pathChars);
+    env->ReleaseStringUTFChars(mocPath, pathChars);
+
+    if (path.empty()) return env->NewStringUTF("模型路径为空");
+    // 后缀校验：只接受 .moc3（大小写不敏感，兼容 Windows 上打包的 zip）
+    const std::string lower = [](const std::string &s) {
+        std::string out = s;
+        for (char &c : out) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        }
+        return out;
+    }(path);
+    const std::string suffix = ".moc3";
+    if (lower.size() <= suffix.size() ||
+        lower.compare(lower.size() - suffix.size(), suffix.size(), suffix) != 0) {
+        return env->NewStringUTF("模型路径必须以 .moc3 结尾");
+    }
+
+    ResourceSource src;  // manager == nullptr → 文件模式
+
+    std::string err;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        loadModelLocked(src, path, &err);
+    }
+
+    if (!err.empty()) {
+        g_lastError = err;
+        LOGE("nativeLoadModelFromPath 失败: %s (%s)", err.c_str(), path.c_str());
+        return env->NewStringUTF(err.c_str());
+    }
+
+    LOGI("nativeLoadModelFromPath 成功: %s", path.c_str());
+    return nullptr;
+}
+
 
 /**
  * 参数驱动入口（P3/P4）：写入一帧面捕参数。
@@ -3022,6 +3140,8 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceCreated(
     // releaseGl 必须看到「旧」context 才能判断句柄是否可删，因此先释放再更新记录。
     releaseGl();
     g_glContext = currentEglContext();
+    // surfaceCreated 本身就是一次完整重建，脏标记到此已满足（避免首帧再重建一遍）
+    g_glModelDirty = false;
     LOGI("nativeSurfaceCreated: eglContext=%p（%s）",
          reinterpret_cast<void *>(g_glContext),
          g_glContext == EGL_NO_CONTEXT ? "无 context，GL 调用不可用" : "ok");
@@ -3271,6 +3391,64 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
 
     {
         std::lock_guard<std::mutex> lock(g_mutex);
+
+        // ---- 0) 模型已换：整体重建 GL 资源（P6 自定义模型导入）----
+        // 导入新模型时 EGL context 仍然活着，surfaceCreated 不会再触发，因此
+        // 旧 VBO/IBO（上一个模型的拓扑）与旧纹理句柄必须在这里换掉。
+        // 顺序：先释放旧 GL 资源 → 上传新纹理 → 重建 VBO/IBO。
+        if (g_glModelDirty) {
+            g_glModelDirty = false;
+
+            // 同一 context 下才真正 glDelete；跨 context 由 releaseGl 内部判定
+            releaseGl();
+            g_glContext = currentEglContext();
+            const bool programOk = buildProgram();
+
+            if (programOk && !g_vertices.empty() && !g_indices.empty()) {
+                // 新模型的参数/动作/pose 全部就绪，重建一次完整状态再上传顶点
+                g_lastTickSec = 0.0;
+                g_physicsDt = 0.0f;
+                g_modelDirty = true;
+                if (g_model) {
+                    applyModelStateLocked();
+                    csmUpdateModel(g_model);
+                    refreshVertexPositionsLocked();
+                }
+
+                const int uploaded = uploadTextures();
+                if (uploaded == 0) {
+                    LOGE("模型切换: 没有任何纹理上传成功，画面将全黑");
+                }
+
+                glGenBuffers(1, &g_vbo);
+                glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+                glBufferData(GL_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex)),
+                             g_vertices.data(), GL_STATIC_DRAW);
+                g_vboVertexCount = static_cast<int>(g_vertices.size());
+                g_verticesDirty = false;
+
+                glGenBuffers(1, &g_ibo);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
+                glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                             static_cast<GLsizeiptr>(g_indices.size() * sizeof(uint16_t)),
+                             g_indices.data(), GL_STATIC_DRAW);
+
+                glBindBuffer(GL_ARRAY_BUFFER, 0);
+                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+                // 新模型可能有不同尺寸的包围盒：重算投影（并回到 1x 居中）
+                updateProjection();
+
+                LOGI("模型切换完成: verts=%zu idx=%zu batches=%zu textures=%d/%zu",
+                     g_vertices.size(), g_indices.size(), g_batches.size(),
+                     uploaded, g_textureImages.size());
+            } else {
+                LOGE("模型切换失败: program=%d verts=%zu idx=%zu（保持空白画面）",
+                     programOk ? 1 : 0, g_vertices.size(), g_indices.size());
+            }
+        }
+
         if (g_program == 0 || g_vbo == 0 || g_ibo == 0 || g_batches.empty()) return;
 
         program = g_program;
@@ -3597,6 +3775,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_gesture.dx = 0.0f;
     g_gesture.dy = 0.0f;
     g_gesture.scale = 1.0f;
+    g_glModelDirty = false;
     g_verticesDirty = false;
     g_vboVertexCount = 0;
     g_textureImages.clear();

@@ -1,7 +1,11 @@
 package com.exarry.arvtubelink.ui
 
+import android.net.Uri
 import android.opengl.GLSurfaceView
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -9,21 +13,31 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.List
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -33,6 +47,7 @@ import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,12 +60,14 @@ import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import com.exarry.arvtubelink.ar.FaceRenderer
+import com.exarry.arvtubelink.ui.live2d.Live2DModelStore
 import com.exarry.arvtubelink.ui.live2d.Live2DParamMap
 import com.exarry.arvtubelink.ui.live2d.Live2DRenderer
 import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 /**
@@ -122,9 +139,29 @@ fun Live2DContent(
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
+    // ---- P6：自定义模型管理 ----
+    // 当前模型（内置或用户导入）。mocPath 以 '/' 开头 = 本地绝对路径。
+    var currentModel by remember {
+        mutableStateOf(
+            Live2DModelStore.builtinModel.copy(mocPath = mocAssetPath)
+        )
+    }
+    val availableModels = remember { mutableStateListOf<Live2DModelStore.Model>() }
+    // 每次「切换模型」自增，作为加载协程的 key。0 = 首次加载（走 init 的幂等路径）。
+    var modelEpoch by remember { mutableIntStateOf(0) }
+    // 已成功加载到哪个 epoch：回前台时不必重新读 moc3/解码纹理
+    var loadedModelEpoch by remember { mutableIntStateOf(-1) }
+
+    var modelDialogVisible by remember { mutableStateOf(false) }
+    var importInProgress by remember { mutableStateOf(false) }
+    var pendingDelete by remember { mutableStateOf<Live2DModelStore.Model?>(null) }
+    var importMessage by remember { mutableStateOf<String?>(null) }
+    val scope = rememberCoroutineScope()
+
     // Renderer 跨重组保持：内部持有 native 模型状态，重新 new 会丢掉已加载的模型。
-    // 同时保存 GLSurfaceView 引用，供前后台控制与主动重绘使用。
-    val renderer = remember(mocAssetPath) { Live2DRenderer(context.assets, mocAssetPath) }
+    // 注意 key 只有 mocAssetPath 的**初值**：切换模型走 renderer.loadModel()，
+    // 不重建 renderer（重建会让 GLSurfaceView 的 setRenderer 二次调用抛异常）。
+    val renderer = remember { Live2DRenderer(context.assets, currentModel.mocPath) }
     val surfaceViewRef = remember { arrayOfNulls<GLSurfaceView>(1) }
 
     var status by remember { mutableStateOf("正在加载模型…") }
@@ -159,6 +196,16 @@ fun Live2DContent(
         }
     }
 
+    // 模型清单：进页面读一次；导入/删除后手动刷新
+    val refreshModels: () -> Unit = {
+        scope.launch {
+            val models = withContext(Dispatchers.IO) { Live2DModelStore.listModels(context) }
+            availableModels.clear()
+            availableModels.addAll(models)
+        }
+    }
+    LaunchedEffect(Unit) { refreshModels() }
+
     // 加载 + 绑定 + 推流放在同一个 effect 里串行完成。
     // 拆成两个 effect 时，绑定后改写 key 会让推流循环取消再重启一次
     // （实测日志里「面捕驱动启动」出现两遍），单 effect 天然只启动一次。
@@ -166,8 +213,22 @@ fun Live2DContent(
     // resumeEpoch 参与 key：切后台再回前台时协程必须重新启动。
     // 否则「GL 线程恢复 + 模型重算」都做了，却没有任何一帧参数被写进去，
     // 表现为画面恢复但面捕失效（严重时配合 pose 中间态只剩衣服）。
-    LaunchedEffect(renderer, faceRenderer, resumeEpoch) {
-        val ready = runCatching { renderer.init() }.getOrDefault(false)
+    //
+    // modelEpoch 参与 key：切换模型后必须重新绑定参数、重读动作/表情清单。
+    LaunchedEffect(renderer, faceRenderer, resumeEpoch, modelEpoch) {
+        // 已经加载过当前模型（例如只是回前台）：native 侧模型仍在，跳过重读
+        val ready = if (loadedModelEpoch == modelEpoch) {
+            renderer.modelReady
+        } else {
+            val ok = if (modelEpoch == 0) {
+                runCatching { renderer.init() }.getOrDefault(false)
+            } else {
+                runCatching { renderer.loadModel(currentModel.mocPath) }.getOrDefault(false)
+            }
+            if (ok) loadedModelEpoch = modelEpoch
+            ok
+        }
+
         isError = !ready
         if (!ready) {
             status = renderer.lastError ?: "模型加载失败"
@@ -186,14 +247,15 @@ fun Live2DContent(
         expressions.clear()
         expressions.addAll(exps)
         // native 侧默认播第一组动作的第 0 个，这里把 UI 选中态对齐
-        if (groups.isNotEmpty()) activeMotionGroup = groups.first().index
+        activeMotionGroup = if (groups.isNotEmpty()) groups.first().index else -1
+        activeExpression = -1
+        status = "Purism Core 就绪 · ${currentModel.displayName}"
 
         if (faceRenderer == null) {
             status = "Purism Core 就绪（无面捕源）"
             return@LaunchedEffect
         }
         status = "Purism Core 就绪 · 面捕驱动中"
-
         val indices = renderer.parameterIndexMap()
         // 只保留模型真正拥有的参数：-1 的项直接不进数组，C++ 侧无需逐帧丢
         val bound = Live2DParamMap.TARGETS.mapNotNull { name ->
@@ -314,28 +376,44 @@ fun Live2DContent(
                 },
         )
 
-        // ---- P6：重置视图（右边缘垂直居中）----
+        // ---- P6：重置视图 + 模型管理（右侧竖排，垂直居中）----
         // 为什么放在右边缘而不是顶栏：沉浸模式（系统栏隐藏 + 顶栏让位）下仍要
         // 一伸手就够到；同时避开左上 FPS、右上状态、底部动作条三处已有内容。
         // 位置随手势层之上（后声明 = 更上层），点击不会被手势层吃掉。
-        SmallFloatingActionButton(
-            onClick = {
-                panX = 0f
-                panY = 0f
-                zoom = 1f
-                renderer.resetTransform()
-                InAppLog.i(TAG, "重置视图: 1x 居中")
-            },
+        Column(
             modifier = Modifier
                 .align(Alignment.CenterEnd)
                 .padding(end = 16.dp),
-            containerColor = Color.Black.copy(alpha = 0.45f),
-            contentColor = Color.White.copy(alpha = 0.9f),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Icon(
-                imageVector = Icons.Filled.Refresh,
-                contentDescription = "重置视图",
-            )
+            SmallFloatingActionButton(
+                onClick = {
+                    panX = 0f
+                    panY = 0f
+                    zoom = 1f
+                    renderer.resetTransform()
+                    InAppLog.i(TAG, "重置视图: 1x 居中")
+                },
+                containerColor = Color.Black.copy(alpha = 0.45f),
+                contentColor = Color.White.copy(alpha = 0.9f),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.Refresh,
+                    contentDescription = "重置视图",
+                )
+            }
+
+            // 模型管理：列表 / 导入 / 删除都在弹窗里
+            SmallFloatingActionButton(
+                onClick = { modelDialogVisible = true },
+                containerColor = Color.Black.copy(alpha = 0.45f),
+                contentColor = Color.White.copy(alpha = 0.9f),
+            ) {
+                Icon(
+                    imageVector = Icons.Filled.List,
+                    contentDescription = "切换模型",
+                )
+            }
         }
 
         // ---- 任务 3：FPS HUD（左上角）----
@@ -448,6 +526,88 @@ fun Live2DContent(
         }
     }
 
+    // ---- P6：zip 选择器（GetContent 拿 content Uri，安全解压交给 ModelStore）----
+    val zipPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        importInProgress = true
+        importMessage = null
+        scope.launch {
+            val result = Live2DModelStore.importZip(context, uri)
+            importInProgress = false
+            when (result) {
+                is Live2DModelStore.ImportResult.Success -> {
+                    refreshModels()
+                    // 导入后直接切到新模型，省一次「再去列表点一下」
+                    currentModel = result.model
+                    modelEpoch++
+                    importMessage = "已导入：${result.model.displayName}"
+                }
+                is Live2DModelStore.ImportResult.Failure -> {
+                    importMessage = result.reason
+                }
+            }
+        }
+    }
+
+    if (modelDialogVisible) {
+        ModelManagerDialog(
+            models = availableModels,
+            currentModelId = currentModel.id,
+            importInProgress = importInProgress,
+            message = importMessage,
+            onDismiss = {
+                modelDialogVisible = false
+                importMessage = null
+            },
+            onPickModel = { model ->
+                if (model.id != currentModel.id) {
+                    currentModel = model
+                    modelEpoch++
+                }
+                modelDialogVisible = false
+                importMessage = null
+            },
+            onImport = { zipPicker.launch("application/zip") },
+            onDelete = { model -> pendingDelete = model },
+        )
+    }
+
+    // 删除确认：与导入分开，避免误触把模型删掉
+    pendingDelete?.let { target ->
+        AlertDialog(
+            onDismissRequest = { pendingDelete = null },
+            title = { Text("删除模型") },
+            text = { Text("确定删除「${target.displayName}」？此操作不可恢复。") },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingDelete = null
+                    scope.launch {
+                        val ok = withContext(Dispatchers.IO) {
+                            Live2DModelStore.deleteModel(context, target.id)
+                        }
+                        importMessage = if (ok) "已删除：${target.displayName}" else "删除失败"
+                        // 删掉的正是当前模型：回退到内置模型
+                        if (ok && target.id == currentModel.id) {
+                            currentModel = Live2DModelStore.builtinModel
+                                .copy(mocPath = mocAssetPath)
+                            modelEpoch++
+                        }
+                        refreshModels()
+                    }
+                }) {
+                    Text("删除")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingDelete = null }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+
     // 前后台跟随：后台必须停 GL 线程（否则持续跑空帧耗电）
     DisposableEffect(lifecycleOwner, renderer) {
         // addObserver 会立刻按当前状态回调一次 onResume。若不加这个标记，
@@ -478,6 +638,93 @@ fun Live2DContent(
 }
 
 private const val TAG = "Live2D"
+
+/**
+ * 模型管理弹窗：切换 / 导入 / 删除。
+ *
+ * 为什么用 AlertDialog 而不是 BottomSheet：页面已经叠了手势层与底部动作条，
+ * BottomSheet 会和底部 chips 抢触摸区域；弹窗是独立窗口，层叠关系最简单。
+ *
+ * 删除按钮只对用户模型出现（内置 Sample 不可删，与 [Live2DModelStore.deleteModel]
+ * 的服务端校验一致——UI 隐藏只是第一道，真正的拒绝在 store 里）。
+ */
+@Composable
+private fun ModelManagerDialog(
+    models: List<Live2DModelStore.Model>,
+    currentModelId: String,
+    importInProgress: Boolean,
+    message: String?,
+    onDismiss: () -> Unit,
+    onPickModel: (Live2DModelStore.Model) -> Unit,
+    onImport: () -> Unit,
+    onDelete: (Live2DModelStore.Model) -> Unit,
+) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Live2D 模型") },
+        text = {
+            Column(
+                modifier = Modifier
+                    .heightIn(max = 420.dp)
+                    .verticalScroll(rememberScrollState()),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                if (message != null) {
+                    Text(
+                        text = message,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                if (importInProgress) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp)
+                        Text("正在解压…", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+                for (model in models) {
+                    val selected = model.id == currentModelId
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clickable(enabled = !selected) { onPickModel(model) }
+                            .padding(vertical = 10.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        RadioButton(selected = selected, onClick = { onPickModel(model) })
+                        Text(
+                            text = model.displayName,
+                            modifier = Modifier
+                                .weight(1f)
+                                .padding(start = 8.dp),
+                            style = MaterialTheme.typography.bodyMedium,
+                        )
+                        if (!model.isBuiltin) {
+                            IconButton(onClick = { onDelete(model) }) {
+                                Icon(
+                                    imageVector = Icons.Filled.Delete,
+                                    contentDescription = "删除 ${model.displayName}",
+                                    tint = MaterialTheme.colorScheme.error,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onImport, enabled = !importInProgress) {
+                Text("导入 zip")
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onDismiss) { Text("关闭") }
+        },
+    )
+}
 
 /** 参数推流频率。30Hz 与 FaceRenderer 的发送上限一致，高于人眼可辨的跟随延迟。 */
 private const val PARAM_PUSH_HZ = 30
