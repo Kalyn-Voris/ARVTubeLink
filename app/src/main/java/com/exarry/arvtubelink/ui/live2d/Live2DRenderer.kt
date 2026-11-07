@@ -193,6 +193,99 @@ class Live2DRenderer(
     /** 已绑定的参数名到下标；未绑定时为空表。 */
     fun parameterIndexMap(): Map<String, Int> = parameterIndices
 
+    // ---------------- P4：动作 / 表情 ----------------
+
+    /** 一个可播放的动作组（model3.json Motions 的一个键）。 */
+    data class MotionGroup(val index: Int, val name: String, val motionCount: Int)
+
+    /** 一份表情（model3.json Expressions 的一项）。 */
+    data class ExpressionInfo(val index: Int, val name: String)
+
+    /**
+     * 读取动作组与表情清单。只在模型就绪后调用；失败返回空表而不是抛异常。
+     *
+     * native 返回的是逐行文本（`motion\t<下标>\t<名字>\t<数量>` /
+     * `expression\t<下标>\t<名字>`）。这里用最朴素的分割解析：清单只有十几行，
+     * 引 JSON 解析器不值得。
+     */
+    fun listActions(): Pair<List<MotionGroup>, List<ExpressionInfo>> {
+        if (!modelReady) return emptyList<MotionGroup>() to emptyList()
+        val raw = try {
+            nativeListActions()
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "动作清单读取失败: ${t.javaClass.simpleName}: ${t.message}")
+            return emptyList<MotionGroup>() to emptyList()
+        } ?: return emptyList<MotionGroup>() to emptyList()
+
+        val motions = mutableListOf<MotionGroup>()
+        val expressions = mutableListOf<ExpressionInfo>()
+        for (line in raw.lineSequence()) {
+            if (line.isBlank()) continue
+            val parts = line.split('\t')
+            when (parts.firstOrNull()) {
+                "motion" -> {
+                    val index = parts.getOrNull(1)?.toIntOrNull() ?: continue
+                    val name = parts.getOrNull(2) ?: continue
+                    val count = parts.getOrNull(3)?.toIntOrNull() ?: 0
+                    motions += MotionGroup(index, name, count)
+                }
+                "expression" -> {
+                    val index = parts.getOrNull(1)?.toIntOrNull() ?: continue
+                    val name = parts.getOrNull(2) ?: continue
+                    expressions += ExpressionInfo(index, name)
+                }
+            }
+        }
+        InAppLog.i(TAG, "动作清单: ${motions.size} 组 / 表情 ${expressions.size} 个")
+        return motions to expressions
+    }
+
+    /**
+     * 播放动作。
+     *
+     * @param group 动作组下标（[MotionGroup.index]）
+     * @param index 组内动作下标；-1 = 该组第 0 个（推荐，避免越界）
+     * @return 实际播放的动作下标，负数 = 失败
+     */
+    fun playMotion(group: Int, index: Int = -1): Int {
+        if (!modelReady) return -1
+        return try {
+            nativePlayMotion(group, index)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativePlayMotion 失败: ${t.javaClass.simpleName}: ${t.message}")
+            -1
+        }
+    }
+
+    /**
+     * 设置表情；[index] < 0 取消当前表情。
+     *
+     * @return 当前生效的表情下标（-1 = 无）
+     */
+    fun setExpression(index: Int): Int {
+        if (!modelReady) return -1
+        return try {
+            nativeSetExpression(index)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetExpression 失败: ${t.javaClass.simpleName}: ${t.message}")
+            -1
+        }
+    }
+
+    /**
+     * 读取渲染帧率（native 侧每 0.5s 更新一次）。
+     *
+     * 读失败或还没统计出窗口时返回 0，调用方据此显示「--」。
+     */
+    fun fps(): Float {
+        if (!modelReady) return 0f
+        return try {
+            nativeFps()
+        } catch (t: Throwable) {
+            0f
+        }
+    }
+
     private external fun nativeInit(assetManager: AssetManager, mocPath: String): String?
     private external fun nativeSurfaceCreated()
     private external fun nativeSurfaceChanged(width: Int, height: Int)
@@ -201,6 +294,10 @@ class Live2DRenderer(
     private external fun nativeStats(): String
     private external fun nativeUpdateParameters(params: FloatArray): Int
     private external fun nativeResolveParameterIds(names: Array<String>): IntArray?
+    private external fun nativePlayMotion(group: Int, index: Int): Int
+    private external fun nativeSetExpression(index: Int): Int
+    private external fun nativeListActions(): String?
+    private external fun nativeFps(): Float
 
     companion object {
         /**

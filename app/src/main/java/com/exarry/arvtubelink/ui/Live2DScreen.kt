@@ -2,10 +2,20 @@ package com.exarry.arvtubelink.ui
 
 import android.opengl.GLSurfaceView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material3.AssistChip
+import androidx.compose.material3.AssistChipDefaults
+import androidx.compose.material3.FilterChip
+import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -13,6 +23,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -35,7 +46,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 
 /**
- * Live2D 渲染页（Purism Core 原生渲染 + 面捕参数驱动）。
+ * Live2D 渲染页（Purism Core 原生渲染 + 面捕参数驱动 + 动作/表情）。
  *
  * ## 目的
  * 用原生 C++/JNI 替代 WebView 方案，并在其上把 AR 面捕数据实时推给模型：
@@ -55,20 +66,18 @@ import kotlinx.coroutines.withContext
  *
  * 为什么是「定时拉」而不是「人脸回调推」：
  *  - 拉取频率独立于相机帧率（AR 帧率随设备波动，30Hz 是稳定上限）；
- *  - 读不到新快照时重复推同一份值是无害的（csmUpdateModel 幂等），
- *    而回调链一旦断链模型会冻住，排查成本高；
+ *  - 读不到新快照时重复推同一份值是无害的，而回调链一旦断链模型会冻住；
  *  - 协程挂在本页组合生命周期上，切走 Tab 自动取消，不会后台空转。
  *
- * ## 生命周期
- * - `RENDERMODE_CONTINUOUSLY`：参数每帧都可能变，必须连续渲染才能跟上。
- *   GL 线程空闲时只是清屏+一次 draw，代价远低于「改参数后忘了 requestRender
- *   导致画面卡住」的排查成本。
- * - 组合离开 → [Live2DRenderer.release] 释放 native 内存（模型缓冲区约 1.5MB）。
- * - 前后台：跟随 [LocalLifecycleOwner]，onPause 停渲染线程、onResume 恢复。
+ * ## 动作 / 表情（P4）
+ * 动作与表情由 native 侧解析 model3.json 得到，本页只用两个横向按钮条呈现：
+ * 动作组（Idle / Tap…）与表情列表（f00…f0N）。默认在 native 侧自动播第一组
+ * 动作的第 0 个，因此页面一打开就是「活着」的。
  *
- * ## UI
- * 只保留最小占位：右下角一行状态文字（加载中 / 就绪 / 失败原因）。
- * 不加模型切换、动作、表情入口——本阶段明确不做。
+ * ## 生命周期
+ * - `RENDERMODE_CONTINUOUSLY`：动作时间轴与参数每帧都可能变，必须连续渲染。
+ * - 组合离开 → [Live2DRenderer.release] 释放 native 内存。
+ * - 前后台：跟随 [LocalLifecycleOwner]，onPause 停渲染线程、onResume 恢复。
  *
  * @param modifier 布局修饰符（由 AppRoot 传入，占满内容区）
  * @param mocAssetPath assets 内的 .moc3 相对路径，默认内置 Sample
@@ -91,6 +100,25 @@ fun Live2DContent(
     var status by remember { mutableStateOf("正在加载模型…") }
     var isError by remember { mutableStateOf(false) }
 
+    // ---- P4：动作 / 表情清单与当前选择 ----
+    val motionGroups = remember { mutableStateListOf<Live2DRenderer.MotionGroup>() }
+    val expressions = remember { mutableStateListOf<Live2DRenderer.ExpressionInfo>() }
+    // 当前选中的动作组下标（-1 = 无）与表情下标（-1 = 无表情）
+    var activeMotionGroup by remember { mutableStateOf(-1) }
+    var activeExpression by remember { mutableStateOf(-1) }
+
+    // ---- 任务 3：FPS HUD ----
+    var fps by remember { mutableStateOf(0f) }
+
+    // 独立协程轮询 FPS：与参数推流互不干扰，模型没就绪时也照常跑（显示 0）
+    LaunchedEffect(renderer) {
+        while (isActive) {
+            val value = runCatching { renderer.fps() }.getOrDefault(0f)
+            if (value > 0f) fps = value
+            delay(FPS_POLL_INTERVAL_MS)
+        }
+    }
+
     // 加载 + 绑定 + 推流放在同一个 effect 里串行完成。
     // 拆成两个 effect 时，绑定后改写 key 会让推流循环取消再重启一次
     // （实测日志里「面捕驱动启动」出现两遍），单 effect 天然只启动一次。
@@ -106,6 +134,15 @@ fun Live2DContent(
         // 参数下标只解析一次：模型里不存在的名字会被标成 -1 并在推流时跳过
         renderer.bindParameters(Live2DParamMap.TARGETS)
         surfaceViewRef[0]?.requestRender()
+
+        // ---- P4：读取动作与表情清单 ----
+        val (groups, exps) = renderer.listActions()
+        motionGroups.clear()
+        motionGroups.addAll(groups)
+        expressions.clear()
+        expressions.addAll(exps)
+        // native 侧默认播第一组动作的第 0 个，这里把 UI 选中态对齐
+        if (groups.isNotEmpty()) activeMotionGroup = groups.first().index
 
         if (faceRenderer == null) {
             status = "Purism Core 就绪（无面捕源）"
@@ -135,17 +172,19 @@ fun Live2DContent(
             // 人脸从有到无 / 从无到有各打一次日志，便于装机时确认链路
             if ((snapshot == null) != faceLost) {
                 faceLost = snapshot == null
-                InAppLog.i(TAG, if (faceLost) "人脸丢失，模型回中性姿态" else "人脸恢复，面捕驱动继续")
+                InAppLog.i(TAG, if (faceLost) "人脸丢失，交给动作/表情驱动" else "人脸恢复，面捕驱动继续")
             }
 
             var i = 0
             for ((name, index) in bound) {
+                // 人脸丢失时推 NaN 而不是中性值：C++ 侧把 NaN 当作「本帧不覆盖」，
+                // 参数于是由动作与表情决定。早期版本推中性值会把表情的
+                // ParamEyeLSmile 等按 0 覆盖掉，表现就是「点了表情没反应」。
                 val v = if (snapshot != null) {
                     // 快照缺这条源参数时用中性值：保持数组长度固定，语义也可预测
                     Live2DParamMap.valueFor(name, snapshot) ?: Live2DParamMap.neutralOf(name)
                 } else {
-                    // 人脸丢失：回中性姿态，而不是冻在最后一帧
-                    Live2DParamMap.neutralOf(name)
+                    Float.NaN
                 }
                 out[i] = index.toFloat()
                 out[i + 1] = v
@@ -189,7 +228,7 @@ fun Live2DContent(
                     setEGLConfigChooser(8, 8, 8, 8, 16, 8)
                     // 必须先 setRenderer 再设 renderMode（GLSurfaceView 的约束）
                     setRenderer(renderer)
-                    // 连续渲染：参数每帧都可能变，静止画面靠 requestRender 不可靠
+                    // 连续渲染：动作时间轴每帧推进，静止画面靠 requestRender 不可靠
                     // （参数更新发生在非 GL 线程，拿不到「何时该画」的信号）。
                     renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
                     surfaceViewRef[0] = this
@@ -203,10 +242,95 @@ fun Live2DContent(
             },
         )
 
-        // 状态占位：右下角小字，不遮挡人形。P0 的唯一 UI。
+        // ---- 任务 3：FPS HUD（左上角）----
         Surface(
             modifier = Modifier
-                .align(Alignment.BottomEnd)
+                .align(Alignment.TopStart)
+                .padding(12.dp),
+            color = Color.Black.copy(alpha = 0.45f),
+            shape = RoundedCornerShape(6.dp),
+        ) {
+            Text(
+                text = if (fps > 0f) "%.0f fps".format(fps) else "-- fps",
+                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.labelSmall,
+                color = Color.White.copy(alpha = 0.8f),
+            )
+        }
+
+        // ---- 任务 4：动作 / 表情按钮（底部）----
+        Column(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .padding(horizontal = 12.dp, vertical = 16.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+        ) {
+            if (motionGroups.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    for (group in motionGroups) {
+                        FilterChip(
+                            selected = activeMotionGroup == group.index,
+                            onClick = {
+                                activeMotionGroup = group.index
+                                val played = renderer.playMotion(group.index, -1)
+                                InAppLog.i(TAG, "点击动作 ${group.name} → 实际播放 $played")
+                            },
+                            label = { Text(group.name) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = Color.Black.copy(alpha = 0.45f),
+                                labelColor = Color.White.copy(alpha = 0.85f),
+                            ),
+                        )
+                    }
+                }
+            }
+            if (expressions.isNotEmpty()) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    // 「无」按钮取消表情：native 侧 -1 = 清空
+                    AssistChip(
+                        onClick = {
+                            activeExpression = -1
+                            renderer.setExpression(-1)
+                        },
+                        label = { Text("无表情") },
+                        colors = AssistChipDefaults.assistChipColors(
+                            containerColor = Color.Black.copy(alpha = 0.45f),
+                            labelColor = Color.White.copy(alpha = 0.85f),
+                        ),
+                    )
+                    for (exp in expressions) {
+                        FilterChip(
+                            selected = activeExpression == exp.index,
+                            onClick = {
+                                activeExpression = exp.index
+                                renderer.setExpression(exp.index)
+                            },
+                            label = { Text(exp.name) },
+                            colors = FilterChipDefaults.filterChipColors(
+                                containerColor = Color.Black.copy(alpha = 0.45f),
+                                labelColor = Color.White.copy(alpha = 0.85f),
+                            ),
+                        )
+                    }
+                }
+            }
+        }
+
+        // 状态占位：右上角小字（左上角留给 FPS，底部留给动作/表情按钮条）
+        Surface(
+            modifier = Modifier
+                .align(Alignment.TopEnd)
                 .padding(12.dp),
             color = if (isError) {
                 MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
@@ -254,3 +378,6 @@ private const val PARAM_PUSH_HZ = 30
 
 /** 推流周期（毫秒）。用常量而非 1000/PARAM_PUSH_HZ，避免整除误差带来的漂移。 */
 private const val PARAM_PUSH_INTERVAL_MS = 1000L / PARAM_PUSH_HZ
+
+/** FPS HUD 轮询周期：比 native 的 0.5s 统计窗口略快，读数看起来是连续的。 */
+private const val FPS_POLL_INTERVAL_MS = 400L
