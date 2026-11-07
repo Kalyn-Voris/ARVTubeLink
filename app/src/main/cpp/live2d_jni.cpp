@@ -132,6 +132,7 @@
 #include <android/asset_manager.h>
 #include <android/asset_manager_jni.h>
 #include <android/log.h>
+#include <EGL/egl.h>
 #include <GLES2/gl2.h>
 
 #include <algorithm>
@@ -615,6 +616,36 @@ int g_stencilBits = 0;
 
 // GL 线程标识：nativeRelease 据此判断能否安全调用 glDelete*
 std::thread::id g_glThreadId{};
+
+/**
+ * 当前 GL 资源所属的 EGL context（P5 修复「切后台丢部件」的真正根因）。
+ *
+ * 背景：切后台再回前台时 EGL context 被销毁重建，但 g_program / g_vbo 等句柄
+ * 变量里仍是**旧 context 的编号**。新 context 里这些编号要么无效、要么指向
+ * 完全不同的对象。旧代码在 surfaceCreated 里无条件 releaseGl()，于是：
+ *   glDeleteProgram(旧句柄) → GL_INVALID_VALUE 被压进错误队列；
+ * 紧接着 uploadTextures() 对第一张纹理做 glGetError()，读到的是这个**遗留错误**，
+ * 判定「texture_00 上传失败」并把它删掉；第二张才拿到干净的错误状态从而成功。
+ * 结果是所有引用 0 号纹理的部件（脸、手臂）全部因 tex==0 被跳过，
+ * 只剩用 1 号纹理的衣服 —— 这正是用户看到的「只剩衣服」。
+ *
+ * 修复：记住句柄所属的 context，只有同一个 context 才敢删；换 context 时
+ * 直接丢弃句柄记录（旧 GPU 资源随旧 context 一起被系统回收）。
+ */
+EGLContext g_glContext = EGL_NO_CONTEXT;
+
+/** 读当前线程的 EGL context（无 context 时返回 EGL_NO_CONTEXT）。 */
+EGLContext currentEglContext() {
+    return eglGetCurrentContext();
+}
+
+/** 清空 GL 错误队列，避免上一次操作的遗留错误污染后续判定。 */
+void drainGlErrors() {
+    // 上限只是防御：正常情况下 1~2 次就清空了
+    for (int i = 0; i < 32; ++i) {
+        if (glGetError() == GL_NO_ERROR) break;
+    }
+}
 
 // ---------------------------------------------------------------------------
 //  Purism Core 日志桥接
@@ -2446,20 +2477,43 @@ void buildGestureMvp(float *out) {
     out[13] = out[13] * s + g_gesture.dy;
 }
 
+/**
+ * 释放 GL 资源（GL 线程调用）。
+ *
+ * 关键约束：**只在句柄确实属于当前 EGL context 时才 glDelete**。
+ * 跨 context 删旧句柄不仅无效，还会把 GL_INVALID_VALUE 压进错误队列，
+ * 污染紧随其后的 uploadTextures() 的错误判定（见 g_glContext 注释）。
+ * 不属于当前 context 的句柄直接丢弃记录，GPU 内存随旧 context 一起回收。
+ */
 void releaseGl() {
-    // 只能在「当前线程持有有效 EGL context」时调用（即 GL 线程），
-    // 否则 glDelete* 作用不到原 context 的资源上，还会产生 GL_INVALID_OPERATION。
-    if (g_vbo) { glDeleteBuffers(1, &g_vbo); g_vbo = 0; }
-    if (g_ibo) { glDeleteBuffers(1, &g_ibo); g_ibo = 0; }
-    if (!g_textures.empty()) {
-        glDeleteTextures(static_cast<GLsizei>(g_textures.size()), g_textures.data());
-        g_textures.clear();
+    const EGLContext current = currentEglContext();
+    const bool sameContext = (g_glContext != EGL_NO_CONTEXT && g_glContext == current);
+
+    if (sameContext) {
+        if (g_vbo) { glDeleteBuffers(1, &g_vbo); }
+        if (g_ibo) { glDeleteBuffers(1, &g_ibo); }
+        if (!g_textures.empty()) {
+            glDeleteTextures(static_cast<GLsizei>(g_textures.size()), g_textures.data());
+        }
+        if (g_program) { glDeleteProgram(g_program); }
+        if (g_maskProgram) { glDeleteProgram(g_maskProgram); }
+    } else if (g_vbo || g_ibo || g_program || g_maskProgram || !g_textures.empty()) {
+        LOGW("releaseGl: 句柄属于旧 EGL context（旧=%p 当前=%p），只丢弃记录",
+             reinterpret_cast<void *>(g_glContext), reinterpret_cast<void *>(current));
     }
-    if (g_program) { glDeleteProgram(g_program); g_program = 0; }
-    if (g_maskProgram) { glDeleteProgram(g_maskProgram); g_maskProgram = 0; }
+
+    // 无论是否删除，句柄记录都必须清空：新 context 里它们已无意义
+    g_vbo = 0;
+    g_ibo = 0;
+    g_program = 0;
+    g_maskProgram = 0;
+    g_textures.clear();
     g_attrPos = g_attrUv = g_attrAlpha = -1;
     g_uniformMvp = g_uniformOpacity = g_uniformTex = -1;
     g_maskUniformMvp = g_maskUniformTex = -1;
+
+    // 丢弃可能残留的错误（旧 context 的操作、或上面的删除失败）
+    drainGlErrors();
 }
 
 /**
@@ -2478,6 +2532,10 @@ int uploadTextures() {
             continue;
         }
 
+        // 每张纹理上传前清空错误队列：glGetError 是「粘性队列」，
+        // 上一次（可能是别的模块或旧 context 遗留）的错误会被误算到本张头上。
+        drainGlErrors();
+
         GLuint tex = 0;
         glGenTextures(1, &tex);
         glBindTexture(GL_TEXTURE_2D, tex);
@@ -2495,10 +2553,18 @@ int uploadTextures() {
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, img.width, img.height, 0,
                      GL_RGBA, GL_UNSIGNED_BYTE, img.rgba.data());
 
+        // 只信任「本次 glTexImage2D 之后」读到的错误（前面已 drain 过）
         const GLenum glError = glGetError();
         if (glError != GL_NO_ERROR) {
-            LOGE("纹理上传失败: %s glError=0x%04x", img.name.c_str(), glError);
-            glDeleteTextures(1, &tex);
+            // ⚠️ 失败时**不删纹理、也不留空槽**：留下一个已分配但内容为空的纹理，
+            // 让引用它的 drawable 照常绘制（只是该图集区域透明）。
+            // 早期版本在这里 glDeleteTextures + continue，把槽位置成 0，
+            // 结果 drawFrame 里 tex==0 的批次整批跳过 —— 一张图集失败就会让
+            // 一半部件凭空消失（「只剩衣服」就是这么来的）。宁可少一块内容，
+            // 也不能让整片部件消失。
+            LOGE("纹理上传异常: %s glError=0x%04x（保留空纹理，避免整批部件消失）",
+                 img.name.c_str(), glError);
+            g_textures[i] = tex;
             continue;
         }
 
@@ -2812,7 +2878,12 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceCreated(
     std::lock_guard<std::mutex> lock(g_mutex);
     g_glThreadId = std::this_thread::get_id();
 
+    // releaseGl 必须看到「旧」context 才能判断句柄是否可删，因此先释放再更新记录。
     releaseGl();
+    g_glContext = currentEglContext();
+    LOGI("nativeSurfaceCreated: eglContext=%p（%s）",
+         reinterpret_cast<void *>(g_glContext),
+         g_glContext == EGL_NO_CONTEXT ? "无 context，GL 调用不可用" : "ok");
 
     if (!buildProgram()) {
         LOGE("nativeSurfaceCreated: shader program 构建失败");

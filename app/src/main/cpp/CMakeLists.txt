@@ -48,11 +48,16 @@ target_compile_definitions(live2d_jni PRIVATE
 find_library(log-lib log)
 find_library(android-lib android)
 find_library(gles-lib GLESv2)
+# eglGetCurrentContext：判断 GL 句柄属于哪个 EGL context。
+# 切后台恢复时必须靠它区分「同一个 context（可安全 glDelete）」与
+# 「context 已重建（旧句柄作废，删除会产生 GL_INVALID_VALUE）」。
+find_library(egl-lib EGL)
 
 target_link_libraries(live2d_jni
         ${android-lib}
         ${log-lib}
         ${gles-lib}
+        ${egl-lib}
         # Purism Core 用到 powf/sinf/sqrtf（<math.h>）；NDK 的 libm 需显式链接
         m
 )
