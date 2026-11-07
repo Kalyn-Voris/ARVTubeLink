@@ -3,30 +3,23 @@ package com.exarry.arvtubelink.network
 import com.google.gson.Gson
 import com.google.gson.JsonObject
 
-/**
- * 网络层：VTube Studio Public API（apiVersion 1.0）JSON 协议数据类。
- * VTS WebSocket API 文档：https://github.com/DenchiSoft/VTubeStudio
- */
+/** VTube Studio Public API 1.0 JSON 协议数据类 */
 
-/** VTS API 公共字段常量。 */
 object VtsApi {
     const val API_NAME = "VTubeStudioPublicAPI"
     const val API_VERSION = "1.0"
     const val DEFAULT_PORT = 8001
 
-    /** 插件身份（认证弹窗中展示给用户）。 */
     const val PLUGIN_NAME = "ARVTubeLink"
     const val PLUGIN_DEVELOPER = "exarry"
 }
 
-/** 单个注入参数项。 */
 data class ParameterValue(
     val id: String,
     val value: Float,
     val weight: Float = 1f
 )
 
-/** 首次连接（本地无 Token）：请求 VTS 颁发 Token，VTS 端会弹窗让用户确认授权。 */
 data class AuthenticationTokenRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -35,15 +28,15 @@ data class AuthenticationTokenRequest(
     val data: Data = Data()
 ) {
     data class Data(
-        // VTS 1.0 规范必填字段（缺失会被静默忽略，不弹窗不回包）
+        // 1.0 规范必填，缺失则静默忽略不回包
         val pluginName: String = VtsApi.PLUGIN_NAME,
         val pluginDeveloper: String = VtsApi.PLUGIN_DEVELOPER,
-        // 可选：插件图标文件名，暂用空串占位
+        // 空串表示不带图标
         val pluginIcon: String = ""
     )
 }
 
-/** API 状态查询：认证成功后用作应用层心跳。标准请求类型为 APIStateRequest（响应为 APIStateResponse）。 */
+/** 认证成功后作应用层心跳 */
 data class ApiStateRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -51,7 +44,6 @@ data class ApiStateRequest(
     val messageType: String = "APIStateRequest"
 )
 
-/** 已持有 Token 后的认证请求。 */
 data class AuthenticationRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -66,7 +58,7 @@ data class AuthenticationRequest(
     )
 }
 
-/** 参数注入请求（mode="set" 表示直接覆盖参数当前值）。 */
+/** mode="set" 直接覆盖当前值 */
 data class InjectParameterDataRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -81,9 +73,7 @@ data class InjectParameterDataRequest(
     )
 }
 
-// ---------- 响应 ----------
-
-/** 通用响应信封：先解析 messageType，再按需解析 data。 */
+/** 通用响应信封，按 messageType 分派后再解析 data */
 data class VtsEnvelope(
     val apiName: String? = null,
     val apiVersion: String? = null,
@@ -94,7 +84,6 @@ data class VtsEnvelope(
     val data: JsonObject? = null
 )
 
-/** [AuthenticationTokenRequest] 的响应：携带新颁发的 Token。 */
 data class AuthenticationTokenResponse(
     val messageType: String? = null,
     val data: Data? = null
@@ -104,7 +93,7 @@ data class AuthenticationTokenResponse(
     )
 }
 
-/** [AuthenticationRequest] 的响应（标准 1.0 字段为 authenticated/reason，无 authenticationSuccess）。 */
+/** 1.0 字段为 authenticated/reason */
 data class AuthenticationResponse(
     val messageType: String? = null,
     val data: Data? = null
@@ -115,7 +104,7 @@ data class AuthenticationResponse(
     )
 }
 
-/** 查询 VTS 当前可注入参数列表（认证成功后调用一次；注入不存在的参数会被 VTS 返回 APIError）。 */
+/** 注入不存在的参数会返回 APIError */
 data class InputParameterListRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -123,7 +112,6 @@ data class InputParameterListRequest(
     val messageType: String = "InputParameterListRequest"
 )
 
-/** [InputParameterListRequest] 的响应：默认参数 + 各插件创建的自定义参数。 */
 data class InputParameterListResponse(
     val messageType: String? = null,
     val data: Data? = null
@@ -131,13 +119,13 @@ data class InputParameterListResponse(
     data class Data(
         val modelLoaded: Boolean? = null,
         val modelName: String? = null,
-        /** 模型稳定 GUID（VTS 生成；模型名可改可重名，自适应缓存的匹配键用它）。 */
+        /** 模型稳定 GUID，自适应缓存以它为键（模型名可改可重名） */
         val modelID: String? = null,
         val defaultParameters: List<Param>? = null,
         val customParameters: List<Param>? = null
     )
 
-    /** min/max 因参数而异：表情类 0..1，眼球 -1..1，FaceAngleX -30..30。 */
+    /** 量程因参数而异：表情 0..1，眼球 -1..1，FaceAngleX -30..30 */
     data class Param(
         val name: String,
         val value: Float = 0f,
@@ -147,7 +135,7 @@ data class InputParameterListResponse(
     )
 }
 
-/** 查询当前模型全量 Live2D 参数（参数自适应探测的读回通道；标准字段为 data.parameters[]）。 */
+/** 字段为 data.parameters[] */
 data class Live2DParameterListRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -155,7 +143,6 @@ data class Live2DParameterListRequest(
     val messageType: String = "Live2DParameterListRequest"
 )
 
-/** [Live2DParameterListRequest] 的响应：模型加载态 + 全量 Live2D 参数的当前值/量程。 */
 data class Live2DParameterListResponse(
     val messageType: String? = null,
     val data: Data? = null
@@ -167,7 +154,7 @@ data class Live2DParameterListResponse(
         val parameters: List<Live2DParam>? = null
     )
 
-    /** 单个 Live2D 模型参数：value 为当前值，min/max 为模型配置的量程（OUT 钳制判定用）。 */
+    /** min/max 为模型配置量程，用于 OUT 钳制判定 */
     data class Live2DParam(
         val name: String,
         val value: Float = 0f,
@@ -177,10 +164,7 @@ data class Live2DParameterListResponse(
     )
 }
 
-/**
- * 订阅/退订 VTS 推送事件（当前仅订阅 ModelLoadedEvent：检测追踪中模型切换）。
- * 标准 Event API：无 config 的事件可整体省略 config 字段（ModelLoadedEvent 属此类）。
- */
+/** 无 config 的事件可整体省略 config 字段 */
 data class EventSubscriptionRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -194,7 +178,6 @@ data class EventSubscriptionRequest(
     )
 }
 
-/** [EventSubscriptionRequest] 的响应：回执当前已订阅事件列表（事件本身另以推送到达）。 */
 data class EventSubscriptionResponse(
     val messageType: String? = null,
     val data: Data? = null
@@ -205,7 +188,7 @@ data class EventSubscriptionResponse(
     )
 }
 
-/** 模型加载/卸载推送事件（需先订阅）：载荷即模型身份，追踪中模型切换的检测通道。 */
+/** 模型加载/卸载推送，须先订阅 */
 data class ModelLoadedEvent(
     val messageType: String? = null,
     val data: Data? = null
@@ -217,13 +200,13 @@ data class ModelLoadedEvent(
     )
 }
 
-/** APIError 详情（errorID=50 为用户拒绝授权）。 */
+/** errorID=50 为用户拒绝授权 */
 data class VtsApiError(
     val errorID: Int? = null,
     val message: String? = null
 )
 
-/** 便捷解析入口（容错：格式非法返回 null）。 */
+/** 解析入口，格式非法返回 null */
 object VtsProtocol {
     private val gson = Gson()
 
@@ -251,7 +234,6 @@ object VtsProtocol {
         gson.fromJson(json, ModelLoadedEvent::class.java)
     }.getOrNull()
 
-    /** 从信封的 data 中解析 APIError（errorID + message）。 */
     fun parseApiError(envelope: VtsEnvelope): VtsApiError? = runCatching {
         gson.fromJson(envelope.data, VtsApiError::class.java)
     }.getOrNull()

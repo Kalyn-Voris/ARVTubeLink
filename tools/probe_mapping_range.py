@@ -1,19 +1,9 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
-"""探测 VTS 参数映射的 IN 范围（注入输入参数 → 读回 Live2D 参数）.
+"""探测 VTS 参数映射的 IN 范围（注入输入参数，读回 Live2D 参数）
 
-VTS API 不暴露"参数映射图形的 IN 范围"（用户手动在 VTS 里配的范围），
-本脚本用探测法反推：
-  1. 向输入参数（如 BrowLeftY）注入已知探针值 v（后台线程 30Hz 持续注入，
-     满足 VTS"每秒至少重发一次否则回退"的要求）
-  2. 读全量 Live2D 参数，与注入前基线差分，找出被驱动的 Live2D 参数
-  3. 画 v → OUT 关系，反推 IN 范围候选
-
-用法:
-    python tools/probe_mapping_range.py
-    python tools/probe_mapping_range.py --params MouthOpenY --probe-values 0,0.5,1
-
-依赖: pip install websocket-client
+注入已知探针值并持续重发（VTS 要求每秒至少一次否则回退），读回全量 Live2D 参数与
+基线差分，反推 IN 范围候选
 """
 
 import argparse
@@ -37,9 +27,9 @@ PLUGIN_DEVELOPER = "ARVTubeLink"
 TOKEN_PATH = os.path.join(os.path.expanduser("~"), ".arvtubelink_probe_token")
 
 INJECT_HZ = 30.0
-SETTLE_SECONDS = 0.2   # 注入后等待（约 12 帧，覆盖平滑拖尾）
+SETTLE_SECONDS = 0.2   # 约 12 帧，覆盖平滑拖尾
 RELEASE_SECONDS = 0.2  # 停止注入后的基础等待
-REVERT_SECONDS = 1.0   # VTS 停止注入 1 秒后才回退参数值，探下一个参数前必须等满
+REVERT_SECONDS = 1.0   # VTS 停止注入 1 秒后才回退参数值
 DIFF_EPSILON = 0.01    # 差分抖动忽略阈值
 VISIBLE_DIFF = 0.05    # 差分可见性阈值
 CLAMP_EPSILON = 0.01   # 钳制判定（OUT 贴 Live2D min/max）
@@ -52,22 +42,22 @@ PROBE_TARGETS = [
 
 
 class VTSAPIError(Exception):
-    """VTS 返回 APIError（如参数不存在、用户拒绝授权）."""
+    """VTS 返回 APIError（如参数不存在、拒绝授权）"""
 
 
 class VTSDisconnected(Exception):
-    """WebSocket 断开或响应超时."""
+    """WebSocket 断开或响应超时"""
 
 
 class VTSClient:
-    """单连接 VTS WebSocket 客户端：读线程 + 按 requestID 配对响应."""
+    """单连接 VTS WebSocket 客户端：读线程 + 按 requestID 配对响应"""
 
     def __init__(self, ip, port):
         self._url = f"ws://{ip}:{port}"
         self._ws = None
         self._send_lock = threading.Lock()
         self._resp_lock = threading.Lock()
-        self._responses = {}  # requestID -> data 或 VTSAPIError 实例
+        self._responses = {}  # requestID -> data 或 VTSAPIError
         self._events = {}     # requestID -> threading.Event
         self._req_counter = 0
         self._connected = False
@@ -90,7 +80,7 @@ class VTSClient:
                 try:
                     raw = self._ws.recv()
                 except websocket.WebSocketTimeoutException:
-                    continue  # 心跳空闲，继续等
+                    continue
                 if not isinstance(raw, str):
                     continue
                 msg = json.loads(raw)
@@ -150,7 +140,7 @@ class VTSClient:
         return resp
 
     def fire_inject(self, param, value):
-        """注入一条探针值，不等待响应（30Hz 后台线程用；错误靠首次同步注入暴露）."""
+        """注入一条探针值，不等待响应"""
         self._send({
             "apiName": API_NAME,
             "apiVersion": API_VERSION,
@@ -164,7 +154,7 @@ class VTSClient:
 
 
 class Injector:
-    """30Hz 后台注入线程。start() 首次同步注入（让参数不存在的错误直接暴露），stop() 停止."""
+    """30Hz 后台注入线程，start() 先同步注入一次以暴露参数不存在的错误"""
 
     def __init__(self, client, param, value):
         self._client = client
@@ -210,7 +200,7 @@ def _write_token(token):
 
 
 def authenticate(client):
-    """复用 ~/.arvtubelink_probe_token；失效则走 TokenRequest 重新授权."""
+    """复用 ~/.arvtubelink_probe_token，失效则走 TokenRequest 重新授权"""
     token = _read_token()
     if token:
         resp = client.request("AuthenticationRequest", {
@@ -239,7 +229,7 @@ def authenticate(client):
 
 
 def read_live2d(client):
-    """读全量 Live2D 参数：{name: {value, min, max}}，附响应供取模型名."""
+    """读全量 Live2D 参数，返回 {name: {value, min, max}} 与原始响应"""
     resp = client.request("Live2DParameterListRequest", {}, timeout=10.0)
     if not resp.get("modelLoaded"):
         raise VTSAPIError("未检测到已加载模型（modelLoaded=false），请在 VTS 中加载模型后重试")
@@ -256,7 +246,7 @@ def read_live2d(client):
 
 
 def probe_param(client, param, probe_values):
-    """对单个输入参数跑全部探针值，返回 rows=[(v, top差分列表, B0, B1)] 并打表."""
+    """对单个参数跑全部探针值，返回 [(v, top差分列表)] 并打表"""
     print(f"\n### 探测参数: {param}")
     b0, _ = read_live2d(client)
     rows = []
@@ -301,7 +291,7 @@ def probe_param(client, param, probe_values):
 
 
 def _crossing(pts, level, last=False):
-    """探针点序列中 OUT 首次/末次穿越 level 的 v（线性插值）。找不到返回 None."""
+    """探针点序列中 OUT 首次或末次穿越 level 的 v（线性插值）"""
     found = None
     for (v1, o1), (v2, o2) in zip(pts, pts[1:]):
         if o1 == o2:
@@ -315,7 +305,7 @@ def _crossing(pts, level, last=False):
 
 
 def summarize(param, rows, snapshot):
-    """对单个参数出方法论评估：关联参数 / 5 点充分性 / IN 范围候选."""
+    """输出关联参数、探针点充分性与 IN 范围候选"""
     if not rows:
         return
     top1_names = [top[0][0] for _, top in rows if top]
@@ -331,7 +321,7 @@ def summarize(param, rows, snapshot):
           f"（top1 出现 {hits}/{len(top1_names)} 次，量程 [{lmin:.2f}, {lmax:.2f}]，"
           f"总变化 {total_travel:.2f}）")
 
-    # 5 点充分性：相邻探针点是否两点同侧钳在极限（说明区间偏粗、拐点被跳过）
+    # 相邻两点同侧钳在极限说明区间偏粗、拐点被跳过
     refine_hint = None
     for (v1, o1), (v2, o2) in zip(pts, pts[1:]):
         low_clamped = (o1 <= lmin + CLAMP_EPSILON and o2 <= lmin + CLAMP_EPSILON)
@@ -344,7 +334,7 @@ def summarize(param, rows, snapshot):
     else:
         print("  5 点充分性：足够（无相邻双点同侧钳制）")
 
-    # IN 范围候选：假设映射线性，OUT 从 min 走到 max 对应的 v 区间
+    # 假设映射线性，取 OUT 从 min 走到 max 对应的 v 区间
     lo = hi = None
     if pts[0][1] <= lmin + CLAMP_EPSILON:
         lo = _crossing(pts, lmin)
@@ -411,8 +401,7 @@ def main():
     results = {}
     for i, param in enumerate(params):
         if i > 0:
-            # 上一个参数停止注入后要等满 VTS 的 1 秒回退期，
-            # 否则其残留注入值会污染下一个参数的基线 B0
+            # 须等满 VTS 的 1 秒回退期，否则残留注入值污染下一个参数的基线
             time.sleep(REVERT_SECONDS)
         rows = probe_param(client, param, probe_values)
         if rows:

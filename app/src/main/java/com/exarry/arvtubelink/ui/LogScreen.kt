@@ -34,15 +34,7 @@ import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.utils.InAppLog
 
-/**
- * 日志 Tab 内容。
- *
- * 数据源（utils 红线：只读不改）：InAppLog.version（StateFlow&lt;Long&gt;，每追加一条 +1）经
- * collectAsState 驱动重组，remember(version) 时才重取 getAll()，非逐帧刷新；
- * 自动滚底：每条新日志都强制滚底。
- *
- * 复制/清空/Toast 全部本文件自持，不触碰 utils。
- */
+/** InAppLog.version 每次追加 +1，驱动重组并按 version 缓存 getAll() 结果 */
 @Composable
 fun LogContent() {
     val context = LocalContext.current
@@ -50,7 +42,7 @@ fun LogContent() {
     val logs = remember(version) { InAppLog.getAll() }
     val listState = rememberLazyListState()
 
-    // 自动滚到底部：新日志到达（version 变化）即强制滚到最后一行
+    // version 变化即滚到最后一行
     LaunchedEffect(version) {
         if (logs.isNotEmpty()) listState.scrollToItem(logs.lastIndex)
     }
@@ -101,7 +93,7 @@ fun LogContent() {
     }
 }
 
-/** 复制全部日志到剪贴板（Context 经 LocalContext 取，不塞依赖）。 */
+/** 日志按 \n 拼接后写入剪贴板 */
 private fun copyAllLogs(context: Context) {
     val text = InAppLog.getAll().joinToString("\n")
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

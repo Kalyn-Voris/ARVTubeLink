@@ -15,16 +15,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.exarry.arvtubelink.R
 
-/**
- * 完整条款弹窗：从 res/raw/agreement.txt 读中文协议全文展示（本地 App 不跳浏览器）。
- *
- * back 行为：默认 DialogProperties（可 back）——back 关闭本弹窗，露出下层的
- * AgreementDialog（各弹窗均为独立窗口，后组合者在上）。
- */
+/** 读 res/raw/agreement.txt 全文展示，默认 DialogProperties 允许 back 关闭 */
 @Composable
 fun LicenseDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    // 一次性读全文：use{} 保证流关闭、UTF-8 显式指定；remember 避免重组重复 IO
+    // remember 缓存正文，避免重组重复 IO
     val licenseText = remember {
         context.resources.openRawResource(R.raw.agreement)
             .bufferedReader(Charsets.UTF_8)

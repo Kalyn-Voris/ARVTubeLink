@@ -15,21 +15,11 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.exarry.arvtubelink.R
 
-/**
- * PolyForm 许可全文弹窗：展示 res/raw/license.txt（PolyForm Noncommercial 1.0.0
- * 标准英文全文，15 节 Acceptance → Definitions）。
- *
- * 本文件是标准全文的 App 展示版：剥离了 Markdown 标题前缀（节标题改大写行），
- * 其余格式（强调线、弯引号、节内段落）语义对齐；法律效力以项目根 LICENSE 文件
- * 为准（后者另行处理，不在本任务范围）。
- *
- * back 行为：默认 DialogProperties（可 back）——back 关闭本弹窗，露出下层
- * LicenseDialog（各弹窗均为独立窗口，后组合者在上）。
- */
+/** 读 res/raw/license.txt 全文展示，默认 DialogProperties 允许 back 关闭 */
 @Composable
 fun PolyFormDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    // 一次性读全文：use{} 保证流关闭、UTF-8 显式指定；remember 避免重组重复 IO
+    // remember 缓存正文，避免重组重复 IO
     val licenseText = remember {
         context.resources.openRawResource(R.raw.license)
             .bufferedReader(Charsets.UTF_8)
