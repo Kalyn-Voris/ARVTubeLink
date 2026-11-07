@@ -2,10 +2,11 @@
 //  live2d_jni.cpp - P0 静态渲染原型（Purism Core -> GLES 2.0）
 // ============================================================================
 //
-//  职责边界（P0 红线）：
-//   - 只做「从 assets 读 .moc3 → Purism Core 求值 → 把静态几何画成纯色人形」；
-//   - 不贴图、不读 model3.json、不驱动参数、不做面捕联动、不播动作；
-//   - 不碰 BlendShapeMapper / FaceRenderer 的任何逻辑。
+//  职责边界：
+//   - 只做「从 assets 读 .moc3 → Purism Core 求值 → 贴图绘制」；
+//   - 不碰 BlendShapeMapper / FaceRenderer 的任何逻辑（P3 只读取它们产出的
+//     VTS 参数快照，映射与算法全在 Kotlin 侧）；
+//   - 不做模型导入、不做动作播放、不做表情预设。
 //
 //  坐标与数据流：
 //   nativeInit（任意线程，只调一次）
@@ -60,6 +61,30 @@
 //   - 嵌套遮罩（遮罩自身又被遮罩）P2 按单层处理，只记警告；反转遮罩
 //     （csmIsInvertedMask）已用 GL_NOTEQUAL 实现，但 Sample 未用到，未经真机验证。
 //
+//  P3 增补（参数绑定与面捕驱动）：
+//   - 参数写入走 csmGetParameterValues 返回的**可写数组**：本版本 Purism Core
+//     不提供 csmSetParameterValueById，语义等价的做法是按 id 查下标后直接写
+//     values[index]，再由 csmUpdateModel 重算顶点（见 nativeUpdateParameters）；
+//   - 下标缓存 g_paramIndexById 在 loadModel 里一次性建立（string -> int），
+//     帧内不再做字符串比较；
+//   - **拓扑不变**：批次/遮罩/索引在 init 时定死，逐帧只刷新顶点位置与 alpha
+//     （g_vertexSpans 记录每个 drawable 在 g_vertices 里的区间）。参数改变
+//     drawable 的顶点数是 Live2D 不支持的情形，改图集也不在本阶段范围内；
+//   - 投影包围盒**不随参数重算**：否则头部摆动会导致画面跟着缩放抖动，
+//     与标准渲染器的固定取景语义一致；
+//   - 跨线程：nativeUpdateParameters 可能来自任意线程（Kotlin 推流协程），
+//     只改 CPU 侧模型与顶点并置脏标记；VBO 重传在 GL 线程的 nativeDrawFrame
+//     里完成（EREADY GL context 只在 GL 线程有效）。两者都持 g_mutex。
+//
+//  P3 已知边界（有意为之，不是遗漏）：
+//   - **可见集合在 init 时定死**：init 阶段被判定为不可见（vis=0 / opacity≈0）
+//     或顶点数=4（HitArea）的 drawable 不进入批次表。若某个参数后来让它变可见，
+//     本阶段不会补画——补画意味着要动态增删批次、重建索引与掩码区间。
+//     Sample 的常规表情（睁眼/闭嘴/转头）不触发这类变化，实测不受影响；
+//   - 投影包围盒固定，模型不会因头动而整体缩放（标准语义也是固定取景）；
+//   - 不做物理/自动眨眼：本版本 Purism Core 的 csmUpdateModel 只做参数求值，
+//     不含 physics3/pose3。头发裙摆的二次运动需要另实现物理求解器，超出本阶段。
+//
 //  Purism Core 的使用约束（API 规范）：
 //   - MOC 缓冲区必须 64 字节对齐（csmAlignofMoc），且必须活得比 model 久；
 //   - model 缓冲区必须 16 字节对齐（csmAlignofModel），大小取 csmGetSizeofModel；
@@ -82,6 +107,7 @@
 #include <mutex>
 #include <string>
 #include <thread>
+#include <unordered_map>
 #include <vector>
 
 // Purism Core 单文件头：整个实现只允许在这一个翻译单元里展开。
@@ -177,6 +203,48 @@ csmModel *g_model = nullptr;
 std::mutex g_mutex;
 std::vector<Vertex> g_vertices;
 std::vector<uint16_t> g_indices;
+
+/**
+ * 一个 drawable 在 g_vertices 里占据的区间（P3）。
+ *
+ * 为什么要单独记：参数一变，Purism Core 只更新 csmGetDrawableVertexPositions
+ * 返回的坐标数组，不会替我们重排 CPU 侧的合并顶点缓冲。有了区间就能只按
+ * drawable 局部刷新，不必每帧重建整份几何（也保住了 VBO 的静态拓扑）。
+ *
+ * 内容批次与遮罩批次都会登记（遮罩的顶点位置同样随参数变化，如头发遮罩）。
+ */
+struct VertexSpan {
+    int drawableIndex = 0; // csm 的 drawable 下标（不是批次下标）
+    int firstVertex = 0;   // 在 g_vertices 中的起始下标
+    int vertexCount = 0;
+};
+
+std::vector<VertexSpan> g_vertexSpans;
+
+/** 顶点数据自上次上传后是否被参数更新改脏（GL 线程据此决定是否 glBufferSubData）。 */
+bool g_verticesDirty = false;
+
+/**
+ * VBO 当前分配的顶点数（GL 线程写）。
+ *
+ * 用于 glBufferSubData 前的尺寸校验：若 nativeInit 在上传之后又跑过（模型换了），
+ * CPU 顶点数可能与 VBO 容量不一致，此时**跳过**本次局部更新而不是越界写显存。
+ */
+int g_vboVertexCount = 0;
+
+/**
+ * 参数 id -> 参数下标缓存（P3）。
+ *
+ * 本版本 Purism Core 没有 csmSetParameterValueById，只能写
+ * csmGetParameterValues 返回的数组；ID 是字符串，逐帧线性查找参数名会成为
+ * 30Hz 下实实在在的开销。init 时建一次表，之后 O(1) 落位。
+ */
+std::unordered_map<std::string, int> g_paramIndexById;
+int g_paramCount = 0;
+
+/** 缓存命中计数，用于诊断「Kotlin 传的 id 是否在模型里」（仅累计，不打日志）。 */
+long g_paramWritesTotal = 0;
+long g_paramUnknownTotal = 0;
 
 /**
  * 一次绘制批次：顶点/索引数组里的一段（一个 drawable 一段）。
@@ -588,12 +656,34 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
     g_batches.clear();
     g_maskBatches.clear();
     g_maskRefs.clear();
+    g_vertexSpans.clear();
+    g_verticesDirty = false;
     // Sample 实测 2794 顶点 / 12174 索引；Mask 会额外带进几百个顶点，一并预留
     g_vertices.reserve(8192);
     g_indices.reserve(32768);
     g_batches.reserve(128);
     g_maskBatches.reserve(32);
     g_maskRefs.reserve(32);
+    g_vertexSpans.reserve(128);
+
+    // ---- P3：参数 id -> 下标缓存 ----
+    // 本版本无 csmSetParameterValueById，参数只能通过可写 values 数组写入，
+    // 因此这里把全部参数名与下标建成表，供 nativeUpdateParameters 做 O(1) 查找。
+    {
+        const char **paramIds = csmGetParameterIds(g_model);
+        g_paramCount = csmGetParameterCount(g_model);
+        g_paramIndexById.clear();
+        if (paramIds && g_paramCount > 0) {
+            g_paramIndexById.reserve(static_cast<size_t>(g_paramCount) * 2);
+            for (int i = 0; i < g_paramCount; ++i) {
+                if (paramIds[i]) g_paramIndexById.emplace(paramIds[i], i);
+            }
+            LOGI("参数表: count=%d（可写入）", g_paramCount);
+        } else {
+            LOGW("参数表为空（csmGetParameterIds=%p count=%d），参数驱动不可用",
+                 static_cast<const void *>(paramIds), g_paramCount);
+        }
+    }
 
     g_minX = g_minY = 1e30f;
     g_maxX = g_maxY = -1e30f;
@@ -630,7 +720,8 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
 
         const float opacity =
                 opacities[di] < 0 ? 0.0f : (opacities[di] > 1 ? 1.0f : opacities[di]);
-        const uint16_t base = static_cast<uint16_t>(g_vertices.size());
+        const int spanFirst = static_cast<int>(g_vertices.size());
+        const uint16_t base = static_cast<uint16_t>(spanFirst);
         const csmVector2 *pos = positions[di];
         const csmVector2 *uv = uvs[di];
         for (int v = 0; v < vcount; ++v) {
@@ -646,6 +737,8 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
             if (y < g_minY) g_minY = y;
             if (y > g_maxY) g_maxY = y;
         }
+        // 登记区间：P3 的参数更新按 drawable 局部刷新顶点位置
+        g_vertexSpans.push_back(VertexSpan{idx, spanFirst, vcount});
 
         *firstIndex = static_cast<int>(g_indices.size());
         *indexCount = icount;
@@ -655,7 +748,6 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
         }
         return true;
     };
-
     // 「drawable 下标 → 掩码批次下标」缓存：同一个掩码常被多个内容共用，
     // 几何只收集一次，避免重复顶点把 65535 的 uint16 空间吃掉。
     std::vector<int> maskBatchOf(static_cast<size_t>(drawableCount), -1);
@@ -764,6 +856,52 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
          nestedMaskMasks, hiddenMaskRefs);
     LOGI("bounds: x[%.3f,%.3f] y[%.3f,%.3f]", g_minX, g_maxX, g_minY, g_maxY);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+//  参数驱动的顶点刷新（P3）
+// ---------------------------------------------------------------------------
+/**
+ * 把所有已登记 drawable 的顶点位置与 alpha 从 Purism Core 抄回 g_vertices。
+ *
+ * 只改 x/y/a，不动 u/v 与索引：
+ *  - UV 由模型静态决定，参数不会改它；
+ *  - 索引与批次拓扑在 init 时定死（见文件头 P3 说明），参数更新不会改变
+ *    drawable 的顶点数量，因此 VBO 大小恒定，GL 侧只需 glBufferSubData。
+ *
+ * 调用约束：**必须持 g_mutex**（调用方负责），且 g_model 非空。
+ * 不重算 g_minX..g_maxY —— 投影取景固定，否则头动会让画面整体缩放。
+ */
+void refreshVertexPositionsLocked() {
+    if (!g_model || g_vertexSpans.empty()) return;
+
+    const int drawableCount = csmGetDrawableCount(g_model);
+    if (drawableCount <= 0) return;
+    const csmVector2 **positions = csmGetDrawableVertexPositions(g_model);
+    const float *opacities = csmGetDrawableOpacities(g_model);
+    if (!positions || !opacities) return;
+
+    const int vertexTotal = static_cast<int>(g_vertices.size());
+    for (const VertexSpan &span : g_vertexSpans) {
+        const int di = span.drawableIndex;
+        if (di < 0 || di >= drawableCount) continue;
+        const csmVector2 *pos = positions[di];
+        if (!pos) continue;
+
+        // 防御：Purism Core 万一改了顶点数，按两者较小值抄，
+        // 绝不越过本 drawable 的区间写到邻居上
+        const int n = std::min(span.vertexCount, std::max(0, vertexTotal - span.firstVertex));
+        const float opacity =
+                opacities[di] < 0 ? 0.0f : (opacities[di] > 1 ? 1.0f : opacities[di]);
+        Vertex *dst = g_vertices.data() + span.firstVertex;
+        for (int v = 0; v < n; ++v) {
+            dst[v].x = pos[v].X;
+            dst[v].y = pos[v].Y;
+            // opacity 也会被参数驱动（如眼睛开合时某些零件整体淡出）
+            dst[v].a = opacity;
+        }
+    }
+    g_verticesDirty = true;
 }
 
 // ---------------------------------------------------------------------------
@@ -1124,6 +1262,11 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
         g_batches.clear();
         g_maskBatches.clear();
         g_maskRefs.clear();
+        g_vertexSpans.clear();
+        g_paramIndexById.clear();
+        g_paramCount = 0;
+        g_verticesDirty = false;
+        g_vboVertexCount = 0;
         g_textureImages.clear();
         g_drawableTotal = 0;
         g_drawableDrawn = 0;
@@ -1147,6 +1290,97 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
     }
 
     return nullptr;
+}
+
+/**
+ * 参数驱动入口（P3）：写入一帧参数并让模型重算顶点。
+ *
+ * @param params [id, value, id, value, ...] 的扁平浮点数组（长度必须为偶数）。
+ *               id 是 Purism Core 参数下标（Kotlin 侧经 nativeResolveParameterIds
+ *               一次性解析并缓存，避免逐帧字符串查找），value 会被
+ *               csmUpdateModel 按参数量程钳制。
+ *
+ * 线程：可由任意线程调用（Kotlin 推流协程）。只在锁内改 CPU 侧模型与顶点，
+ * 置 g_verticesDirty；VBO 重传留给 GL 线程的 nativeDrawFrame —— EGL context
+ * 只在那条线程上有效，跨线程调 glBufferSubData 会静默失效。
+ *
+ * 返回值：本帧实际写入的参数个数（负数 = 失败：-1 模型未就绪，
+ * -2 数组长度为奇数）。
+ */
+JNIEXPORT jint JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeUpdateParameters(
+        JNIEnv *env, jobject /*thiz*/, jfloatArray params) {
+    if (!params) return -2;
+
+    const jsize length = env->GetArrayLength(params);
+    if (length <= 0 || (length % 2) != 0) return -2;
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_model) return -1;
+
+    float *values = csmGetParameterValues(g_model);
+    if (!values || g_paramCount <= 0) return -1;
+
+    // 直通数组：避免 30Hz × N 参数的 GetFloatArrayRegion 额外拷贝
+    jfloat *raw = env->GetFloatArrayElements(params, nullptr);
+    if (!raw) return -1;
+
+    int written = 0;
+    int unknown = 0;
+    for (jsize i = 0; i + 1 < length; i += 2) {
+        const int index = static_cast<int>(raw[i]);
+        if (index < 0 || index >= g_paramCount) {
+            ++unknown;
+            continue;
+        }
+        values[index] = raw[i + 1];
+        ++written;
+    }
+    env->ReleaseFloatArrayElements(params, raw, JNI_ABORT);
+
+    g_paramWritesTotal += written;
+    g_paramUnknownTotal += unknown;
+
+    if (written > 0) {
+        // 先清动态标记再 update：Purism Core 用动态标记判断哪些 drawable 变了
+        csmResetDrawableDynamicFlags(g_model);
+        csmUpdateModel(g_model);
+        refreshVertexPositionsLocked();
+    }
+    return written;
+}
+
+/**
+ * 把参数名解析成下标，供 Kotlin 建缓存（P3）。
+ *
+ * @param names 参数名数组（如 "ParamEyeLOpen"）
+ * @return 与 names 等长的下标数组；模型里不存在的参数返回 -1
+ */
+JNIEXPORT jintArray JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeResolveParameterIds(
+        JNIEnv *env, jobject /*thiz*/, jobjectArray names) {
+    if (!names) return nullptr;
+    const jsize count = env->GetArrayLength(names);
+
+    std::lock_guard<std::mutex> lock(g_mutex);
+    std::vector<jint> out(static_cast<size_t>(count), -1);
+    for (jsize i = 0; i < count; ++i) {
+        auto name = static_cast<jstring>(env->GetObjectArrayElement(names, i));
+        if (!name) continue;
+        const char *chars = env->GetStringUTFChars(name, nullptr);
+        if (chars) {
+            const auto it = g_paramIndexById.find(chars);
+            if (it != g_paramIndexById.end()) out[static_cast<size_t>(i)] = it->second;
+            env->ReleaseStringUTFChars(name, chars);
+        }
+        env->DeleteLocalRef(name);
+    }
+
+    jintArray result = env->NewIntArray(count);
+    if (result) {
+        env->SetIntArrayRegion(result, 0, count, out.data());
+    }
+    return result;
 }
 
 /** 初始化 GL 资源：编译 shader、上传纹理、创建并填充 VBO/IBO。GL 线程调用。 */
@@ -1180,6 +1414,9 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceCreated(
                  static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex)),
                  g_vertices.data(),
                  GL_STATIC_DRAW);
+    g_vboVertexCount = static_cast<int>(g_vertices.size());
+    // 上传即最新：清掉可能残留的脏标记，避免下一帧重复上传
+    g_verticesDirty = false;
 
     glGenBuffers(1, &g_ibo);
     glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
@@ -1276,6 +1513,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
     GLint maskUniformMvp;
     GLint maskUniformTex;
     int stencilBits;
+    bool verticesDirty;
     std::vector<Batch> batches;
     std::vector<MaskBatch> maskBatches;
     std::vector<int> maskRefs;
@@ -1302,6 +1540,24 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         maskRefs = g_maskRefs;
         textures = g_textures;
         std::memcpy(mvp, g_mvp, sizeof(mvp));
+        verticesDirty = g_verticesDirty;
+        if (verticesDirty && !g_vertices.empty()) {
+            // ---- P3：参数更新后重传顶点 ----
+            // 常规路径：拓扑（索引、批次数、顶点总数）不变，整块 glBufferSubData。
+            // 兜底路径：VBO 容量与 CPU 顶点数不一致（nativeInit 在 surfaceCreated
+            // 之后重跑过），改走 glBufferData 重新分配，避免越界写显存。
+            glBindBuffer(GL_ARRAY_BUFFER, vbo);
+            const GLsizeiptr bytes =
+                    static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex));
+            if (g_vboVertexCount == static_cast<int>(g_vertices.size())) {
+                glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, g_vertices.data());
+            } else {
+                LOGW("顶点数变化 (%d -> %zu)，重建 VBO", g_vboVertexCount, g_vertices.size());
+                glBufferData(GL_ARRAY_BUFFER, bytes, g_vertices.data(), GL_STATIC_DRAW);
+                g_vboVertexCount = static_cast<int>(g_vertices.size());
+            }
+            g_verticesDirty = false;
+        }
     }
 
     // 没有 8-bit 模板（EGL 配置选错）或遮罩 program 编译失败：
@@ -1480,6 +1736,11 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_batches.clear();
     g_maskBatches.clear();
     g_maskRefs.clear();
+    g_vertexSpans.clear();
+    g_paramIndexById.clear();
+    g_paramCount = 0;
+    g_verticesDirty = false;
+    g_vboVertexCount = 0;
     g_textureImages.clear();
     g_vertices.shrink_to_fit();
     g_indices.shrink_to_fit();
@@ -1507,14 +1768,16 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeStats(
     for (const Batch &batch : g_batches) {
         if (batch.maskCount > 0) ++maskedBatches;
     }
-    char buffer[320];
+    char buffer[384];
     std::snprintf(buffer, sizeof(buffer),
                   "drawables=%d drawn=%d batches=%zu masked=%d maskGeoms=%zu "
                   "textures=%d/%zu verts=%zu idx=%zu stencil=%d "
+                  "params=%d writes=%ld unknown=%ld "
                   "bounds=[%.3f,%.3f]x[%.3f,%.3f]",
                   g_drawableTotal, g_drawableDrawn, g_batches.size(), maskedBatches,
                   g_maskBatches.size(), uploadedTextures, g_textureImages.size(),
                   g_vertices.size(), g_indices.size(), g_stencilBits,
+                  g_paramCount, g_paramWritesTotal, g_paramUnknownTotal,
                   g_minX, g_maxX, g_minY, g_maxY);
     return env->NewStringUTF(buffer);
 }

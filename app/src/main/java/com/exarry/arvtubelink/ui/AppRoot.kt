@@ -68,7 +68,7 @@ import kotlinx.coroutines.launch
 internal const val TAB_HOME = 0
 internal const val TAB_SETTINGS = 1
 
-/** Live2D 页（P0：Purism Core 原生静态渲染，内容见 [Live2DContent]）。 */
+/** Live2D 页（Purism Core 原生渲染 + 面捕参数驱动，内容见 [Live2DContent]）。 */
 internal const val TAB_LIVE2D = 2
 internal const val TAB_LOG = 3
 
@@ -389,6 +389,8 @@ fun AppRoot(
                                     )
                                     TAB_LIVE2D -> Live2DContent(
                                         modifier = Modifier.fillMaxSize(),
+                                        // 面捕参数源：只读快照，映射算法仍全在 FaceRenderer 内
+                                        faceRenderer = renderer,
                                     )
                                     TAB_LOG -> LogContent()
                                 }

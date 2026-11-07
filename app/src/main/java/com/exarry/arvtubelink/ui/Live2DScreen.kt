@@ -25,15 +25,21 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.exarry.arvtubelink.ar.FaceRenderer
+import com.exarry.arvtubelink.ui.live2d.Live2DParamMap
 import com.exarry.arvtubelink.ui.live2d.Live2DRenderer
+import com.exarry.arvtubelink.utils.InAppLog
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import kotlinx.coroutines.withContext
 
 /**
- * Live2D 渲染页（P0：Purism Core 原生静态渲染）。
+ * Live2D 渲染页（Purism Core 原生渲染 + 面捕参数驱动）。
  *
  * ## 目的
- * 这是「用原生 C++/JNI 替换 WebView 方案」的第一阶段验证：
- * 只证明 **C++ 能把 .moc3 加载出来并画出人形几何面**，不贴图、不驱动、不播动作。
- * 原来的 WebView 方案（pixi-live2d-display）已整体移除，本页是唯一的 Live2D 宿主。
+ * 用原生 C++/JNI 替代 WebView 方案，并在其上把 AR 面捕数据实时推给模型：
+ * 头动、眼动、嘴动三条主线跟随人脸。
  *
  * ## 渲染链路
  * `GLSurfaceView`（EGL/GL 线程）→ [Live2DRenderer]（Kotlin 桥）→
@@ -41,27 +47,38 @@ import com.exarry.arvtubelink.ui.live2d.Live2DRenderer
  * 模型数据全部在 native 侧：Kotlin 只传 [android.content.res.AssetManager] 与
  * `.moc3` 的 assets 相对路径，顶点/索引/投影都在 C++ 里算。
  *
- * ## 为什么用 GLSurfaceView 而不是 Compose Canvas
- * 后续 P1 要接贴图与参数驱动，必须是真 GL 管线；P0 就按最终形态的骨架搭，
- * 避免中途换实现。Compose 只负责外层布局与状态文字。
+ * ## 面捕驱动（P3）
+ * 数据源是 [FaceRenderer.latestFaceSnapshot] —— 即 BlendShapeMapper + Smoother
+ * 的既有输出，本页**只读**，不参与任何映射算法（红线）。
+ * 推流协程以 [PARAM_PUSH_HZ] 读取快照，经 [Live2DParamMap] 换算成 Cubism 量纲，
+ * 打包成 `[id, value, ...]` 交给 [Live2DRenderer.updateParams]。
+ *
+ * 为什么是「定时拉」而不是「人脸回调推」：
+ *  - 拉取频率独立于相机帧率（AR 帧率随设备波动，30Hz 是稳定上限）；
+ *  - 读不到新快照时重复推同一份值是无害的（csmUpdateModel 幂等），
+ *    而回调链一旦断链模型会冻住，排查成本高；
+ *  - 协程挂在本页组合生命周期上，切走 Tab 自动取消，不会后台空转。
  *
  * ## 生命周期
- * - `RENDERMODE_WHEN_DIRTY`：P0 是静态画面，画完一帧就没有新内容需要重绘，
- *   连续渲染只会白耗电。surface 建立/改变与显式 requestRender 各触发一次。
+ * - `RENDERMODE_CONTINUOUSLY`：参数每帧都可能变，必须连续渲染才能跟上。
+ *   GL 线程空闲时只是清屏+一次 draw，代价远低于「改参数后忘了 requestRender
+ *   导致画面卡住」的排查成本。
  * - 组合离开 → [Live2DRenderer.release] 释放 native 内存（模型缓冲区约 1.5MB）。
- * - 前后台：跟随 [LocalLifecycleOwner]，onPause 停渲染线程、onResume 恢复并重绘。
+ * - 前后台：跟随 [LocalLifecycleOwner]，onPause 停渲染线程、onResume 恢复。
  *
  * ## UI
  * 只保留最小占位：右下角一行状态文字（加载中 / 就绪 / 失败原因）。
- * 不加任何模型切换、动作、表情入口——P0 明确不做。
+ * 不加模型切换、动作、表情入口——本阶段明确不做。
  *
  * @param modifier 布局修饰符（由 AppRoot 传入，占满内容区）
  * @param mocAssetPath assets 内的 .moc3 相对路径，默认内置 Sample
+ * @param faceRenderer 面捕渲染器（参数源）；null = 只渲染静态姿态
  */
 @Composable
 fun Live2DContent(
     modifier: Modifier = Modifier,
     mocAssetPath: String = Live2DRenderer.DEFAULT_MOC_PATH,
+    faceRenderer: FaceRenderer? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -74,15 +91,79 @@ fun Live2DContent(
     var status by remember { mutableStateOf("正在加载模型…") }
     var isError by remember { mutableStateOf(false) }
 
+    // 面捕驱动是否已武装（模型加载完 + 有面捕源才真启动推流循环）。
+    // 用 State 而非普通变量：它是推流 effect 的 key，加载完成后要能触发启动。
+    var paramSourceActive by remember { mutableStateOf(false) }
+
     // 首次组合就把模型加载掉（不等 GL 线程），状态文字能立刻反映结果；
     // GL 侧 onSurfaceCreated 只消费已组装好的 CPU 几何。
     // 首帧若先于本 effect 到达 GL 线程，Renderer.onSurfaceCreated 内部有幂等补救。
     LaunchedEffect(renderer) {
         val ready = runCatching { renderer.init() }.getOrDefault(false)
+        if (ready) {
+            // 参数下标只解析一次：模型里不存在的名字会被标成 -1 并在推流时跳过
+            renderer.bindParameters(Live2DParamMap.TARGETS)
+            paramSourceActive = faceRenderer != null
+        }
         isError = !ready
-        status = if (ready) "Purism Core 就绪" else (renderer.lastError ?: "模型加载失败")
-        // 加载完成（无论成败）都请求一帧：成功=画出人形，失败=清屏+不残留上一帧
+        status = when {
+            !ready -> renderer.lastError ?: "模型加载失败"
+            faceRenderer == null -> "Purism Core 就绪（无面捕源）"
+            else -> "Purism Core 就绪 · 面捕驱动中"
+        }
         surfaceViewRef[0]?.requestRender()
+    }
+
+    // ---- P3：30Hz 参数推流 ----
+    // 挂在本页组合生命周期：切走 Tab / 离开页面自动 cancel，不会后台空转。
+    // key 用 renderer + faceRenderer：任一被重建都要重新起循环（旧循环用的是旧模型）。
+    LaunchedEffect(renderer, faceRenderer, paramSourceActive) {
+        // 模型没就绪或没有面捕源：不启动循环，画面停在原生默认姿态
+        if (!paramSourceActive || !renderer.modelReady || faceRenderer == null) return@LaunchedEffect
+
+        val indices = renderer.parameterIndexMap()
+        // 只保留模型真正拥有的参数：-1 的项直接不进数组，C++ 侧无需逐帧丢
+        val bound = Live2DParamMap.TARGETS.mapNotNull { name ->
+            val index = indices[name] ?: -1
+            if (index >= 0) name to index else null
+        }
+        if (bound.isEmpty()) {
+            InAppLog.w(TAG, "模型没有可驱动的参数，面捕驱动停用")
+            return@LaunchedEffect
+        }
+        InAppLog.i(TAG, "面捕驱动启动: ${bound.size}/${Live2DParamMap.TARGETS.size} 参数 @ ${PARAM_PUSH_HZ}Hz")
+
+        // 每帧写入的参数对数固定 = bound.size，数组长度恒为 bound.size*2：
+        // 长度固定才能直接复用同一个 FloatArray（JNI 侧按偶数对解析，无需拷贝）。
+        val out = FloatArray(bound.size * 2)
+        var faceLost = false
+        while (isActive) {
+            val snapshot = faceRenderer.latestFaceSnapshot
+            // 人脸从有到无 / 从无到有各打一次日志，便于装机时确认链路
+            if ((snapshot == null) != faceLost) {
+                faceLost = snapshot == null
+                InAppLog.i(TAG, if (faceLost) "人脸丢失，模型回中性姿态" else "人脸恢复，面捕驱动继续")
+            }
+
+            var i = 0
+            for ((name, index) in bound) {
+                val v = if (snapshot != null) {
+                    // 快照缺这条源参数时用中性值：保持数组长度固定，语义也可预测
+                    Live2DParamMap.valueFor(name, snapshot) ?: Live2DParamMap.neutralOf(name)
+                } else {
+                    // 人脸丢失：回中性姿态，而不是冻在最后一帧
+                    Live2DParamMap.neutralOf(name)
+                }
+                out[i] = index.toFloat()
+                out[i + 1] = v
+                i += 2
+            }
+
+            // 连续渲染模式下 GL 线程会自己取最新顶点，无需 requestRender。
+            // 切到 Default：csmUpdateModel 是整模型求值，30Hz 放主线程会挤占 UI 帧。
+            withContext(Dispatchers.Default) { renderer.updateParams(out) }
+            delay(PARAM_PUSH_INTERVAL_MS)
+        }
     }
 
     // 组合离开：释放 native 资源（GL 线程由 GLSurfaceView 保证）
@@ -109,8 +190,9 @@ fun Live2DContent(
                     setEGLConfigChooser(8, 8, 8, 8, 16, 8)
                     // 必须先 setRenderer 再设 renderMode（GLSurfaceView 的约束）
                     setRenderer(renderer)
-                    // 静态画面：只在 surface 变化/显式请求时重绘，不做连续渲染
-                    renderMode = GLSurfaceView.RENDERMODE_WHEN_DIRTY
+                    // 连续渲染：参数每帧都可能变，静止画面靠 requestRender 不可靠
+                    // （参数更新发生在非 GL 线程，拿不到「何时该画」的信号）。
+                    renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
                     surfaceViewRef[0] = this
                 }
             },
@@ -165,3 +247,11 @@ fun Live2DContent(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 }
+
+private const val TAG = "Live2D"
+
+/** 参数推流频率。30Hz 与 FaceRenderer 的发送上限一致，高于人眼可辨的跟随延迟。 */
+private const val PARAM_PUSH_HZ = 30
+
+/** 推流周期（毫秒）。用常量而非 1000/PARAM_PUSH_HZ，避免整除误差带来的漂移。 */
+private const val PARAM_PUSH_INTERVAL_MS = 1000L / PARAM_PUSH_HZ
