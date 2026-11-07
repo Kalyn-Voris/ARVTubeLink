@@ -79,6 +79,7 @@
     <!-- ===== Tab 与顶栏 ===== -->
     <string name="tab_home">首页</string>
     <string name="tab_settings">设置</string>
+    <string name="tab_live2d">Live2D</string>
     <string name="tab_log">日志</string>
 
     <!-- ===== 设置页卡片标题（SettingsCard） ===== -->

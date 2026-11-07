@@ -82,6 +82,7 @@
     <!-- ===== Tabs and top bar ===== -->
     <string name="tab_home">Home</string>
     <string name="tab_settings">Settings</string>
+    <string name="tab_live2d">Live2D</string>
     <string name="tab_log">Log</string>
 
     <!-- ===== Settings card titles ===== -->

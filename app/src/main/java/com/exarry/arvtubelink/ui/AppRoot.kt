@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.List
+import androidx.compose.material.icons.filled.Face
 import androidx.compose.material.icons.filled.Home
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Settings
@@ -66,7 +67,10 @@ import kotlinx.coroutines.launch
 /** Tab 索引取值（tabIndex State 由 MainActivity 持有；切换一律经 onSelectTab 回调上收）。 */
 internal const val TAB_HOME = 0
 internal const val TAB_SETTINGS = 1
-internal const val TAB_LOG = 2
+
+/** Live2D 页（P0：Purism Core 原生静态渲染，内容见 [Live2DContent]）。 */
+internal const val TAB_LIVE2D = 2
+internal const val TAB_LOG = 3
 
 /** 自动发现暂态文案（Found/Failed）显示时长，到点自动回 Idle。 */
 private const val DISCOVERY_STATUS_CLEAR_MS = 4_000L
@@ -443,6 +447,9 @@ fun AppRoot(
                                         onLanguageChange = onLanguageChange,
                                         onBurnInMaskEnabledChange = onBurnInMaskEnabledChange,
                                     )
+                                    TAB_LIVE2D -> Live2DContent(
+                                        modifier = Modifier.fillMaxSize(),
+                                    )
                                     TAB_LOG -> LogContent()
                                 }
                             }
@@ -510,6 +517,7 @@ private fun ArvTopBar(
                     when (tabIndex) {
                         TAB_HOME -> R.string.app_name
                         TAB_SETTINGS -> R.string.tab_settings
+                        TAB_LIVE2D -> R.string.tab_live2d
                         TAB_LOG -> R.string.tab_log
                         else -> error("Unknown tabIndex: $tabIndex")
                     }
@@ -565,6 +573,13 @@ private fun ArvBottomBar(
             onClick = { onSelect(TAB_SETTINGS) },
             icon = { Icon(imageVector = Icons.Filled.Settings, contentDescription = null) },
             label = { Text(stringResource(R.string.tab_settings)) },
+        )
+        // Live2D 页（P0 原型）：图标用 Face 表达「模型/人脸」，不额外引入图标依赖
+        NavigationBarItem(
+            selected = selected == TAB_LIVE2D,
+            onClick = { onSelect(TAB_LIVE2D) },
+            icon = { Icon(imageVector = Icons.Filled.Face, contentDescription = null) },
+            label = { Text(stringResource(R.string.tab_live2d)) },
         )
         NavigationBarItem(
             selected = selected == TAB_LOG,

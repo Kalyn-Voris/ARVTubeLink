@@ -78,6 +78,11 @@ android {
         versionName = "1.2.5 (20261101)"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        // ABI 列表不在这里声明：本项目已用下方 splits.abi 分包，AGP 9 不允许
+        // defaultConfig.ndk.abiFilters 与 splits.abi 同时存在（会报
+        // "Conflicting configuration ... cannot be present when splits abi filters are set"）。
+        // splits.abi 会同步约束 externalNativeBuild 只编那两个架构。
     }
 
     buildTypes {
@@ -139,6 +144,26 @@ android {
         sourceCompatibility = JavaVersion.VERSION_11
         targetCompatibility = JavaVersion.VERSION_11
     }
+
+    // ---------- 原生渲染（P0：Purism Core 静态渲染）----------
+    //
+    // 产物 liblive2d_jni.so 由 app/src/main/cpp/CMakeLists.txt 构建，
+    // 源码见 app/src/main/cpp/live2d_jni.cpp（内含 PurismCoreBundle.h）。
+    //
+    // ndkVersion 必须显式写死：
+    //  - AGP 默认取「本机安装的最新 NDK」，不同机器/CI 上编译结果与告警会漂移；
+    //  - 未安装时 AGP 会按 SDK 中已接受的 licenses 自动下载该版本（本机首次构建即走此路径）。
+    // 选 28.2.13676358（r28c）：NDK r27+ 对 16KB page size 对齐与 GLES 头文件支持完整，
+    // 且是 r28 系列最后一个稳定补丁版。
+    ndkVersion = "28.2.13676358"
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
+    }
+
     buildFeatures {
         viewBinding = true
         compose = true
