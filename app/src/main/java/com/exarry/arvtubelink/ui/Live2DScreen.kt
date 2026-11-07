@@ -2,6 +2,7 @@ package com.exarry.arvtubelink.ui
 
 import android.opengl.GLSurfaceView
 import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -23,6 +24,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -30,6 +33,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
@@ -74,10 +78,20 @@ import kotlinx.coroutines.withContext
  * 动作组（Idle / Tap…）与表情列表（f00…f0N）。默认在 native 侧自动播第一组
  * 动作的第 0 个，因此页面一打开就是「活着」的。
  *
+ * ## 手势（P5）
+ * `detectTransformGestures` 同时给出拖拽位移与双指缩放，两者换算成
+ * 「屏幕半宽/半高」为单位的归一化偏移后交给 [Live2DRenderer.setTransform]，
+ * 由 C++ 侧合成到 MVP 上。钳制（0.5~3.0 缩放、±0.9 平移）在 C++ 里统一做，
+ * 这里只负责把像素位移除以视图尺寸。
+ *
  * ## 生命周期
  * - `RENDERMODE_CONTINUOUSLY`：动作时间轴与参数每帧都可能变，必须连续渲染。
  * - 组合离开 → [Live2DRenderer.release] 释放 native 内存。
  * - 前后台：跟随 [LocalLifecycleOwner]，onPause 停渲染线程、onResume 恢复。
+ * - **回前台必须重启推流协程**：EGL context 在 onPause 时被销毁，GL 线程随之
+ *   停摆；若协程在后台期间已因宿主移除组合而取消，只恢复 GLSurfaceView 是不够的
+ *   （模型有渲染但没有任何参数写入）。用 [resumeEpoch] 做 key，每次 onResume
+ *   都让推流协程重新走一遍「加载 → 绑定 → 推流」，与首次进入同一条路径。
  *
  * @param modifier 布局修饰符（由 AppRoot 传入，占满内容区）
  * @param mocAssetPath assets 内的 .moc3 相对路径，默认内置 Sample
@@ -110,6 +124,16 @@ fun Live2DContent(
     // ---- 任务 3：FPS HUD ----
     var fps by remember { mutableStateOf(0f) }
 
+    // ---- P5：手势变换状态（与 native 侧同量纲：屏幕半宽/半高归一化）----
+    var panX by remember { mutableFloatStateOf(0f) }
+    var panY by remember { mutableFloatStateOf(0f) }
+    var zoom by remember { mutableFloatStateOf(1f) }
+
+    // ---- P5：回前台世代号 ----
+    // 作为推流协程的 key：每次 onResume 自增，让协程重新启动一遍。
+    // 用 Int 而不是 Boolean，避免「连续两次 onResume」被当成同一个值而不重启。
+    var resumeEpoch by remember { mutableIntStateOf(0) }
+
     // 独立协程轮询 FPS：与参数推流互不干扰，模型没就绪时也照常跑（显示 0）
     LaunchedEffect(renderer) {
         while (isActive) {
@@ -122,7 +146,11 @@ fun Live2DContent(
     // 加载 + 绑定 + 推流放在同一个 effect 里串行完成。
     // 拆成两个 effect 时，绑定后改写 key 会让推流循环取消再重启一次
     // （实测日志里「面捕驱动启动」出现两遍），单 effect 天然只启动一次。
-    LaunchedEffect(renderer, faceRenderer) {
+    //
+    // resumeEpoch 参与 key：切后台再回前台时协程必须重新启动。
+    // 否则「GL 线程恢复 + 模型重算」都做了，却没有任何一帧参数被写进去，
+    // 表现为画面恢复但面捕失效（严重时配合 pose 中间态只剩衣服）。
+    LaunchedEffect(renderer, faceRenderer, resumeEpoch) {
         val ready = runCatching { renderer.init() }.getOrDefault(false)
         isError = !ready
         if (!ready) {
@@ -242,6 +270,30 @@ fun Live2DContent(
             },
         )
 
+        // ---- P5：手势层（覆盖 GLSurfaceView，位于按钮条之下）----
+        // 为什么单独铺一层而不是直接给 AndroidView 加 modifier：
+        // GLSurfaceView 是原生 View，它自己的 dispatchTouchEvent 会先吃掉事件，
+        // Compose 侧挂在 AndroidView modifier 上的 pointerInput 收不全序列
+        // （多指缩放尤其明显）。铺一层透明 Box 后事件走纯 Compose 分发，稳定。
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .pointerInput(renderer) {
+                    detectTransformGestures { _, pan, zoomChange, _ ->
+                        // 像素位移 → 归一化偏移（±1 = 屏幕半宽/半高）。
+                        // 屏幕 Y 向下为正，NDC 向上为正，故 panY 取负。
+                        val halfW = size.width.coerceAtLeast(1) * 0.5f
+                        val halfH = size.height.coerceAtLeast(1) * 0.5f
+                        panX = (panX + pan.x / halfW).coerceIn(-PAN_LIMIT, PAN_LIMIT)
+                        panY = (panY - pan.y / halfH).coerceIn(-PAN_LIMIT, PAN_LIMIT)
+                        zoom = (zoom * zoomChange).coerceIn(SCALE_MIN, SCALE_MAX)
+                        // C++ 侧会再钳一次（边界以 native 为准），这里同步是为了
+                        // 让 Compose 状态与画面一致，避免下一次手势从错的值继续累加
+                        renderer.setTransform(panX, panY, zoom)
+                    }
+                },
+        )
+
         // ---- 任务 3：FPS HUD（左上角）----
         Surface(
             modifier = Modifier
@@ -354,15 +406,25 @@ fun Live2DContent(
 
     // 前后台跟随：后台必须停 GL 线程（否则持续跑空帧耗电）
     DisposableEffect(lifecycleOwner, renderer) {
+        // addObserver 会立刻按当前状态回调一次 onResume。若不加这个标记，
+        // 首次组合完成时就会白白重启一次推流协程（日志里「面捕驱动启动」出现两遍）。
+        // 只在「真的从后台回来」时才让协程重来。
+        var paused = false
         val observer = object : DefaultLifecycleObserver {
             override fun onResume(owner: LifecycleOwner) {
                 surfaceViewRef[0]?.let { view ->
                     view.onResume()
                     view.requestRender()
                 }
+                if (paused) {
+                    paused = false
+                    // 回前台：让推流协程重新启动（见 resumeEpoch 注释）。
+                    resumeEpoch++
+                }
             }
 
             override fun onPause(owner: LifecycleOwner) {
+                paused = true
                 surfaceViewRef[0]?.onPause()
             }
         }
@@ -381,3 +443,13 @@ private const val PARAM_PUSH_INTERVAL_MS = 1000L / PARAM_PUSH_HZ
 
 /** FPS HUD 轮询周期：比 native 的 0.5s 统计窗口略快，读数看起来是连续的。 */
 private const val FPS_POLL_INTERVAL_MS = 400L
+
+/**
+ * 手势边界（与 C++ 侧 kScaleMin / kScaleMax / kPanLimit 保持一致）。
+ *
+ * 真正的钳制在 native 侧（单一事实来源）；这里的常量只用于让 Compose 状态
+ * 与画面同步，避免「UI 以为还能再放大、画面已经不动」的割裂感。
+ */
+private const val SCALE_MIN = 0.5f
+private const val SCALE_MAX = 3.0f
+private const val PAN_LIMIT = 0.9f

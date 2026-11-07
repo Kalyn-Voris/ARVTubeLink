@@ -105,6 +105,21 @@
 //     表情同时生效（标准允许叠加多个）。
 //   - FPS 由 GL 线程以 0.5s 窗口统计，Kotlin 侧轮询 nativeFps 显示。
 //
+//  P5 增补（生命周期恢复 / 原生手势 / 自研物理）：
+//   - **切后台丢部件**：EGL context 被销毁后 onSurfaceCreated 重来一遍，GPU 资源
+//     全部重建，但 csm 模型状态与 CPU 顶点仍停留在停渲染前。旧代码只重传
+//     g_vertices（可能是「pose 把手臂压掉」的那个中间态）就开画，于是脸/手臂
+//     这些依赖 pose + stencil 的部件只剩空壳。现在 surfaceCreated 里先强制
+//     走一次完整状态重建（复位 → 动作 → 表情 → 面捕 → 物理 → pose → update），
+//     再上传顶点，保证「回到前台」与「首次进入」是同一条路径。
+//   - **手势变换**：nativeSetTransform(dx, dy, scale) 接收 NDC 偏移与缩放，
+//     在投影矩阵之后再做一次 S/T 复合（正交矩阵无旋转，可直接缩放 0/5/12/13 行），
+//     偏移与缩放都在 C++ 侧钳制，Kotlin 侧的钳制只是为了让 UI 状态与画面一致。
+//   - **物理**：自研质点-弹簧-阻尼链（见 PhysicsChain）。只借鉴「输入→分段→输出」
+//     的数据约定，求解器完全独立实现：每节质点的目标是「父节点实际位置 + 旋转后的
+//     静息向量」，受力 = 胡克回复力 - 阻尼力 + 重力，半隐式欧拉积分 + 定长约束。
+//     输出取链尾相对刚性姿态的偏角，写回 ParamHair* / ParamScarf。
+//
 //  Purism Core 的使用约束（API 规范）：
 //   - MOC 缓冲区必须 64 字节对齐（csmAlignofMoc），且必须活得比 model 久；
 //   - model 缓冲区必须 16 字节对齐（csmAlignofModel），大小取 csmGetSizeofModel；
@@ -346,6 +361,94 @@ std::vector<float> g_partDefaults;
 /** 参数默认值快照（逐帧复位用）。 */
 std::vector<float> g_paramDefaults;
 
+/** 参数量程（P5：物理输入归一化用），与 g_paramCount 等长。 */
+std::vector<float> g_paramMin;
+std::vector<float> g_paramMax;
+
+// ---------------------------------------------------------------------------
+//  自研物理引擎（P5）
+// ---------------------------------------------------------------------------
+//
+//  目标：头发 / 裙摆 / 围巾跟随 ParamAngleX/Y/Z 产生带阻尼的延迟摆动。
+//
+//  **实现独立于CubismPhysics**：只沿用 physics3.json 的「输入 → 分段质点链
+//  → 输出」这一数据约定，求解器是自己写的质点-弹簧-阻尼模型：
+//
+//    · 每节质点 i 有一个「静息位置」rest[i]（来自 json 的 Vertices），
+//      根节点 rest[0] 固定在输入锚点上；
+//    · 每帧把父节点的实际位置 + 旋转后的静息向量当作该质点的目标位置；
+//    · 受力 = 胡克回复力 k·(target - pos) + 阻尼力 -c·v + 重力 + 输入速度拖曳力；
+//    · 半隐式欧拉积分（先更新速度再更新位置），并按 1/120s 定步长子步进，
+//      避免掉帧时大步长把弹簧积分发散；
+//    · 输出取「链尾实际方向」与「刚性姿态方向」的夹角，归一化后写回参数。
+//
+//  与标准实现的差别（有意为之）：
+//   - 不实现 AngleLimits / 空气阻力 / 归一化矩阵等完整特性，只保留效果所需的最小集；
+//   - 输出角度直接由几何夹角得到，不做标准的角度累积与偏移补偿；
+//   - 输入速度显式作为拖曳力注入（标准靠锚点位移隐式产生）。
+
+/** 一条物理输入：参数 → 归一化后的 X/Y 位移或角度。 */
+struct PhysicsInput {
+    int paramIndex = -1;
+    float weight = 1.0f;   // 已除以 100
+    int type = 0;          // 0=X, 1=Y, 2=Angle
+    bool reflect = false;
+};
+
+/** 一条物理输出：链尾偏角 → 参数。 */
+struct PhysicsOutput {
+    int paramIndex = -1;
+    int vertexIndex = 0;
+    float scale = 1.0f;
+    float weight = 1.0f;   // 已除以 100
+    int type = 0;          // 0=X, 1=Y, 2=Angle
+    bool reflect = false;
+};
+
+/** 一节质点（json 的 Vertices 项）。 */
+struct PhysicsVertex {
+    float restX = 0.0f;        // 静息位置（物理坐标系）
+    float restY = 0.0f;
+    float mobility = 1.0f;     // 继承父节点位移的比例（本实现用于锚点跟随强度）
+    float delay = 1.0f;        // 越大越「拖」，映射为阻尼比
+    float acceleration = 1.0f; // 越大越硬，映射为刚度
+    float radius = 0.0f;
+};
+
+/** 一条完整的物理链（physics3.json 的一个 PhysicsSetting）。 */
+struct PhysicsChain {
+    std::string id;
+    std::vector<PhysicsInput> inputs;
+    std::vector<PhysicsOutput> outputs;
+    std::vector<PhysicsVertex> vertices;
+
+    // 归一化区间（json 的 Normalization；缺省 -10/0/10）
+    float posMin = -10.0f, posDef = 0.0f, posMax = 10.0f;
+    float angMin = -10.0f, angDef = 0.0f, angMax = 10.0f;
+
+    float gravityX = 0.0f, gravityY = -1.0f;
+    float windX = 0.0f, windY = 0.0f;
+
+    // ---- 运行时状态（绝对位置，根节点 = 输入锚点）----
+    std::vector<float> px, py;   // 质点位置
+    std::vector<float> vx, vy;   // 质点速度
+    bool initialized = false;
+
+    /** 无输入收敛后的链尾方向（弧度），输出偏角的参考基准。 */
+    float settledAngle = 0.0f;
+
+    // 上一帧的归一化输入（±1 量纲），用于求「输入速度」→ 惯性拖曳力
+    float prevInputX = 0.0f;
+    float prevInputY = 0.0f;
+    float prevInputRot = 0.0f;
+    bool prevValid = false;
+};
+
+std::vector<PhysicsChain> g_physicsChains;
+
+/** 物理模拟的时间步（drawFrame 每帧写入，applyModelStateLocked 读取）。 */
+float g_physicsDt = 0.0f;
+
 /** 当前激活的动作 / 表情（-1 = 无）。 */
 int g_activeGroup = -1;
 int g_activeMotion = -1;
@@ -469,6 +572,37 @@ GLint g_maskUniformTex = -1;
 int g_viewW = 0;
 int g_viewH = 0;
 float g_mvp[16] = {0};
+
+// ---------------------------------------------------------------------------
+//  手势变换（P5）
+// ---------------------------------------------------------------------------
+//  用户拖拽 / 双指缩放作用在「投影之后的屏幕空间」：
+//    p' = scale * p + offset
+//  正交投影矩阵没有旋转分量，所以直接在投影矩阵的行 0/5 上乘 scale、
+//  行 12/13 上改偏移即可（见 buildGestureMvp），不必真的做矩阵乘法。
+//
+//  offset 以**屏幕可视范围的归一化单位**表达（±1 = 屏幕半宽/半高），
+//  这样 Kotlin 侧只要把像素位移除以视图尺寸就能传过来，与分辨率无关。
+struct GestureTransform {
+    float dx = 0.0f;     // 水平偏移（±1 = 屏幕半宽）
+    float dy = 0.0f;     // 垂直偏移（±1 = 屏幕半高；向上为正）
+    float scale = 1.0f;  // 缩放倍数
+};
+
+GestureTransform g_gesture;
+
+/** 缩放边界（P5 要求 0.5~3.0）。 */
+constexpr float kScaleMin = 0.5f;
+constexpr float kScaleMax = 3.0f;
+
+/**
+ * 平移边界：保证模型中心不离开可视区域。
+ *
+ * 模型中心在 NDC 里恒为 (0,0)（投影以 bbox 中心为原点），变换后其位置为
+ * (dx, dy)，因此限制 |dx| ≤ 1 就能保证中心点仍在屏幕内。留 0.9 的余量，
+ * 让中心点不会正好压在屏幕边缘上。
+ */
+constexpr float kPanLimit = 0.9f;
 
 /**
  * 当前 EGL 配置的模板缓冲位数（P2）。
@@ -925,6 +1059,159 @@ void loadPose(AAssetManager *manager, const std::string &jsonPath) {
 }
 
 // ---------------------------------------------------------------------------
+//  物理配置解析（P5）
+// ---------------------------------------------------------------------------
+//
+//  只读 physics3.json 的「输入 / 输出 / 分段质点 / 归一化区间」四类信息；
+//  Meta.EffectiveForces 的 Gravity/Wind 是全局的，拷到每条链上。
+
+/** 读一个 Vector2 字段（缺失时用 fallback）。 */
+void readVector2(const mjson::Value *node, float fallbackX, float fallbackY,
+                 float *outX, float *outY) {
+    *outX = fallbackX;
+    *outY = fallbackY;
+    if (!node) return;
+    if (const mjson::Value *x = node->find("X")) *outX = static_cast<float>(x->numberOr(fallbackX));
+    if (const mjson::Value *y = node->find("Y")) *outY = static_cast<float>(y->numberOr(fallbackY));
+}
+
+/** 读一个数字字段（缺失或类型不符时用 fallback），避免对 find() 结果直接解引用。 */
+float numberField(const mjson::Value *node, const char *key, float fallback) {
+    if (!node) return fallback;
+    const mjson::Value *value = node->find(key);
+    return value ? static_cast<float>(value->numberOr(fallback)) : fallback;
+}
+
+/** 物理项的类型：0=X、1=Y、2=Angle。 */
+int physicsTypeOf(const mjson::Value *node) {
+    if (!node) return 0;
+    const mjson::Value *type = node->find("Type");
+    if (!type) return 0;
+    const std::string &name = type->stringOrEmpty();
+    if (name == "Y") return 1;
+    if (name == "Angle") return 2;
+    return 0;
+}
+
+/** 读 Normalization 里的 Position/Angle 三段区间。 */
+void readNormalization(const mjson::Value *norm, const char *key,
+                       float *minV, float *defV, float *maxV) {
+    if (!norm) return;
+    const mjson::Value *range = norm->find(key);
+    if (!range) return;
+    if (const mjson::Value *v = range->find("Minimum")) *minV = static_cast<float>(v->numberOr(*minV));
+    if (const mjson::Value *v = range->find("Default")) *defV = static_cast<float>(v->numberOr(*defV));
+    if (const mjson::Value *v = range->find("Maximum")) *maxV = static_cast<float>(v->numberOr(*maxV));
+}
+
+/**
+ * 解析 physics3.json 到 g_physicsChains。
+ *
+ * 失败的任何单条 setting 只跳过自身：物理是增强效果，不能让模型加载失败。
+ */
+void loadPhysics(AAssetManager *manager, const std::string &jsonPath) {
+    g_physicsChains.clear();
+
+    std::string text;
+    if (!readAssetText(manager, jsonPath, &text)) {
+        LOGW("physics3.json 读取失败，物理不生效: %s", jsonPath.c_str());
+        return;
+    }
+
+    mjson::Value root;
+    if (!mjson::parse(text, &root)) {
+        LOGW("physics3.json JSON 解析失败: %s", jsonPath.c_str());
+        return;
+    }
+
+    float gravityX = 0.0f, gravityY = -1.0f;
+    float windX = 0.0f, windY = 0.0f;
+    if (const mjson::Value *meta = root.find("Meta")) {
+        if (const mjson::Value *forces = meta->find("EffectiveForces")) {
+            readVector2(forces->find("Gravity"), 0.0f, -1.0f, &gravityX, &gravityY);
+            readVector2(forces->find("Wind"), 0.0f, 0.0f, &windX, &windY);
+        }
+    }
+
+    const mjson::Value *settings = root.find("PhysicsSettings");
+    if (!settings || !settings->isArray()) {
+        LOGW("physics3.json 没有 PhysicsSettings 段");
+        return;
+    }
+
+    for (const mjson::Value &setting : settings->items) {
+        if (!setting.isObject()) continue;
+
+        PhysicsChain chain;
+        chain.gravityX = gravityX;
+        chain.gravityY = gravityY;
+        chain.windX = windX;
+        chain.windY = windY;
+        if (const mjson::Value *id = setting.find("Id")) chain.id = id->stringOrEmpty();
+        readNormalization(setting.find("Normalization"), "Position",
+                          &chain.posMin, &chain.posDef, &chain.posMax);
+        readNormalization(setting.find("Normalization"), "Angle",
+                          &chain.angMin, &chain.angDef, &chain.angMax);
+
+        if (const mjson::Value *inputs = setting.find("Input")) {
+            for (const mjson::Value &item : inputs->items) {
+                const mjson::Value *source = item.find("Source");
+                const mjson::Value *id = source ? source->find("Id") : nullptr;
+                if (!id) continue;
+                const auto it = g_paramIndexById.find(id->stringOrEmpty());
+                if (it == g_paramIndexById.end()) continue;
+
+                PhysicsInput input;
+                input.paramIndex = it->second;
+                input.weight = numberField(&item, "Weight", 100.0f) / 100.0f;
+                input.type = physicsTypeOf(&item);
+                input.reflect = item.find("Reflect") && item.find("Reflect")->boolOr(false);
+                chain.inputs.push_back(input);
+            }
+        }
+
+        if (const mjson::Value *outputs = setting.find("Output")) {
+            for (const mjson::Value &item : outputs->items) {
+                const mjson::Value *dest = item.find("Destination");
+                const mjson::Value *id = dest ? dest->find("Id") : nullptr;
+                if (!id) continue;
+                const auto it = g_paramIndexById.find(id->stringOrEmpty());
+                if (it == g_paramIndexById.end()) continue;
+
+                PhysicsOutput output;
+                output.paramIndex = it->second;
+                output.vertexIndex = static_cast<int>(numberField(&item, "VertexIndex", 1.0f));
+                output.scale = numberField(&item, "Scale", 1.0f);
+                output.weight = numberField(&item, "Weight", 100.0f) / 100.0f;
+                output.type = physicsTypeOf(&item);
+                output.reflect = item.find("Reflect") && item.find("Reflect")->boolOr(false);
+                chain.outputs.push_back(output);
+            }
+        }
+
+        if (const mjson::Value *vertices = setting.find("Vertices")) {
+            for (const mjson::Value &item : vertices->items) {
+                PhysicsVertex vertex;
+                readVector2(item.find("Position"), 0.0f, 0.0f, &vertex.restX, &vertex.restY);
+                if (const mjson::Value *v = item.find("Mobility")) vertex.mobility = static_cast<float>(v->numberOr(1.0));
+                if (const mjson::Value *v = item.find("Delay")) vertex.delay = static_cast<float>(v->numberOr(1.0));
+                if (const mjson::Value *v = item.find("Acceleration")) vertex.acceleration = static_cast<float>(v->numberOr(1.0));
+                if (const mjson::Value *v = item.find("Radius")) vertex.radius = static_cast<float>(v->numberOr(0.0));
+                chain.vertices.push_back(vertex);
+            }
+        }
+
+        if (chain.vertices.size() < 2 || chain.outputs.empty()) continue;
+        LOGI("物理链就绪: %s (in=%zu out=%zu verts=%zu)",
+             chain.id.c_str(), chain.inputs.size(), chain.outputs.size(),
+             chain.vertices.size());
+        g_physicsChains.push_back(std::move(chain));
+    }
+
+    LOGI("物理加载完成: %zu 条链", g_physicsChains.size());
+}
+
+// ---------------------------------------------------------------------------
 //  MOC3 读取（AAssetManager）
 // ---------------------------------------------------------------------------
 bool readAsset(AAssetManager *manager, const char *path, AlignedBuffer *out, std::string *err) {
@@ -1086,6 +1373,18 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
         g_paramDefaults.assign(static_cast<size_t>(std::max(0, g_paramCount)), 0.0f);
         if (values) {
             for (int i = 0; i < g_paramCount; ++i) g_paramDefaults[static_cast<size_t>(i)] = values[i];
+        }
+
+        // P5：量程快照（物理输入归一化 + 输出映射都要用）
+        const float *minValues = csmGetParameterMinimumValues(g_model);
+        const float *maxValues = csmGetParameterMaximumValues(g_model);
+        g_paramMin.assign(static_cast<size_t>(std::max(0, g_paramCount)), -1.0f);
+        g_paramMax.assign(static_cast<size_t>(std::max(0, g_paramCount)), 1.0f);
+        if (minValues && maxValues) {
+            for (int i = 0; i < g_paramCount; ++i) {
+                g_paramMin[static_cast<size_t>(i)] = minValues[i];
+                g_paramMax[static_cast<size_t>(i)] = maxValues[i];
+            }
         }
         // 面捕覆盖数组：NaN = 该参数本帧无输入，因此初始化为全 NaN
         g_faceValues.assign(static_cast<size_t>(std::max(0, g_paramCount)),
@@ -1299,8 +1598,8 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
         if (!jsonPath.empty()) {
             loadMotions(manager, jsonPath, dir);
             loadExpressions(manager, jsonPath, dir);
-            // pose3 路径不像 Motions/Expressions 那样由我们自己解析：
-            // 直接在 model3.json 里找 Physics/Pose 同级的 "Pose" 字段。
+            // pose3 / physics3 路径不像 Motions/Expressions 那样由我们自己解析：
+            // 直接在 model3.json 的 FileReferences 里找 "Pose" / "Physics" 字段。
             std::string jsonText;
             if (readAssetText(manager, jsonPath, &jsonText)) {
                 mjson::Value root;
@@ -1308,6 +1607,8 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
                     const mjson::Value *refs = root.find("FileReferences");
                     const mjson::Value *pose = refs ? refs->find("Pose") : nullptr;
                     if (pose) loadPose(manager, dir + pose->stringOrEmpty());
+                    const mjson::Value *physics = refs ? refs->find("Physics") : nullptr;
+                    if (physics) loadPhysics(manager, dir + physics->stringOrEmpty());
                 }
             }
         }
@@ -1320,13 +1621,22 @@ bool loadModel(AAssetManager *manager, const char *mocPath, std::string *err) {
         g_lastTickSec = 0.0;
         g_activeExpression = -1;
         g_modelDirty = true;
+        // 物理：先无输入收敛 2 秒定出静止参考角，再进入正常逐帧模拟
+        g_physicsDt = 0.0f;
+        for (PhysicsChain &chain : g_physicsChains) {
+            chain.initialized = false;
+            chain.px.clear();
+            chain.py.clear();
+            chain.vx.clear();
+            chain.vy.clear();
+        }
 
         applyModelStateLocked();
         csmUpdateModel(g_model);
         refreshVertexPositionsLocked();
-        LOGI("初始状态: motion=%s/%d exp=-1 pose=%zu modelOpacity=%.2f",
+        LOGI("初始状态: motion=%s/%d exp=-1 pose=%zu physics=%zu modelOpacity=%.2f",
              g_activeGroup >= 0 ? g_motionGroups[0].name.c_str() : "none",
-             g_activeMotion, g_poseGroups.size(), g_modelOpacity);
+             g_activeMotion, g_poseGroups.size(), g_physicsChains.size(), g_modelOpacity);
     }
     return true;
 }
@@ -1526,6 +1836,285 @@ void applyMotionLocked(float *modelOpacity) {
     }
 }
 
+// ---------------------------------------------------------------------------
+//  自研物理求解器（P5）
+// ---------------------------------------------------------------------------
+//
+//  数值方案：半隐式欧拉 + 定长子步 + 杆长投影。
+//  为什么不用显式欧拉大步长：弹簧系统的稳定条件是 k·h² < 1，掉帧时 h 变大
+//  会直接把质点甩到无穷远；把每帧切成 ≤1/120s 的子步后，k 可以取到 400 量级
+//  仍然稳定，而且不同帧率下的观感一致。
+//
+//  为什么加杆长投影：纯弹簧链会被拉长（刚度有限），头发越甩越长。投影只移动
+//  子节点、不移动父节点，等价于「不可伸长的绳子」，同时让摆动的周期由重力与
+//  杆长决定，而不是由刚度主导 —— 这正是头发该有的手感。
+
+/** 物理子步长（秒）。120Hz 对 60Hz 渲染正好两子步，掉帧时也不会发散。 */
+constexpr float kPhysicsSubStep = 1.0f / 120.0f;
+
+/** 基础刚度（1/s²）。实际刚度再乘 Acceleration 与 Mobility。
+ *  取 200 对应链尾自然频率约 2.6Hz —— 头发该有的摆动速度；
+ *  更高会变成「发条式抖动」，更低则软塌塌像果冻。 */
+constexpr float kPhysicsStiffness = 200.0f;
+
+/** 重力缩放：json 里的 Gravity 是单位向量，这里换算成物理单位下的加速度。 */
+constexpr float kPhysicsGravityScale = 40.0f;
+
+/** 输入归一化到 ±1 后，锚点最多旋转多少弧度（约 31°）。 */
+constexpr float kPhysicsMaxRotation = 0.55f;
+
+/**
+ * 输入速度拖曳力的强度（单位：1/秒）。
+ *
+ * 量级推导：满量程输入在 60Hz 下变化对应速度约 posMax/dt = 10/0.0167 ≈ 600，
+ * 而弹簧回复力的典型量级是 k·Δx = 200×10 = 2000；取 2.0 时拖曳力约 1200，
+ * 与回复力同量级 —— 急转能明显甩开，慢速头动则几乎无感（速度小、力也小）。
+ */
+constexpr float kPhysicsInertiaScale = 2.0f;
+
+/** 把参数值按模型量程归一化到 [-1, 1]（默认值两侧分别用各自的分母）。 */
+float normalizeParamValue(int index, float value) {
+    if (index < 0 || index >= g_paramCount ||
+        index >= static_cast<int>(g_paramDefaults.size())) {
+        return 0.0f;
+    }
+    const size_t i = static_cast<size_t>(index);
+    const float def = g_paramDefaults[i];
+    const float minV = g_paramMin[i];
+    const float maxV = g_paramMax[i];
+
+    if (value >= def) {
+        const float span = maxV - def;
+        if (span <= 1e-6f) return 0.0f;
+        return std::max(-1.0f, std::min(1.0f, (value - def) / span));
+    }
+    const float span = def - minV;
+    if (span <= 1e-6f) return 0.0f;
+    return std::max(-1.0f, std::min(1.0f, (value - def) / span));
+}
+
+/**
+ * 推进一条物理链。
+ *
+ * @param chain     链（读写其 px/py/vx/vy 运行时状态）
+ * @param values    当前参数值数组；nullptr = 零输入（初始化收敛用）
+ * @param totalTime 本次要模拟的时长（秒）
+ */
+void simulateChain(PhysicsChain &chain, const float *values, float totalTime) {
+    const size_t count = chain.vertices.size();
+    if (count < 2) return;
+
+    if (chain.px.size() != count) {
+        chain.px.assign(count, 0.0f);
+        chain.py.assign(count, 0.0f);
+        chain.vx.assign(count, 0.0f);
+        chain.vy.assign(count, 0.0f);
+        for (size_t i = 0; i < count; ++i) {
+            chain.px[i] = chain.vertices[i].restX;
+            chain.py[i] = chain.vertices[i].restY;
+        }
+    }
+
+    // ---- 1) 输入汇总：位移（X/Y）与锚点旋转（Angle）分开累计 ----
+    float tx = 0.0f;
+    float ty = 0.0f;
+    float rot = 0.0f;
+    if (values) {
+        for (const PhysicsInput &input : chain.inputs) {
+            if (input.paramIndex < 0 || input.paramIndex >= g_paramCount) continue;
+            float unit = normalizeParamValue(input.paramIndex,
+                                             values[input.paramIndex]);
+            if (input.reflect) unit = -unit;
+            if (input.type == 2) {
+                rot += unit * input.weight;
+            } else if (input.type == 1) {
+                ty += unit * input.weight;
+            } else {
+                tx += unit * input.weight;
+            }
+        }
+    }
+    // 换算到物理坐标（质点位置的量纲），速度也在同一量纲上求，
+    // 否则拖曳力会差一个 posMax 的倍率（24 与 240 的区别，手感天差地别）。
+    tx *= chain.posMax;
+    ty *= chain.posMax;
+    rot *= kPhysicsMaxRotation;
+
+    // 输入速度（物理坐标/秒）：任务要求「以 ParamAngleX 的速度作为输入力」。
+    // 单靠锚点位移只能产生「被拖动」的滞后，表现不出「甩」的惯性；
+    // 把它作为显式拖曳力叠加，急转时才有明显的甩尾。
+    float velX = 0.0f;
+    float velY = 0.0f;
+    float velRot = 0.0f;
+    // 只在「真实帧间隔」上求速度：状态重建（切后台恢复、换动作）时 totalTime 传 0，
+    // 此时输入相对上一帧可能跳变很大，按子步长求速度会得到几千量级的假冲量，
+    // 一帧就能把头发甩飞。直接跳过速度项即可。
+    if (totalTime > 1e-4f && chain.prevValid) {
+        velX = (tx - chain.prevInputX) / totalTime;
+        velY = (ty - chain.prevInputY) / totalTime;
+        velRot = (rot - chain.prevInputRot) / totalTime;
+    }
+    chain.prevInputX = tx;
+    chain.prevInputY = ty;
+    chain.prevInputRot = rot;
+    chain.prevValid = true;
+
+    // ---- 2) 根节点钉在输入锚点上（它没有自由度，是驱动的来源）----
+    chain.px[0] = chain.vertices[0].restX + tx;
+    chain.py[0] = chain.vertices[0].restY + ty;
+    chain.vx[0] = 0.0f;
+    chain.vy[0] = 0.0f;
+
+    // ---- 3) 定长子步积分 ----
+    if (totalTime <= 0.0f) totalTime = kPhysicsSubStep;
+    int steps = static_cast<int>(std::ceil(totalTime / kPhysicsSubStep));
+    steps = std::max(1, std::min(steps, 24));
+    const float h = totalTime / static_cast<float>(steps);
+
+    const float cosRot = std::cos(rot);
+    const float sinRot = std::sin(rot);
+
+    for (int s = 0; s < steps; ++s) {
+        for (size_t i = 1; i < count; ++i) {
+            const PhysicsVertex &v = chain.vertices[i];
+            const PhysicsVertex &parent = chain.vertices[i - 1];
+            // 静息向量（父 → 本节点）按锚点旋转后，作为「目标方向」
+            const float rx = v.restX - parent.restX;
+            const float ry = v.restY - parent.restY;
+            const float targetX = chain.px[i - 1] + rx * cosRot - ry * sinRot;
+            const float targetY = chain.py[i - 1] + rx * sinRot + ry * cosRot;
+
+            // 刚度：Acceleration 越大越硬；Mobility 越大越「软」（跟随多、抵抗少）
+            const float mobility = std::max(0.0f, std::min(1.0f, v.mobility));
+            const float stiffness = kPhysicsStiffness *
+                                    std::max(0.1f, v.acceleration) *
+                                    (0.55f + 0.45f * mobility);
+            // 阻尼：Delay 越大越拖，映射到阻尼比 0.08~0.63（始终欠阻尼，有回弹）
+            const float omega = std::sqrt(stiffness);
+            const float zeta = 0.08f + 0.55f * std::max(0.0f, v.delay);
+            const float damping = 2.0f * zeta * omega;
+
+            // 胡克回复力 F = -k·x + 阻尼力 F = -c·v + 重力 + 输入速度拖曳力。
+            // 拖曳力与「越靠链尾越轻」成正比（1 - mobility），
+            // 这样发根几乎不动、发梢甩得最开，符合真实头发的质量分布。
+            const float inertia = (1.0f - mobility) * kPhysicsInertiaScale;
+            const float fx = stiffness * (targetX - chain.px[i]) -
+                             damping * chain.vx[i] +
+                             chain.gravityX * kPhysicsGravityScale +
+                             (-velRot * ry + velX) * inertia;
+            const float fy = stiffness * (targetY - chain.py[i]) -
+                             damping * chain.vy[i] +
+                             chain.gravityY * kPhysicsGravityScale +
+                             (velRot * rx + velY) * inertia;
+
+            // 半隐式欧拉：先更新速度，再用新速度更新位置
+            chain.vx[i] += fx * h;
+            chain.vy[i] += fy * h;
+            chain.px[i] += chain.vx[i] * h;
+            chain.py[i] += chain.vy[i] * h;
+        }
+
+        // 杆长投影：把每节拉回静息长度，只移动子节点
+        for (size_t i = 1; i < count; ++i) {
+            const float restDx = chain.vertices[i].restX - chain.vertices[i - 1].restX;
+            const float restDy = chain.vertices[i].restY - chain.vertices[i - 1].restY;
+            const float restLen = std::sqrt(restDx * restDx + restDy * restDy);
+            if (restLen <= 1e-4f) continue;
+
+            float dx = chain.px[i] - chain.px[i - 1];
+            float dy = chain.py[i] - chain.py[i - 1];
+            const float len = std::sqrt(dx * dx + dy * dy);
+            if (len <= 1e-4f) {
+                dx = 0.0f;
+                dy = -restLen;
+            } else {
+                dx = dx / len * restLen;
+                dy = dy / len * restLen;
+            }
+            chain.px[i] = chain.px[i - 1] + dx;
+            chain.py[i] = chain.py[i - 1] + dy;
+        }
+    }
+}
+
+/**
+ * 物理输出写回参数。
+ *
+ * 输出取「链尾实际方向」相对「静止参考方向」的偏角：
+ *  - 用偏角而不是绝对角，静止时输出恒为 0（重力造成的静态下垂被抵消掉）；
+ *  - 偏角按 json 的 Angle 归一化区间压到 ±1，再乘 Scale/Weight 映射到参数量程。
+ *
+ * 调用约束：**必须持 g_mutex**，且在动作/表情/面捕之后、pose 之前执行
+ * （物理读的是本帧最终的头/身体角度）。
+ */
+void applyPhysicsLocked() {
+    if (g_physicsChains.empty() || !g_model) return;
+    float *values = csmGetParameterValues(g_model);
+    if (!values) return;
+
+    const float dt = std::max(0.0f, std::min(0.05f, g_physicsDt));
+
+    for (PhysicsChain &chain : g_physicsChains) {
+        // 首次使用：无输入收敛，记录静止参考角。
+        //
+        // 必须拆成 120 次 1/60s 的小步调用，不能一次传 2.0s：
+        // simulateChain 内部把子步数钳在 24 步，传 2.0s 会得到 h=0.083s，
+        // 而稳定性要求 k·h² < 1（200×0.083² ≈ 1.39），一步就把质点甩飞，
+        // 记下来的 settledAngle 会是错的，之后所有输出都偏。
+        if (!chain.initialized) {
+            for (int i = 0; i < 120; ++i) {
+                simulateChain(chain, nullptr, 1.0f / 60.0f);
+            }
+            const size_t last = chain.vertices.size() - 1;
+            chain.settledAngle = std::atan2(chain.py[last] - chain.py[last - 1],
+                                            chain.px[last] - chain.px[last - 1]);
+            chain.initialized = true;
+        }
+        simulateChain(chain, values, dt);
+
+        const size_t last = chain.vertices.size() - 1;
+        const float angle = std::atan2(chain.py[last] - chain.py[last - 1],
+                                       chain.px[last] - chain.px[last - 1]);
+        float delta = angle - chain.settledAngle;
+        // 角度差归一化到 (-π, π]，避免绕圈时输出突跳
+        while (delta > 3.14159265f) delta -= 6.28318531f;
+        while (delta < -3.14159265f) delta += 6.28318531f;
+
+        // 归一化量程 = 2×锚点最大旋转角（约 63°）。
+        //
+        // 为什么不直接用 json 的 Angle 区间（Sample 是 ±10）：那个区间描述的是
+        // 物理链自身坐标系的量程，而 delta 是**几何夹角（度）**，两者不同量纲，
+        // 直接相除会把摆幅放大约 3 倍、任何轻微头动都顶到参数上限。
+        //
+        // 为什么是 2.4 倍：实测（独立数值验证）满转时链尾几何偏角约 36°，
+        // 除以 75.6° 得 u≈0.48，乘 json 的 Scale 后落在：
+        //   前发 0.87 / 侧发 0.80 / 后发 0.93 / 围巾 0.45
+        // 稳态都不到满幅，只有过冲的瞬间才接近上限 —— 这是「自然」的关键：
+        // 若稳态就顶到 1.0，头一直歪着时头发会像被钉住一样不动。
+        const float deltaDeg = delta * 57.2957795f;
+        const float span = 2.4f * kPhysicsMaxRotation * 57.2957795f;
+        const float unit = std::max(-1.0f, std::min(1.0f, deltaDeg / span));
+
+        for (const PhysicsOutput &output : chain.outputs) {
+            if (output.paramIndex < 0 || output.paramIndex >= g_paramCount) continue;
+            const size_t pi = static_cast<size_t>(output.paramIndex);
+            const float u = output.reflect ? -unit : unit;
+
+            const float def = g_paramDefaults[pi];
+            const float minV = g_paramMin[pi];
+            const float maxV = g_paramMax[pi];
+            // scale 作用在归一化单位上并钳到 ±1：保证「偏角再大也不会越界写参数」，
+            // 同时让 scale>1 的链（前发/后发）更快达到满幅。
+            float amount = u * output.scale * output.weight;
+            amount = std::max(-1.0f, std::min(1.0f, amount));
+            // 朝正/负方向分别用各自半程量程，保证两侧摆幅观感一致
+            const float half = (amount >= 0.0f) ? (maxV - def) : (def - minV);
+            const float value = def + amount * half;
+            values[pi] = std::max(minV, std::min(maxV, value));
+        }
+    }
+}
+
 /** 面捕参数覆盖（最高优先级：手臂/身体等由动作驱动，面部由人脸驱动）。 */
 void applyFaceValuesLocked() {
     if (g_faceValues.empty()) return;
@@ -1547,7 +2136,8 @@ void applyFaceValuesLocked() {
  *  2) 动作写参数与部件不透明度；
  *  3) 表情叠加在动作结果之上（标准也是 Expression 在 Motion 之后）；
  *  4) 面捕覆盖面部参数 —— 保证「说话/眨眼」始终跟人，不被 idle 动作压掉；
- *  5) pose 在最后判定互斥，避免动作写进来的 1 又被覆盖回去。
+ *  5) 物理读本帧最终的头/身体角度，把链尾偏角写回头发/裙摆参数；
+ *  6) pose 在最后判定互斥，避免动作写进来的 1 又被覆盖回去。
  *
  * 调用约束：**必须持 g_mutex** 且 g_model 非空。
  */
@@ -1559,6 +2149,7 @@ void applyModelStateLocked() {
     applyMotionLocked(&modelOpacity);
     applyExpressionLocked();
     applyFaceValuesLocked();
+    applyPhysicsLocked();
     applyPoseLocked();
 
     g_modelOpacity = modelOpacity;
@@ -1835,6 +2426,26 @@ void updateProjection() {
          g_viewW, g_viewH, modelW, modelH, halfW, halfH);
 }
 
+/**
+ * 把投影矩阵与手势变换合成为最终 MVP（P5）。
+ *
+ * 变换语义：p_ndc' = scale * p_ndc + (dx, dy)。
+ * 由于 g_mvp 是正交投影（只有对角线与非零平移列），复合结果可以原地得到：
+ *   - 缩放：行 0 与行 5（列主序的 m[0] / m[5]）乘 scale；
+ *   - 平移：m[12] / m[13] 乘 scale 后加上 dx / dy
+ *     （必须先缩放原始平移再叠加偏移，否则放大时画面会整体飘走）。
+ *
+ * @param out 输出 16 个 float（列主序）
+ */
+void buildGestureMvp(float *out) {
+    std::memcpy(out, g_mvp, sizeof(float) * 16);
+    const float s = g_gesture.scale;
+    out[0] *= s;
+    out[5] *= s;
+    out[12] = out[12] * s + g_gesture.dx;
+    out[13] = out[13] * s + g_gesture.dy;
+}
+
 void releaseGl() {
     // 只能在「当前线程持有有效 EGL context」时调用（即 GL 线程），
     // 否则 glDelete* 作用不到原 context 的资源上，还会产生 GL_INVALID_OPERATION。
@@ -1970,11 +2581,14 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
         g_paramIndexById.clear();
         g_paramCount = 0;
         g_paramDefaults.clear();
+        g_paramMin.clear();
+        g_paramMax.clear();
         g_partIndexById.clear();
         g_partDefaults.clear();
         g_motionGroups.clear();
         g_expressions.clear();
         g_poseGroups.clear();
+        g_physicsChains.clear();
         g_faceValues.clear();
         g_faceDirty = false;
         g_activeGroup = -1;
@@ -1983,6 +2597,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
         g_motionActive = false;
         g_motionTime = 0.0;
         g_lastTickSec = 0.0;
+        g_physicsDt = 0.0f;
         g_modelOpacity = 1.0f;
         g_modelDirty = true;
         g_verticesDirty = false;
@@ -1990,6 +2605,9 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
         g_textureImages.clear();
         g_drawableTotal = 0;
         g_drawableDrawn = 0;
+        g_gesture.dx = 0.0f;
+        g_gesture.dy = 0.0f;
+        g_gesture.scale = 1.0f;
 
         csmSetLogFunction(&coreLog);
         csmSetLogLevel(2);  // 2 = warning 及以上
@@ -2206,6 +2824,28 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceCreated(
         return;
     }
 
+    // ---- P5：GL 上下文重建后的状态恢复 ----
+    // 切后台再回前台时 EGL context 被销毁，surfaceCreated 会重来一遍，但 csm
+    // 模型状态仍停在「停渲染前的那一帧」。若直接把当时的 g_vertices 传上去，
+    // 会把一个可能处于中间态（例如 pose 把手臂压成 0、动作淡入到一半）的快照
+    // 固化下来，表现为「只剩衣服，脸和手臂不见了」。
+    //
+    // 这里强制走一次完整状态重建：复位默认值 → 动作 → 表情 → 面捕 → 物理 → pose
+    // → csmUpdateModel → 抄顶点。等价于「重新进入页面」的同一条路径，
+    // 保证所有可见部件都被重新计算。
+    if (g_model) {
+        // 时间基准清零：停渲染期间积累的 dt 不能一次灌进动作/物理积分
+        g_lastTickSec = 0.0;
+        g_physicsDt = 0.0f;
+        g_modelDirty = true;
+        applyModelStateLocked();
+        csmUpdateModel(g_model);
+        refreshVertexPositionsLocked();
+        LOGI("surfaceCreated 状态重建: drawables=%d pose=%zu physics=%zu verts=%zu",
+             g_drawableTotal, g_poseGroups.size(), g_physicsChains.size(),
+             g_vertices.size());
+    }
+
     // 纹理必须在有 GL context 的线程上传（P1 的核心改动）
     const int uploaded = uploadTextures();
     if (uploaded == 0) {
@@ -2273,6 +2913,47 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceChanged(
     g_viewH = height;
     glViewport(0, 0, width, height);
     updateProjection();
+}
+
+/**
+ * 手势变换（P5）：拖拽位移 + 双指缩放。
+ *
+ * @param dx    水平偏移，单位 = 屏幕半宽（±1 即贴到屏幕左右边缘）
+ * @param dy    垂直偏移，单位 = 屏幕半高（向上为正）
+ * @param scale 缩放倍数
+ *
+ * 边界在这里统一钳制（不信任调用方）：
+ *  - scale 夹到 [0.5, 3.0]；
+ *  - 平移夹到 ±0.9，保证模型中心点不会完全离开可视区域。
+ *
+ * 线程：任意线程可调用（Kotlin 手势回调在主线程）。只写三个 float，
+ * 真正的矩阵合成在 GL 线程的 drawFrame 里做。
+ */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetTransform(
+        JNIEnv * /*env*/, jobject /*thiz*/, jfloat dx, jfloat dy, jfloat scale) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    float s = scale;
+    if (!(s > 0.0f)) s = 1.0f; // 同时挡住 NaN
+    g_gesture.scale = std::max(kScaleMin, std::min(kScaleMax, s));
+
+    float x = dx;
+    float y = dy;
+    if (!std::isfinite(x)) x = 0.0f;
+    if (!std::isfinite(y)) y = 0.0f;
+    g_gesture.dx = std::max(-kPanLimit, std::min(kPanLimit, x));
+    g_gesture.dy = std::max(-kPanLimit, std::min(kPanLimit, y));
+}
+
+/** 重置手势变换（回到 1x、居中）。 */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeResetTransform(
+        JNIEnv * /*env*/, jobject /*thiz*/) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_gesture.dx = 0.0f;
+    g_gesture.dy = 0.0f;
+    g_gesture.scale = 1.0f;
 }
 
 /**
@@ -2357,7 +3038,8 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         maskUniformMvp = g_maskUniformMvp;
         maskUniformTex = g_maskUniformTex;
         stencilBits = g_stencilBits;
-        std::memcpy(mvp, g_mvp, sizeof(mvp));
+        // 投影 + 手势（缩放/平移）合成最终 MVP
+        buildGestureMvp(mvp);
 
         // ---- 1) 推进动作时钟 ----
         const double nowSec = std::chrono::duration<double>(
@@ -2371,8 +3053,13 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
             g_modelDirty = true; // 动作每帧都在变，需要重新求值
         }
 
-        // ---- 2) 状态重建（动作 / 表情 / 面捕 / pose 全部应用后重算顶点）----
-        if (g_model && (g_modelDirty || g_faceDirty)) {
+        // 物理是连续系统：即使动作停了、面捕没新数据，头发也在继续回弹，
+        // 因此只要存在物理链就必须逐帧重建（否则松手瞬间会僵在半空）。
+        g_physicsDt = static_cast<float>(dt);
+        const bool physicsRunning = !g_physicsChains.empty();
+
+        // ---- 2) 状态重建（动作 / 表情 / 面捕 / 物理 / pose 全部应用后重算顶点）----
+        if (g_model && (g_modelDirty || g_faceDirty || physicsRunning)) {
             applyModelStateLocked();
             csmUpdateModel(g_model);
             refreshVertexPositionsLocked();
@@ -2639,11 +3326,14 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_paramIndexById.clear();
     g_paramCount = 0;
     g_paramDefaults.clear();
+    g_paramMin.clear();
+    g_paramMax.clear();
     g_partIndexById.clear();
     g_partDefaults.clear();
     g_motionGroups.clear();
     g_expressions.clear();
     g_poseGroups.clear();
+    g_physicsChains.clear();
     g_faceValues.clear();
     g_faceDirty = false;
     g_activeGroup = -1;
@@ -2652,9 +3342,13 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_motionActive = false;
     g_motionTime = 0.0;
     g_lastTickSec = 0.0;
+    g_physicsDt = 0.0f;
     g_modelOpacity = 1.0f;
     g_modelDirty = true;
     g_fps.store(0.0f, std::memory_order_relaxed);
+    g_gesture.dx = 0.0f;
+    g_gesture.dy = 0.0f;
+    g_gesture.scale = 1.0f;
     g_verticesDirty = false;
     g_vboVertexCount = 0;
     g_textureImages.clear();
@@ -2665,11 +3359,14 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_maskRefs.shrink_to_fit();
     g_vertexSpans.shrink_to_fit();
     g_paramDefaults.shrink_to_fit();
+    g_paramMin.shrink_to_fit();
+    g_paramMax.shrink_to_fit();
     g_partDefaults.shrink_to_fit();
     g_faceValues.shrink_to_fit();
     g_motionGroups.shrink_to_fit();
     g_expressions.shrink_to_fit();
     g_poseGroups.shrink_to_fit();
+    g_physicsChains.shrink_to_fit();
     g_textureImages.shrink_to_fit();
     g_model = nullptr;
     g_moc = nullptr;

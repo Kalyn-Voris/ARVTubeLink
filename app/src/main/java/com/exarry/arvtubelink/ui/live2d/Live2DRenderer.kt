@@ -286,6 +286,37 @@ class Live2DRenderer(
         }
     }
 
+    // ---------------- P5：手势变换 ----------------
+
+    /**
+     * 推送手势变换（拖拽 + 缩放）。
+     *
+     * @param dx    水平偏移，单位 = 屏幕半宽（±1 = 贴到屏幕左右边缘）
+     * @param dy    垂直偏移，单位 = 屏幕半高（向上为正）
+     * @param scale 缩放倍数
+     *
+     * 边界由 C++ 侧统一钳制（缩放 0.5~3.0、平移 ±0.9），这里不做二次判断，
+     * 避免两处常量漂移。线程：任意线程可调用。
+     */
+    fun setTransform(dx: Float, dy: Float, scale: Float) {
+        if (!modelReady) return
+        try {
+            nativeSetTransform(dx, dy, scale)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetTransform 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /** 重置手势变换（1x、居中）。 */
+    fun resetTransform() {
+        if (!modelReady) return
+        try {
+            nativeResetTransform()
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeResetTransform 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
     private external fun nativeInit(assetManager: AssetManager, mocPath: String): String?
     private external fun nativeSurfaceCreated()
     private external fun nativeSurfaceChanged(width: Int, height: Int)
@@ -298,6 +329,8 @@ class Live2DRenderer(
     private external fun nativeSetExpression(index: Int): Int
     private external fun nativeListActions(): String?
     private external fun nativeFps(): Float
+    private external fun nativeSetTransform(dx: Float, dy: Float, scale: Float)
+    private external fun nativeResetTransform()
 
     companion object {
         /**
