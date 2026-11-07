@@ -13,11 +13,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.AssistChipDefaults
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.SmallFloatingActionButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
@@ -78,11 +82,23 @@ import kotlinx.coroutines.withContext
  * 动作组（Idle / Tap…）与表情列表（f00…f0N）。默认在 native 侧自动播第一组
  * 动作的第 0 个，因此页面一打开就是「活着」的。
  *
- * ## 手势（P5）
+ * ## 手势（P5 / P6）
  * `detectTransformGestures` 同时给出拖拽位移与双指缩放，两者换算成
  * 「屏幕半宽/半高」为单位的归一化偏移后交给 [Live2DRenderer.setTransform]，
- * 由 C++ 侧合成到 MVP 上。钳制（0.5~3.0 缩放、±0.9 平移）在 C++ 里统一做，
- * 这里只负责把像素位移除以视图尺寸。
+ * 由 C++ 侧合成到 MVP 上。
+ *
+ * 边界规则（P6 起）：**不再是「模型中心必须在屏幕内」**，而是按模型包围盒算——
+ * 只要 bbox 与视口的交集还剩 [Live2DRenderer] 侧定义的 80px，就允许继续拖。
+ * 因此放大后可以把头部拖到屏幕中心（旧规则会硬顶住，这是「放大后拖不动」的根因）。
+ * 可行区间由 native 的 `nativePanLimits` 给出（单一事实来源），这里用它把
+ * Compose 侧累加值同步钳住，避免「UI 以为还能拖、画面已经不动」的割裂。
+ *
+ * 缩放边界 0.5~3.0 仍由 native 统一钳制。
+ *
+ * ## 重置视图（P6）
+ * 右侧悬浮按钮把 panX/panY 归零、缩放回 1x（初始适配大小）。放在**右边缘垂直居中**
+ * 而不是顶栏/底栏：沉浸模式下（系统栏被隐藏、顶栏随遮罩让位）它仍然在拇指
+ * 可达范围内，且不与左上 FPS、右上状态、底部动作条抢位置。
  *
  * ## 生命周期
  * - `RENDERMODE_CONTINUOUSLY`：动作时间轴与参数每帧都可能变，必须连续渲染。
@@ -284,15 +300,43 @@ fun Live2DContent(
                         // 屏幕 Y 向下为正，NDC 向上为正，故 panY 取负。
                         val halfW = size.width.coerceAtLeast(1) * 0.5f
                         val halfH = size.height.coerceAtLeast(1) * 0.5f
-                        panX = (panX + pan.x / halfW).coerceIn(-PAN_LIMIT, PAN_LIMIT)
-                        panY = (panY - pan.y / halfH).coerceIn(-PAN_LIMIT, PAN_LIMIT)
-                        zoom = (zoom * zoomChange).coerceIn(SCALE_MIN, SCALE_MAX)
-                        // C++ 侧会再钳一次（边界以 native 为准），这里同步是为了
-                        // 让 Compose 状态与画面一致，避免下一次手势从错的值继续累加
+
+                        // 先按缩放后的包围盒取可行区间，再钳制累加值。
+                        // 顺序很重要：边界依赖新 scale，必须先算 scale 再算 pan。
+                        val nextZoom = (zoom * zoomChange).coerceIn(SCALE_MIN, SCALE_MAX)
+                        val limits = renderer.panLimits(nextZoom)
+
+                        panX = (panX + pan.x / halfW).coerceIn(limits[0], limits[1])
+                        panY = (panY - pan.y / halfH).coerceIn(limits[2], limits[3])
+                        zoom = nextZoom
                         renderer.setTransform(panX, panY, zoom)
                     }
                 },
         )
+
+        // ---- P6：重置视图（右边缘垂直居中）----
+        // 为什么放在右边缘而不是顶栏：沉浸模式（系统栏隐藏 + 顶栏让位）下仍要
+        // 一伸手就够到；同时避开左上 FPS、右上状态、底部动作条三处已有内容。
+        // 位置随手势层之上（后声明 = 更上层），点击不会被手势层吃掉。
+        SmallFloatingActionButton(
+            onClick = {
+                panX = 0f
+                panY = 0f
+                zoom = 1f
+                renderer.resetTransform()
+                InAppLog.i(TAG, "重置视图: 1x 居中")
+            },
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 16.dp),
+            containerColor = Color.Black.copy(alpha = 0.45f),
+            contentColor = Color.White.copy(alpha = 0.9f),
+        ) {
+            Icon(
+                imageVector = Icons.Filled.Refresh,
+                contentDescription = "重置视图",
+            )
+        }
 
         // ---- 任务 3：FPS HUD（左上角）----
         Surface(
@@ -445,11 +489,13 @@ private const val PARAM_PUSH_INTERVAL_MS = 1000L / PARAM_PUSH_HZ
 private const val FPS_POLL_INTERVAL_MS = 400L
 
 /**
- * 手势边界（与 C++ 侧 kScaleMin / kScaleMax / kPanLimit 保持一致）。
+ * 缩放边界（与 C++ 侧 kScaleMin / kScaleMax 保持一致）。
  *
  * 真正的钳制在 native 侧（单一事实来源）；这里的常量只用于让 Compose 状态
  * 与画面同步，避免「UI 以为还能再放大、画面已经不动」的割裂感。
+ *
+ * 平移**没有**这里的常量：边界依赖模型包围盒与当前缩放，只能由 native 的
+ * `nativePanLimits` 按实时尺寸算出来（见 [Live2DRenderer.panLimits]）。
  */
 private const val SCALE_MIN = 0.5f
 private const val SCALE_MAX = 3.0f
-private const val PAN_LIMIT = 0.9f

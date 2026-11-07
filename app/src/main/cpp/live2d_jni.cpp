@@ -114,7 +114,9 @@
 //     再上传顶点，保证「回到前台」与「首次进入」是同一条路径。
 //   - **手势变换**：nativeSetTransform(dx, dy, scale) 接收 NDC 偏移与缩放，
 //     在投影矩阵之后再做一次 S/T 复合（正交矩阵无旋转，可直接缩放 0/5/12/13 行），
-//     偏移与缩放都在 C++ 侧钳制，Kotlin 侧的钳制只是为了让 UI 状态与画面一致。
+//     偏移与缩放都在 C++ 侧钳制。平移边界按**模型包围盒**计算：只要还有
+//     80px 可见就允许拖（nativePanLimits 供 Kotlin 同步），因此放大后可以把
+//     头部拖到屏幕中心；旧版「中心点必须在屏幕内」是放大拖不动的根因。
 //   - **物理**：自研质点-弹簧-阻尼链（见 PhysicsChain）。只借鉴「输入→分段→输出」
 //     的数据约定，求解器完全独立实现：每节质点的目标是「父节点实际位置 + 旋转后的
 //     静息向量」，受力 = 胡克回复力 - 阻尼力 + 重力，半隐式欧拉积分 + 定长约束。
@@ -428,15 +430,19 @@ struct PhysicsChain {
     float angMin = -10.0f, angDef = 0.0f, angMax = 10.0f;
 
     float gravityX = 0.0f, gravityY = -1.0f;
-    float windX = 0.0f, windY = 0.0f;
 
     // ---- 运行时状态（绝对位置，根节点 = 输入锚点）----
     std::vector<float> px, py;   // 质点位置
     std::vector<float> vx, vy;   // 质点速度
     bool initialized = false;
 
-    /** 无输入收敛后的链尾方向（弧度），输出偏角的参考基准。 */
-    float settledAngle = 0.0f;
+    /**
+     * 各节点静止时的杆方向角（弧度），下标 = 子节点下标（下标 0 不用）。
+     *
+     * 输出按 json 的 VertexIndex 取「该节杆」的偏角，因此参考基准必须是
+     * **逐节**的，不能只记链尾一个角度（审计 P1：旧实现忽略 VertexIndex）。
+     */
+    std::vector<float> settledAngles;
 
     // 上一帧的归一化输入（±1 量纲），用于求「输入速度」→ 惯性拖曳力
     float prevInputX = 0.0f;
@@ -597,13 +603,72 @@ constexpr float kScaleMin = 0.5f;
 constexpr float kScaleMax = 3.0f;
 
 /**
- * 平移边界：保证模型中心不离开可视区域。
+ * 平移边界的兜底值：仅在「视口尺寸未知」时使用（surfaceChanged 之前）。
  *
- * 模型中心在 NDC 里恒为 (0,0)（投影以 bbox 中心为原点），变换后其位置为
- * (dx, dy)，因此限制 |dx| ≤ 1 就能保证中心点仍在屏幕内。留 0.9 的余量，
- * 让中心点不会正好压在屏幕边缘上。
+ * 正常路径不再用固定值，而是按**模型包围盒**算允许范围（见 computePanLimits）。
  */
-constexpr float kPanLimit = 0.9f;
+constexpr float kPanFallback = 2.0f;
+
+/**
+ * 允许滑出屏幕后仍须保留的最小可见像素（P6）。
+ *
+ * 语义：无论拖到多远，模型包围盒与视口的交集在 X/Y 上都不小于这个像素数，
+ * 保证用户永远能看见（并重新抓住）模型。
+ */
+constexpr float kMinVisiblePx = 80.0f;
+
+/**
+ * 按包围盒计算当前缩放下允许的平移范围（P6，取代旧的「中心点必须在屏幕内」）。
+ *
+ * ## 为什么废除旧规则
+ * 旧实现把 |dx| ≤ 0.9 当作边界，等价于「模型 bbox 中心必须留在屏幕内」。
+ * 但放大后要看清头部，用户需要把**头部**拖到屏幕中心——此时 bbox 中心
+ * （腰/躯干附近）会跑到屏幕外，旧规则会硬顶住不让拖，正是「放大后拖不动」的根因。
+ *
+ * ## 新规则
+ * 把模型 bbox 经手势变换（p' = scale·p + d）后的范围与视口 [-1,1]² 求交，
+ * 要求交集在 X 与 Y 上都不小于 [kMinVisiblePx] 像素。解出 d 的可行区间：
+ *   - 模型滑到左边：bboxRight + 1 ≥ minNdc  → d ≥ minNdc - 1 - s·half
+ *   - 模型滑到右边：1 - bboxLeft ≥ minNdc   → d ≤ 1 + s·half - minNdc
+ *
+ * bbox 的半宽/半高在 NDC 里是「投影矩阵对角元 × 模型半尺寸」——投影以 bbox
+ * 中心为原点，所以变换前 bbox 恒为 [-half, +half]。
+ *
+ * @param scale 缩放倍数（已钳制）
+ * @param outMinX/outMaxX/outMinY/outMaxY 输出允许区间
+ * @return false = 视口或包围盒未知，调用方退回 [kPanFallback]
+ */
+bool computePanLimits(float scale,
+                      float *outMinX, float *outMaxX,
+                      float *outMinY, float *outMaxY) {
+    if (g_viewW <= 0 || g_viewH <= 0 || g_vertices.empty()) return false;
+
+    const float modelW = g_maxX - g_minX;
+    const float modelH = g_maxY - g_minY;
+    if (!(modelW > 0.0f) || !(modelH > 0.0f)) return false;
+
+    // 投影以 bbox 中心为原点：变换前 bbox = [-halfX, +halfX] × [-halfY, +halfY]
+    const float halfX = std::fabs(g_mvp[0]) * modelW * 0.5f;
+    const float halfY = std::fabs(g_mvp[5]) * modelH * 0.5f;
+    if (!(halfX > 0.0f) || !(halfY > 0.0f)) return false;
+
+    // 80px 对应的 NDC 长度（NDC 跨度 2 = 视口边长）
+    const float minNdcX = std::min(2.0f, 2.0f * kMinVisiblePx / static_cast<float>(g_viewW));
+    const float minNdcY = std::min(2.0f, 2.0f * kMinVisiblePx / static_cast<float>(g_viewH));
+
+    const float scaledHalfX = scale * halfX;
+    const float scaledHalfY = scale * halfY;
+
+    *outMinX = minNdcX - 1.0f - scaledHalfX;
+    *outMaxX = 1.0f + scaledHalfX - minNdcX;
+    *outMinY = minNdcY - 1.0f - scaledHalfY;
+    *outMaxY = 1.0f + scaledHalfY - minNdcY;
+
+    // 数值兜底：区间反向时（理论上不会，除非模型比可见阈值还小）取中点
+    if (*outMinX > *outMaxX) *outMinX = *outMaxX = 0.0f;
+    if (*outMinY > *outMaxY) *outMinY = *outMaxY = 0.0f;
+    return true;
+}
 
 /**
  * 当前 EGL 配置的模板缓冲位数（P2）。
@@ -1094,7 +1159,8 @@ void loadPose(AAssetManager *manager, const std::string &jsonPath) {
 // ---------------------------------------------------------------------------
 //
 //  只读 physics3.json 的「输入 / 输出 / 分段质点 / 归一化区间」四类信息；
-//  Meta.EffectiveForces 的 Gravity/Wind 是全局的，拷到每条链上。
+//  Meta.EffectiveForces 的 Gravity 是全局的，拷到每条链上。
+//  （Wind 字段此前被解析并保存但从未参与受力计算，属死代码，已移除。）
 
 /** 读一个 Vector2 字段（缺失时用 fallback）。 */
 void readVector2(const mjson::Value *node, float fallbackX, float fallbackY,
@@ -1156,11 +1222,9 @@ void loadPhysics(AAssetManager *manager, const std::string &jsonPath) {
     }
 
     float gravityX = 0.0f, gravityY = -1.0f;
-    float windX = 0.0f, windY = 0.0f;
     if (const mjson::Value *meta = root.find("Meta")) {
         if (const mjson::Value *forces = meta->find("EffectiveForces")) {
             readVector2(forces->find("Gravity"), 0.0f, -1.0f, &gravityX, &gravityY);
-            readVector2(forces->find("Wind"), 0.0f, 0.0f, &windX, &windY);
         }
     }
 
@@ -1176,8 +1240,6 @@ void loadPhysics(AAssetManager *manager, const std::string &jsonPath) {
         PhysicsChain chain;
         chain.gravityX = gravityX;
         chain.gravityY = gravityY;
-        chain.windX = windX;
-        chain.windY = windY;
         if (const mjson::Value *id = setting.find("Id")) chain.id = id->stringOrEmpty();
         readNormalization(setting.find("Normalization"), "Position",
                           &chain.posMin, &chain.posDef, &chain.posMax);
@@ -1903,6 +1965,34 @@ constexpr float kPhysicsMaxRotation = 0.55f;
  */
 constexpr float kPhysicsInertiaScale = 2.0f;
 
+/**
+ * 不可信输入的钳制上限（审计 P1）。
+ *
+ * Sample 的 Acceleration 最大 10、Delay 最大 1.5；这里给 10 倍以上余量，
+ * 既不改动正常模型手感，又能挡住自定义模型导入时写出的极端值。
+ * 注意这些只是「第一道闸」——真正的稳定性由 simulateChain 里的
+ * ω·h 与联合预算（ωh)²+2ch 硬约束保证（模型合法但帧率掉到 0.05s 时仍要稳定）。
+ */
+constexpr float kPhysicsMaxAcceleration = 100.0f;
+constexpr float kPhysicsMaxDelay = 20.0f;
+
+/** 刚度项硬闸：ω·h ≤ 1.8（同上，防止 k·h² 越界导致发散）。 */
+constexpr float kPhysicsMaxOmegaH = 1.8f;
+
+/**
+ * 刚度与阻尼的**联合**稳定预算（审计 P1 的最终闸门）。
+ *
+ * 半隐式欧拉求解「弹簧-阻尼」系统的特征多项式为
+ *   λ² - T·λ + D = 0,  T = 2 - (ωh)² - ch,  D = 1 - ch
+ * 实特征值分支的稳定条件化简为：
+ *   (ωh)² + 2·ch < 4
+ *
+ * 为什么单看 c·h < 2 不够：`ch=1.8` 配 `ωh=1.16` 时左边 = 4.96 > 4，
+ * 速度每步被反向放大 0.8 倍并与刚性回复力共振，实测静止后仍有 800+ 的
+ * 残余速度（表现为持续高频抖动）。取 3.6 留 10% 余量。
+ */
+constexpr float kPhysicsStabilityBudget = 3.6f;
+
 /** 把参数值按模型量程归一化到 [-1, 1]（默认值两侧分别用各自的分母）。 */
 float normalizeParamValue(int index, float value) {
     if (index < 0 || index >= g_paramCount ||
@@ -2015,15 +2105,38 @@ void simulateChain(PhysicsChain &chain, const float *values, float totalTime) {
             const float targetX = chain.px[i - 1] + rx * cosRot - ry * sinRot;
             const float targetY = chain.py[i - 1] + rx * sinRot + ry * cosRot;
 
-            // 刚度：Acceleration 越大越硬；Mobility 越大越「软」（跟随多、抵抗少）
+            // 刚度：Acceleration 越大越硬；Mobility 越大越「软」（跟随多、抵抗少）。
+            //
+            // 审计 P1（数值爆炸）：json 是不可信输入，自定义模型可能写
+            // Acceleration=1e6 / Delay=1e3。旧实现只对 acceleration 取下限 0.1，
+            // 没有上限，于是 k = 200×1e6 使 ω·h ≫ 2，半隐式欧拉一步就把质点
+            // 甩到 1e9 量级（表现为模型炸成碎片/NaN 污染参数）。
+            // 三重防护，缺一不可：
+            //   1) Acceleration / Delay 钳到有限区间（挡住绝大多数异常值）；
+            //   2) 刚度再按 ω·h ≤ 1.8 钳一次 —— 即使 Acceleration 合法但 h 变大
+            //      （掉帧到 0.05s）也不会越界，这是真正的稳定性保证；
+            //   3) 阻尼按「联合稳定预算」钳一次 —— 刚度吃掉预算后自动退让，
+            //      防止 Delay 很大时阻尼项把速度反向放大（见 kPhysicsStabilityBudget）。
             const float mobility = std::max(0.0f, std::min(1.0f, v.mobility));
-            const float stiffness = kPhysicsStiffness *
-                                    std::max(0.1f, v.acceleration) *
-                                    (0.55f + 0.45f * mobility);
-            // 阻尼：Delay 越大越拖，映射到阻尼比 0.08~0.63（始终欠阻尼，有回弹）
+            const float accel = std::max(0.1f, std::min(kPhysicsMaxAcceleration,
+                                                        v.acceleration));
+            float stiffness = kPhysicsStiffness * accel * (0.55f + 0.45f * mobility);
+            const float maxOmega = kPhysicsMaxOmegaH / h;
+            if (stiffness > maxOmega * maxOmega) stiffness = maxOmega * maxOmega;
+
             const float omega = std::sqrt(stiffness);
-            const float zeta = 0.08f + 0.55f * std::max(0.0f, v.delay);
-            const float damping = 2.0f * zeta * omega;
+            // 阻尼：Delay 越大越拖，映射到阻尼比 0.08~0.63（始终欠阻尼，有回弹）
+            const float delay = std::max(0.0f, std::min(kPhysicsMaxDelay, v.delay));
+            const float zeta = 0.08f + 0.55f * delay;
+
+            // 联合稳定预算：(ωh)² + 2·ch ≤ 3.6（推导见 kPhysicsStabilityBudget）。
+            // 先按此式算出本步还能给阻尼的额度，再和物理阻尼取小 —— 这样
+            // 「刚度已经吃掉大部分预算」的极端模型会自动退化成近乎无阻尼的
+            // 刚性链，而不是发散成碎片。
+            const float omegaH = omega * h;
+            const float dampingBudgetH =
+                std::max(0.0f, kPhysicsStabilityBudget - omegaH * omegaH) * 0.5f;
+            const float damping = std::min(2.0f * zeta * omega, dampingBudgetH / h);
 
             // 胡克回复力 F = -k·x + 阻尼力 F = -c·v + 重力 + 输入速度拖曳力。
             // 拖曳力与「越靠链尾越轻」成正比（1 - mobility），
@@ -2045,7 +2158,12 @@ void simulateChain(PhysicsChain &chain, const float *values, float totalTime) {
             chain.py[i] += chain.vy[i] * h;
         }
 
-        // 杆长投影：把每节拉回静息长度，只移动子节点
+        // 杆长投影：把每节拉回静息长度，只移动子节点。
+        //
+        // 审计 P2（静止微抖）：位置被投影后速度没有同步修正，法向分量仍在
+        // 「继续把节点往外推」，下一子步又被拉回来 —— 每帧都在投影/弹回之间
+        // 反复，静止时表现为高频微抖。这里在投影后把速度的**径向分量**扣掉，
+        // 只保留切向分量（沿杆方向的摆动），投影不再引入虚假能量。
         for (size_t i = 1; i < count; ++i) {
             const float restDx = chain.vertices[i].restX - chain.vertices[i - 1].restX;
             const float restDy = chain.vertices[i].restY - chain.vertices[i - 1].restY;
@@ -2064,6 +2182,14 @@ void simulateChain(PhysicsChain &chain, const float *values, float totalTime) {
             }
             chain.px[i] = chain.px[i - 1] + dx;
             chain.py[i] = chain.py[i - 1] + dy;
+
+            // 速度同步：v -= (v·n̂)n̂，n̂ = 投影后的杆方向单位向量
+            const float invLen = 1.0f / restLen;
+            const float nx = dx * invLen;
+            const float ny = dy * invLen;
+            const float radial = chain.vx[i] * nx + chain.vy[i] * ny;
+            chain.vx[i] -= radial * nx;
+            chain.vy[i] -= radial * ny;
         }
     }
 }
@@ -2091,25 +2217,20 @@ void applyPhysicsLocked() {
         // 必须拆成 120 次 1/60s 的小步调用，不能一次传 2.0s：
         // simulateChain 内部把子步数钳在 24 步，传 2.0s 会得到 h=0.083s，
         // 而稳定性要求 k·h² < 1（200×0.083² ≈ 1.39），一步就把质点甩飞，
-        // 记下来的 settledAngle 会是错的，之后所有输出都偏。
+        // 记下来的静止参考角会是错的，之后所有输出都偏。
         if (!chain.initialized) {
             for (int i = 0; i < 120; ++i) {
                 simulateChain(chain, nullptr, 1.0f / 60.0f);
             }
-            const size_t last = chain.vertices.size() - 1;
-            chain.settledAngle = std::atan2(chain.py[last] - chain.py[last - 1],
-                                            chain.px[last] - chain.px[last - 1]);
+            const size_t count = chain.vertices.size();
+            chain.settledAngles.assign(count, 0.0f);
+            for (size_t i = 1; i < count; ++i) {
+                chain.settledAngles[i] = std::atan2(chain.py[i] - chain.py[i - 1],
+                                                    chain.px[i] - chain.px[i - 1]);
+            }
             chain.initialized = true;
         }
         simulateChain(chain, values, dt);
-
-        const size_t last = chain.vertices.size() - 1;
-        const float angle = std::atan2(chain.py[last] - chain.py[last - 1],
-                                       chain.px[last] - chain.px[last - 1]);
-        float delta = angle - chain.settledAngle;
-        // 角度差归一化到 (-π, π]，避免绕圈时输出突跳
-        while (delta > 3.14159265f) delta -= 6.28318531f;
-        while (delta < -3.14159265f) delta += 6.28318531f;
 
         // 归一化量程 = 2×锚点最大旋转角（约 63°）。
         //
@@ -2122,12 +2243,32 @@ void applyPhysicsLocked() {
         //   前发 0.87 / 侧发 0.80 / 后发 0.93 / 围巾 0.45
         // 稳态都不到满幅，只有过冲的瞬间才接近上限 —— 这是「自然」的关键：
         // 若稳态就顶到 1.0，头一直歪着时头发会像被钉住一样不动。
-        const float deltaDeg = delta * 57.2957795f;
         const float span = 2.4f * kPhysicsMaxRotation * 57.2957795f;
-        const float unit = std::max(-1.0f, std::min(1.0f, deltaDeg / span));
+        const size_t count = chain.vertices.size();
+        if (count < 2 || chain.settledAngles.size() != count) continue;
 
         for (const PhysicsOutput &output : chain.outputs) {
             if (output.paramIndex < 0 || output.paramIndex >= g_paramCount) continue;
+
+            // 审计 P1（Output.VertexIndex 被忽略）：输出可以指定任意一节杆，
+            // 不一定在链尾。旧实现恒取 last，非末端输出（例如分段发束的中段）
+            // 全部退化成链尾角度，多个输出互相打架、只剩最后一个生效。
+            // 这里按 json 的 VertexIndex 取对应杆；越界时钳到 [1, count-1]。
+            int vi = output.vertexIndex;
+            if (vi < 1) vi = 1;
+            if (vi >= static_cast<int>(count)) vi = static_cast<int>(count) - 1;
+            const size_t idx = static_cast<size_t>(vi);
+
+            const float angle = std::atan2(chain.py[idx] - chain.py[idx - 1],
+                                           chain.px[idx] - chain.px[idx - 1]);
+            float delta = angle - chain.settledAngles[idx];
+            // 角度差归一化到 (-π, π]，避免绕圈时输出突跳
+            while (delta > 3.14159265f) delta -= 6.28318531f;
+            while (delta < -3.14159265f) delta += 6.28318531f;
+
+            const float deltaDeg = delta * 57.2957795f;
+            const float unit = std::max(-1.0f, std::min(1.0f, deltaDeg / span));
+
             const size_t pi = static_cast<size_t>(output.paramIndex);
             const float u = output.reflect ? -unit : unit;
 
@@ -2987,7 +3128,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceChanged(
 }
 
 /**
- * 手势变换（P5）：拖拽位移 + 双指缩放。
+ * 手势变换（P5/P6）：拖拽位移 + 双指缩放。
  *
  * @param dx    水平偏移，单位 = 屏幕半宽（±1 即贴到屏幕左右边缘）
  * @param dy    垂直偏移，单位 = 屏幕半高（向上为正）
@@ -2995,7 +3136,9 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceChanged(
  *
  * 边界在这里统一钳制（不信任调用方）：
  *  - scale 夹到 [0.5, 3.0]；
- *  - 平移夹到 ±0.9，保证模型中心点不会完全离开可视区域。
+ *  - 平移按**包围盒**算可行区间（[computePanLimits]）：只要模型还有
+ *    [kMinVisiblePx] 像素留在屏幕内就允许拖，因此放大后可以把头部拖到屏幕中心
+ *    （旧版「中心点必须在屏幕内」会顶住，是放大拖不动的根因）。
  *
  * 线程：任意线程可调用（Kotlin 手势回调在主线程）。只写三个 float，
  * 真正的矩阵合成在 GL 线程的 drawFrame 里做。
@@ -3007,14 +3150,20 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetTransform(
 
     float s = scale;
     if (!(s > 0.0f)) s = 1.0f; // 同时挡住 NaN
-    g_gesture.scale = std::max(kScaleMin, std::min(kScaleMax, s));
+    s = std::max(kScaleMin, std::min(kScaleMax, s));
+    g_gesture.scale = s;
 
     float x = dx;
     float y = dy;
     if (!std::isfinite(x)) x = 0.0f;
     if (!std::isfinite(y)) y = 0.0f;
-    g_gesture.dx = std::max(-kPanLimit, std::min(kPanLimit, x));
-    g_gesture.dy = std::max(-kPanLimit, std::min(kPanLimit, y));
+
+    float minX = -kPanFallback, maxX = kPanFallback;
+    float minY = -kPanFallback, maxY = kPanFallback;
+    computePanLimits(s, &minX, &maxX, &minY, &maxY);
+
+    g_gesture.dx = std::max(minX, std::min(maxX, x));
+    g_gesture.dy = std::max(minY, std::min(maxY, y));
 }
 
 /** 重置手势变换（回到 1x、居中）。 */
@@ -3025,6 +3174,34 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeResetTransform(
     g_gesture.dx = 0.0f;
     g_gesture.dy = 0.0f;
     g_gesture.scale = 1.0f;
+}
+
+/**
+ * 查询指定缩放下的平移可行区间（P6），供 Kotlin 侧同步 UI 状态。
+ *
+ * 为什么需要这个接口：真正的钳制在 native（单一事实来源），但 Compose 侧
+ * 的 panX/panY 是累加量。若 UI 不知道边界，手势会一直累加到「以为还能拖」
+ * 的错误值，松手再拖时画面要「先追回差值」才开始动。
+ *
+ * @return `[minX, maxX, minY, maxY]`；视口/包围盒未知时返回 ±[kPanFallback]
+ */
+JNIEXPORT jfloatArray JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativePanLimits(
+        JNIEnv *env, jobject /*thiz*/, jfloat scale) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+
+    float s = scale;
+    if (!(s > 0.0f)) s = 1.0f;
+    s = std::max(kScaleMin, std::min(kScaleMax, s));
+
+    float minX = -kPanFallback, maxX = kPanFallback;
+    float minY = -kPanFallback, maxY = kPanFallback;
+    computePanLimits(s, &minX, &maxX, &minY, &maxY);
+
+    jfloat values[4] = {minX, maxX, minY, maxY};
+    jfloatArray result = env->NewFloatArray(4);
+    if (result) env->SetFloatArrayRegion(result, 0, 4, values);
+    return result;
 }
 
 /**

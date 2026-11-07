@@ -295,7 +295,8 @@ class Live2DRenderer(
      * @param dy    垂直偏移，单位 = 屏幕半高（向上为正）
      * @param scale 缩放倍数
      *
-     * 边界由 C++ 侧统一钳制（缩放 0.5~3.0、平移 ±0.9），这里不做二次判断，
+     * 边界由 C++ 侧统一钳制：缩放 0.5~3.0，平移按**模型包围盒**算
+     * （只要还有 80px 可见就允许拖，见 [panLimits]）。这里不做二次判断，
      * 避免两处常量漂移。线程：任意线程可调用。
      */
     fun setTransform(dx: Float, dy: Float, scale: Float) {
@@ -304,6 +305,22 @@ class Live2DRenderer(
             nativeSetTransform(dx, dy, scale)
         } catch (t: Throwable) {
             InAppLog.w(TAG, "nativeSetTransform 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * 查询指定缩放下的平移可行区间 `[minX, maxX, minY, maxY]`。
+     *
+     * 边界值由 native 按包围盒计算（单一事实来源）。模型未就绪或 native
+     * 返回异常时给一个保守的对称区间，调用方按普通数值处理即可。
+     */
+    fun panLimits(scale: Float): FloatArray {
+        if (!modelReady) return FALLBACK_PAN_LIMITS.copyOf()
+        return try {
+            nativePanLimits(scale) ?: FALLBACK_PAN_LIMITS.copyOf()
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativePanLimits 失败: ${t.javaClass.simpleName}: ${t.message}")
+            FALLBACK_PAN_LIMITS.copyOf()
         }
     }
 
@@ -331,8 +348,12 @@ class Live2DRenderer(
     private external fun nativeFps(): Float
     private external fun nativeSetTransform(dx: Float, dy: Float, scale: Float)
     private external fun nativeResetTransform()
+    private external fun nativePanLimits(scale: Float): FloatArray?
 
     companion object {
+        /** native 不可用时的平移兜底区间（对称、够用即可）。 */
+        private val FALLBACK_PAN_LIMITS = floatArrayOf(-2f, 2f, -2f, 2f)
+
         /**
          * 内置 Sample 模型的 .moc3 路径（assets 相对路径）。
          *
