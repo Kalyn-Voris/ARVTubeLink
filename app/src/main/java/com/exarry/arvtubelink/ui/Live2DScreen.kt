@@ -91,35 +91,27 @@ fun Live2DContent(
     var status by remember { mutableStateOf("正在加载模型…") }
     var isError by remember { mutableStateOf(false) }
 
-    // 面捕驱动是否已武装（模型加载完 + 有面捕源才真启动推流循环）。
-    // 用 State 而非普通变量：它是推流 effect 的 key，加载完成后要能触发启动。
-    var paramSourceActive by remember { mutableStateOf(false) }
-
-    // 首次组合就把模型加载掉（不等 GL 线程），状态文字能立刻反映结果；
-    // GL 侧 onSurfaceCreated 只消费已组装好的 CPU 几何。
-    // 首帧若先于本 effect 到达 GL 线程，Renderer.onSurfaceCreated 内部有幂等补救。
-    LaunchedEffect(renderer) {
+    // 加载 + 绑定 + 推流放在同一个 effect 里串行完成。
+    // 拆成两个 effect 时，绑定后改写 key 会让推流循环取消再重启一次
+    // （实测日志里「面捕驱动启动」出现两遍），单 effect 天然只启动一次。
+    LaunchedEffect(renderer, faceRenderer) {
         val ready = runCatching { renderer.init() }.getOrDefault(false)
-        if (ready) {
-            // 参数下标只解析一次：模型里不存在的名字会被标成 -1 并在推流时跳过
-            renderer.bindParameters(Live2DParamMap.TARGETS)
-            paramSourceActive = faceRenderer != null
-        }
         isError = !ready
-        status = when {
-            !ready -> renderer.lastError ?: "模型加载失败"
-            faceRenderer == null -> "Purism Core 就绪（无面捕源）"
-            else -> "Purism Core 就绪 · 面捕驱动中"
+        if (!ready) {
+            status = renderer.lastError ?: "模型加载失败"
+            surfaceViewRef[0]?.requestRender()
+            return@LaunchedEffect
         }
-        surfaceViewRef[0]?.requestRender()
-    }
 
-    // ---- P3：30Hz 参数推流 ----
-    // 挂在本页组合生命周期：切走 Tab / 离开页面自动 cancel，不会后台空转。
-    // key 用 renderer + faceRenderer：任一被重建都要重新起循环（旧循环用的是旧模型）。
-    LaunchedEffect(renderer, faceRenderer, paramSourceActive) {
-        // 模型没就绪或没有面捕源：不启动循环，画面停在原生默认姿态
-        if (!paramSourceActive || !renderer.modelReady || faceRenderer == null) return@LaunchedEffect
+        // 参数下标只解析一次：模型里不存在的名字会被标成 -1 并在推流时跳过
+        renderer.bindParameters(Live2DParamMap.TARGETS)
+        surfaceViewRef[0]?.requestRender()
+
+        if (faceRenderer == null) {
+            status = "Purism Core 就绪（无面捕源）"
+            return@LaunchedEffect
+        }
+        status = "Purism Core 就绪 · 面捕驱动中"
 
         val indices = renderer.parameterIndexMap()
         // 只保留模型真正拥有的参数：-1 的项直接不进数组，C++ 侧无需逐帧丢
@@ -137,6 +129,7 @@ fun Live2DContent(
         // 长度固定才能直接复用同一个 FloatArray（JNI 侧按偶数对解析，无需拷贝）。
         val out = FloatArray(bound.size * 2)
         var faceLost = false
+        var writeReported = false
         while (isActive) {
             val snapshot = faceRenderer.latestFaceSnapshot
             // 人脸从有到无 / 从无到有各打一次日志，便于装机时确认链路
@@ -161,7 +154,13 @@ fun Live2DContent(
 
             // 连续渲染模式下 GL 线程会自己取最新顶点，无需 requestRender。
             // 切到 Default：csmUpdateModel 是整模型求值，30Hz 放主线程会挤占 UI 帧。
-            withContext(Dispatchers.Default) { renderer.updateParams(out) }
+            val written = withContext(Dispatchers.Default) { renderer.updateParams(out) }
+            // 首次成功写入打一条：即使没脸（推的是中性值）也证明 JNI 写通，
+            // 这样「模型不动」能被明确区分成「没脸」还是「native 没收到参数」。
+            if (!writeReported && written > 0) {
+                writeReported = true
+                InAppLog.i(TAG, "参数写入成功: $written 个/帧")
+            }
             delay(PARAM_PUSH_INTERVAL_MS)
         }
     }
