@@ -292,8 +292,11 @@ object Live2DModelStore {
      *
      * 每个条目都经 [resolveSafely] 校验，任一违规立即抛异常中止（不做跳过式容错）。
      * 采用 [ZipInputStream] 顺序读取而非 `ZipFile`：content Uri 不是文件路径，只能拿到流。
+     *
+     * internal 而非 private：单元测试要直接喂构造好的恶意 zip 走这条真实路径，
+     * 否则只能靠 UI 手测，回归时极易漏掉。
      */
-    private fun extractZip(input: InputStream, destDir: File) {
+    internal fun extractZip(input: InputStream, destDir: File) {
         val rootCanonical = destDir.canonicalFile
         // 前缀校验串统一补分隔符：`/a/bc` 不能因为 startsWith("/a/b") 被误判为子路径
         val rootPrefix = rootCanonical.path + File.separator
@@ -389,10 +392,10 @@ object Live2DModelStore {
     }
 
     /** Zip Slip（路径穿越）被拦截。 */
-    private class ZipSlipException(message: String) : IOException(message)
+    internal class ZipSlipException(message: String) : IOException(message)
 
     /** 解压超限（zip 炸弹防护）。 */
-    private class ZipLimitException(message: String) : IOException(message)
+    internal class ZipLimitException(message: String) : IOException(message)
 
     // ========================================================================
     //  删除
