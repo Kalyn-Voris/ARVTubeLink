@@ -57,8 +57,8 @@ android {
         applicationId = "com.exarry.arvtubelink"
         minSdk = 26
         targetSdk = 37
-        versionCode = 9
-        versionName = "1.2.6 (20261102)"
+        versionCode = 10
+        versionName = "1.3.0 (20261109)"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
