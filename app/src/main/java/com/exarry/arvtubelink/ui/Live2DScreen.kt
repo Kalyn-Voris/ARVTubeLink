@@ -54,21 +54,29 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.stringResource
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ar.FaceRenderer
+import com.exarry.arvtubelink.ui.live2d.Live2DImportProgress
+import com.exarry.arvtubelink.ui.live2d.Live2DImportScheduler
 import com.exarry.arvtubelink.ui.live2d.Live2DModelStore
 import com.exarry.arvtubelink.ui.live2d.Live2DParamMap
 import com.exarry.arvtubelink.ui.live2d.Live2DRenderer
 import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.onEach
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.UUID
 
 /**
  * Live2D 渲染页（Purism Core 原生渲染 + 面捕参数驱动 + 动作/表情）。
@@ -127,25 +135,19 @@ import kotlinx.coroutines.withContext
  *   都让推流协程重新走一遍「加载 → 绑定 → 推流」，与首次进入同一条路径。
  *
  * @param modifier 布局修饰符（由 AppRoot 传入，占满内容区）
- * @param mocAssetPath assets 内的 .moc3 相对路径，默认内置 Sample
  * @param faceRenderer 面捕渲染器（参数源）；null = 只渲染静态姿态
  */
 @Composable
 fun Live2DContent(
     modifier: Modifier = Modifier,
-    mocAssetPath: String = Live2DRenderer.DEFAULT_MOC_PATH,
     faceRenderer: FaceRenderer? = null,
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // ---- P6：自定义模型管理 ----
-    // 当前模型（内置或用户导入）。mocPath 以 '/' 开头 = 本地绝对路径。
-    var currentModel by remember {
-        mutableStateOf(
-            Live2DModelStore.builtinModel.copy(mocPath = mocAssetPath)
-        )
-    }
+    // 应用不内置任何模型：null = 用户还没有导入过，页面呈现空状态引导。
+    var currentModel by remember { mutableStateOf<Live2DModelStore.Model?>(null) }
     val availableModels = remember { mutableStateListOf<Live2DModelStore.Model>() }
     // 每次「切换模型」自增，作为加载协程的 key。0 = 首次加载（走 init 的幂等路径）。
     var modelEpoch by remember { mutableIntStateOf(0) }
@@ -153,18 +155,21 @@ fun Live2DContent(
     var loadedModelEpoch by remember { mutableIntStateOf(-1) }
 
     var modelDialogVisible by remember { mutableStateOf(false) }
+    // 导入状态由 WorkManager 驱动：本变量只做「界面侧快照」，真正的任务在进程级后台执行。
     var importInProgress by remember { mutableStateOf(false) }
+    // 当前观测中的导入任务 id。跨重组保持，避免每次重组重复接流。
+    var importWorkId by remember { mutableStateOf<UUID?>(null) }
     var pendingDelete by remember { mutableStateOf<Live2DModelStore.Model?>(null) }
     var importMessage by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
     // Renderer 跨重组保持：内部持有 native 模型状态，重新 new 会丢掉已加载的模型。
-    // 注意 key 只有 mocAssetPath 的**初值**：切换模型走 renderer.loadModel()，
+    // 首次创建时不带模型（null），等 listModels 恢复出当前模型后再 loadModel。
     // 不重建 renderer（重建会让 GLSurfaceView 的 setRenderer 二次调用抛异常）。
-    val renderer = remember { Live2DRenderer(context.assets, currentModel.mocPath) }
+    val renderer = remember { Live2DRenderer(context.assets) }
     val surfaceViewRef = remember { arrayOfNulls<GLSurfaceView>(1) }
 
-    var status by remember { mutableStateOf("正在加载模型…") }
+    var status by remember { mutableStateOf("尚未加载模型") }
     var isError by remember { mutableStateOf(false) }
 
     // ---- P4：动作 / 表情清单与当前选择 ----
@@ -202,9 +207,79 @@ fun Live2DContent(
             val models = withContext(Dispatchers.IO) { Live2DModelStore.listModels(context) }
             availableModels.clear()
             availableModels.addAll(models)
+            // 首次进入或当前模型已不存在：自动接管列表里的第一个（没有就保持空状态）
+            if (currentModel == null) {
+                currentModel = models.firstOrNull()
+                if (currentModel != null) modelEpoch++
+            }
         }
     }
     LaunchedEffect(Unit) { refreshModels() }
+
+    // 进程被杀 / Activity 重建后把界面接回仍在跑的导入任务：
+    // workId 只存在 Compose 状态里，重建后丢失，但 WorkManager 的任务还在继续。
+    LaunchedEffect(Unit) {
+        val active = withContext(Dispatchers.IO) {
+            Live2DImportScheduler.findActiveImport(context)
+        }
+        if (active != null && importWorkId == null) {
+            InAppLog.i(TAG, "接回正在进行的导入任务: $active")
+            importInProgress = true
+            importWorkId = active
+        }
+    }
+
+    // 观测导入任务直到终态。key = importWorkId：每次新入队都重开一条流。
+    //
+    // 用 Flow 而不是 LiveData：见 Live2DImportScheduler.observe 的注释。
+    // 终态处理完把 importWorkId 置回 null，避免重复消费同一份结果。
+    LaunchedEffect(importWorkId) {
+        val workId = importWorkId ?: return@LaunchedEffect
+        // runCatching：WorkManager 的生活周期很短，任务记录被 prune 后流会正常结束，
+        // 此时 first{} 找不到终态元素会抛 NoSuchElementException——不是错误，忽略即可。
+        runCatching {
+            Live2DImportScheduler.observe(context, workId)
+                .onEach { progress ->
+                    when (progress) {
+                        is Live2DImportProgress.Running -> {
+                            importInProgress = true
+                        }
+
+                        is Live2DImportProgress.Success -> {
+                            importInProgress = false
+                            // 磁盘是唯一事实来源：重扫目录而不是把 Worker 的输出拼进列表
+                            refreshModels()
+                            val restored = withContext(Dispatchers.IO) {
+                                Live2DModelStore.listModels(context)
+                                    .firstOrNull { it.id == progress.modelId }
+                            }
+                            if (restored != null) {
+                                currentModel = restored
+                                modelEpoch++
+                                importMessage = "已导入：${restored.displayName}"
+                            } else {
+                                // 目录里有文件但凑不出可用模型（缺 moc3 等），listModels 已清理
+                                importMessage = "导入完成，但模型不可用（缺少 model3.json 或 .moc3）"
+                            }
+                            importWorkId = null
+                        }
+
+                        is Live2DImportProgress.Failure -> {
+                            importInProgress = false
+                            importWorkId = null
+                            importMessage = progress.reason.ifBlank { "导入失败" }
+                        }
+
+                        Live2DImportProgress.Cancelled -> {
+                            importInProgress = false
+                            importWorkId = null
+                            importMessage = "导入已取消"
+                        }
+                    }
+                }
+                .first { it !is Live2DImportProgress.Running }
+        }
+    }
 
     // 加载 + 绑定 + 推流放在同一个 effect 里串行完成。
     // 拆成两个 effect 时，绑定后改写 key 会让推流循环取消再重启一次
@@ -216,15 +291,20 @@ fun Live2DContent(
     //
     // modelEpoch 参与 key：切换模型后必须重新绑定参数、重读动作/表情清单。
     LaunchedEffect(renderer, faceRenderer, resumeEpoch, modelEpoch) {
+        // 没有模型（用户还没导入）：空状态由 UI 层呈现，这里不碰 native
+        val model = currentModel
+        if (model == null) {
+            isError = false
+            status = "尚未加载模型"
+            surfaceViewRef[0]?.requestRender()
+            return@LaunchedEffect
+        }
+
         // 已经加载过当前模型（例如只是回前台）：native 侧模型仍在，跳过重读
         val ready = if (loadedModelEpoch == modelEpoch) {
             renderer.modelReady
         } else {
-            val ok = if (modelEpoch == 0) {
-                runCatching { renderer.init() }.getOrDefault(false)
-            } else {
-                runCatching { renderer.loadModel(currentModel.mocPath) }.getOrDefault(false)
-            }
+            val ok = runCatching { renderer.loadModel(model.mocPath) }.getOrDefault(false)
             if (ok) loadedModelEpoch = modelEpoch
             ok
         }
@@ -249,7 +329,7 @@ fun Live2DContent(
         // native 侧默认播第一组动作的第 0 个，这里把 UI 选中态对齐
         activeMotionGroup = if (groups.isNotEmpty()) groups.first().index else -1
         activeExpression = -1
-        status = "Purism Core 就绪 · ${currentModel.displayName}"
+        status = "Purism Core 就绪 · ${model.displayName}"
 
         if (faceRenderer == null) {
             status = "Purism Core 就绪（无面捕源）"
@@ -347,6 +427,30 @@ fun Live2DContent(
                 // 统一由上方 DisposableEffect 在组合真正离开时处理
             },
         )
+
+        // ---- 空状态：应用不内置任何模型，首次进入必须引导用户导入 ----
+        // 只盖在 GL 表面之上、按钮层之下：右侧「切换模型」按钮仍然可点。
+        if (currentModel == null) {
+            Column(
+                modifier = Modifier
+                    .align(Alignment.Center)
+                    .padding(horizontal = 48.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Text(
+                    text = stringResource(R.string.live2d_empty_title),
+                    style = MaterialTheme.typography.titleMedium,
+                    color = Color.White.copy(alpha = 0.9f),
+                )
+                Text(
+                    text = stringResource(R.string.live2d_empty_hint),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color.White.copy(alpha = 0.65f),
+                    textAlign = TextAlign.Center,
+                )
+            }
+        }
 
         // ---- P5：手势层（覆盖 GLSurfaceView，位于按钮条之下）----
         // 为什么单独铺一层而不是直接给 AndroidView 加 modifier：
@@ -526,35 +630,39 @@ fun Live2DContent(
         }
     }
 
-    // ---- P6：zip 选择器（GetContent 拿 content Uri，安全解压交给 ModelStore）----
+    // ---- P6：zip 选择器（GetContent 拿 content Uri，导入交给 WorkManager）----
+    // 关键：这里**不**起解压协程。切后台/锁屏时 Compose 组合会被销毁，界面协程随之取消，
+    // 解压就会半途而废；WorkManager 把任务交给系统调度器，界面消失也不影响它跑完。
+    //
+    // GetContent 走 SAF，不需要任何存储权限。但它的读授权只在当前 Activity 存活期内有效，
+    // 而 Worker 可能在那之后才执行——所以 enqueue 会先把内容暂存到 cacheDir，
+    // Worker 读暂存文件，与 Uri 授权生命周期解耦（详见 Live2DImportScheduler 注释）。
     val zipPicker = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.GetContent(),
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         importInProgress = true
-        importMessage = null
+        importMessage = context.getString(R.string.live2d_import_background_hint)
         scope.launch {
-            val result = Live2DModelStore.importZip(context, uri)
-            importInProgress = false
-            when (result) {
-                is Live2DModelStore.ImportResult.Success -> {
-                    refreshModels()
-                    // 导入后直接切到新模型，省一次「再去列表点一下」
-                    currentModel = result.model
-                    modelEpoch++
-                    importMessage = "已导入：${result.model.displayName}"
+            // 暂存最多 256 MB，必须离开主线程；这一步仍然绑在界面生命周期上，
+            // 但它只是「拷贝文件」，耗时远小于解压。真正的解压由 WorkManager 接手。
+            val workId = runCatching { Live2DImportScheduler.enqueue(context, uri) }
+                .getOrElse { e ->
+                    importInProgress = false
+                    importWorkId = null
+                    importMessage = e.message ?: "无法读取所选文件"
+                    InAppLog.e(TAG, "导入入队失败", e)
+                    return@launch
                 }
-                is Live2DModelStore.ImportResult.Failure -> {
-                    importMessage = result.reason
-                }
-            }
+            importWorkId = workId
+            InAppLog.i(TAG, "导入已入队 WorkManager: $workId")
         }
     }
 
     if (modelDialogVisible) {
         ModelManagerDialog(
             models = availableModels,
-            currentModelId = currentModel.id,
+            currentModelId = currentModel?.id,
             importInProgress = importInProgress,
             message = importMessage,
             onDismiss = {
@@ -562,7 +670,7 @@ fun Live2DContent(
                 importMessage = null
             },
             onPickModel = { model ->
-                if (model.id != currentModel.id) {
+                if (model.id != currentModel?.id) {
                     currentModel = model
                     modelEpoch++
                 }
@@ -588,10 +696,13 @@ fun Live2DContent(
                             Live2DModelStore.deleteModel(context, target.id)
                         }
                         importMessage = if (ok) "已删除：${target.displayName}" else "删除失败"
-                        // 删掉的正是当前模型：回退到内置模型
-                        if (ok && target.id == currentModel.id) {
-                            currentModel = Live2DModelStore.builtinModel
-                                .copy(mocPath = mocAssetPath)
+                        // 删掉的正是当前模型：清空回空状态，刷新后自动接管剩余模型
+                        if (ok && target.id == currentModel?.id) {
+                            currentModel = null
+                            motionGroups.clear()
+                            expressions.clear()
+                            activeMotionGroup = -1
+                            activeExpression = -1
                             modelEpoch++
                         }
                         refreshModels()
@@ -645,13 +756,12 @@ private const val TAG = "Live2D"
  * 为什么用 AlertDialog 而不是 BottomSheet：页面已经叠了手势层与底部动作条，
  * BottomSheet 会和底部 chips 抢触摸区域；弹窗是独立窗口，层叠关系最简单。
  *
- * 删除按钮只对用户模型出现（内置 Sample 不可删，与 [Live2DModelStore.deleteModel]
- * 的服务端校验一致——UI 隐藏只是第一道，真正的拒绝在 store 里）。
+ * 列表里每一项都是用户自己导入的模型，因此删除按钮一律显示。
  */
 @Composable
 private fun ModelManagerDialog(
     models: List<Live2DModelStore.Model>,
-    currentModelId: String,
+    currentModelId: String?,
     importInProgress: Boolean,
     message: String?,
     onDismiss: () -> Unit,
@@ -685,6 +795,13 @@ private fun ModelManagerDialog(
                         Text("正在解压…", style = MaterialTheme.typography.bodySmall)
                     }
                 }
+                if (models.isEmpty() && !importInProgress) {
+                    Text(
+                        text = "还没有模型。点下方「导入 zip」选择模型包。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
                 for (model in models) {
                     val selected = model.id == currentModelId
                     Row(
@@ -702,14 +819,12 @@ private fun ModelManagerDialog(
                                 .padding(start = 8.dp),
                             style = MaterialTheme.typography.bodyMedium,
                         )
-                        if (!model.isBuiltin) {
-                            IconButton(onClick = { onDelete(model) }) {
-                                Icon(
-                                    imageVector = Icons.Filled.Delete,
-                                    contentDescription = "删除 ${model.displayName}",
-                                    tint = MaterialTheme.colorScheme.error,
-                                )
-                            }
+                        IconButton(onClick = { onDelete(model) }) {
+                            Icon(
+                                imageVector = Icons.Filled.Delete,
+                                contentDescription = "删除 ${model.displayName}",
+                                tint = MaterialTheme.colorScheme.error,
+                            )
                         }
                     }
                 }

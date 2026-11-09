@@ -12,6 +12,8 @@ composeBom = "2026.09.00"
 composePlugin = "2.2.10"
 activityCompose = "1.13.0"
 lifecycleRuntimeCompose = "2.11.0"
+# 模型导入的后台任务：2.12.0 提供 getWorkInfoByIdFlow（Flow API，免 LiveData 桥接）
+workRuntime = "2.12.0"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -32,6 +34,8 @@ androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-toolin
 # activity / lifecycle 不受 Compose BOM 管理，须显式版本
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeCompose" }
+# work-runtime-ktx 对 2.10+ 已是空壳（API 全在 work-runtime 里），但显式声明可锁定协程互操作版本
+androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntime" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

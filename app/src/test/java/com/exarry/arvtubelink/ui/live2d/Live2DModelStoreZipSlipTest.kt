@@ -24,6 +24,12 @@ import java.util.zip.ZipOutputStream
  *
  * 攻击目标固定为 `root/../../escape_*.txt`，只向上两级——足够跳出解压根，
  * 又不触碰真实系统路径（TemporaryFolder 是 JVM 临时目录，测试完全隔离）。
+ *
+ * ## v1.3 起的行为变化
+ * 解压核心从 `ZipInputStream` 换成了 `ZipFile`（为了读中央目录里的文件类型属性），
+ * 因此 `extractZip` 会先把流落盘再随机访问。**断言口径不变**：仍是「抛什么异常、
+ * 目录外有没有文件」。凡是依赖流式顺序的假设（例如「恶意条目后的合法条目不会被处理」）
+ * 都不再成立、也不该断言——整包被拒绝才是安全属性。
  */
 class Live2DModelStoreZipSlipTest {
 

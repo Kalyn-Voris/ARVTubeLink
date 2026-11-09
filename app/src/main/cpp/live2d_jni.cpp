@@ -2853,7 +2853,8 @@ const char *loadModelLocked(const ResourceSource &src, const std::string &path,
  * 加载 assets 里的 .moc3 并组装 CPU 几何。
  *
  * @param assetManager 由 Kotlin 传入（AssetManager 实例）
- * @param mocPath      assets 内的相对路径，如 "live2d_demo/model/sample/sample_greeter_t03.moc3"
+ * @param mocPath      assets 内的相对路径，如 "models/sample/sample.moc3"
+ *                     （当前 APK 不内置任何模型，该入口仅保留给历史/调试用途）
  * @return null = 成功；非 null = 失败原因（直接可展示的中文串）
  */
 JNIEXPORT jstring JNICALL

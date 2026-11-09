@@ -28,7 +28,7 @@ import kotlin.math.pow
  * 若按 1.0 钳制，瞪眼会被截掉一半。
  *
  * ⚠️ 张嘴灵敏度的真实问题不在「量纲差 2 倍」，而在**线性映射与模型曲线不匹配**：
- * morph 的 MouthOpen 是「下颌张开角度归一化后的线性量」，而 Sample 的
+ * morph 的 MouthOpen 是「下颌张开角度归一化后的线性量」，而 Cubism 模型的
  * ParamMouthOpenY 驱动的是嘴部网格的**开合面积**。两者关系接近平方：
  * 半张嘴时面积只有满张的 ~25%。线性喂进去的结果就是「小幅度完全看不出来、
  * 稍大幅度直接满张」——这正好对应真机反馈的「要么不动，要么直接满」。
@@ -37,8 +37,8 @@ import kotlin.math.pow
  *
  * ## 未映射的 VTS 参数
  * MouthFunnel / MouthPucker / CheekPuff / MouthSad* / MouthDimple* / MouthStretch* /
- * BrowInnerUp / BrowOuterUp* / BrowDown* / Brows / MouthX / FacePosition* 在本次
- * 内置的 Sample 模型里没有对应参数（或只有间接参数），本阶段不追求表情精度，
+ * BrowInnerUp / BrowOuterUp* / BrowDown* / Brows / MouthX / FacePosition* 在
+ * 模型里常没有对应参数（或只有间接参数），本阶段不追求表情精度，
  * 只保证「头动、眼动、嘴动」三条主线成立。后续要做精细表情时在此扩表即可，
  * 无需改动 C++ 或渲染管线。
  */

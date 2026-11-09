@@ -86,6 +86,7 @@
 
     <string name="about_app_intro">ARVTubeLink 通过华为 AR Engine 捕捉人脸表情与头姿，实时映射并注入 VTube Studio，让 Live2D 模型跟随你的脸动作。</string>
     <string name="about_github_url" translatable="false">https://github.com/Kalyn-Voris/ARVTubeLink</string>
+    <string name="about_trademark">Live2D 及 Cubism 是 Live2D Inc. 的商标，本项目与其无隶属或背书关系。</string>
 
     <string name="settings_oss_label">使用项目</string>
     <string name="settings_oss_desc">ARVTubeLink 离不开这些项目</string>
@@ -106,6 +107,9 @@
     <string name="oss_lib_kotlin">Kotlin 语言运行时与协程调度：网络重连退避、参数自适应探测流程，以及界面侧的大量挂起函数。</string>
     <string name="oss_lib_okhttp">连接 VTube Studio 的 WebSocket 客户端与底层 I/O（Okio 随其分发），重连与心跳都由它承担。</string>
     <string name="oss_lib_vtubestudio">本应用通过其公开的 WebSocket API 与之通信，不分发其任何代码。</string>
+    <string name="oss_lib_workmanager">模型导入的后台调度：切到后台或锁屏时，解压任务交给系统调度器继续执行，不会被界面生命周期打断。</string>
+    <string name="oss_lib_purism">Live2D 模型的原生渲染核心。Sakura2D 对 Cubism Core 接口的独立重实现（C99，无 Live2D 代码），负责 .moc3 解析与参数求值。</string>
+    <string name="oss_lib_stb_image">原生渲染管线里的 PNG/JPEG 解码器，单文件实现，用于加载模型贴图。</string>
 
     <string name="settings_card_language">语言</string>
     <string name="settings_language_label">应用语言</string>
@@ -205,6 +209,19 @@
     <string name="onboard_action_calibrate">开始校准</string>
     <string name="onboard_action_discover">自动发现</string>
     <string name="onboard_done_badge">已完成</string>
+
+    <!-- Live2D 模型导入（WorkManager 前台任务） -->
+    <string name="live2d_import_notif_title">正在导入 Live2D 模型</string>
+    <string name="live2d_import_channel_name">模型导入</string>
+    <string name="live2d_import_channel_desc">导入 Live2D 模型时显示进度。可切到后台，导入会继续完成。</string>
+    <string name="live2d_import_stage_staging">正在准备文件…</string>
+    <string name="live2d_import_stage_extracting">正在解压模型…</string>
+    <string name="live2d_import_stage_validating">正在校验模型…</string>
+    <string name="live2d_import_background_hint">已转到后台导入：可切走或锁屏，导入会继续完成。</string>
+
+    <!-- Live2D 空状态（应用不内置模型，首次进入时展示） -->
+    <string name="live2d_empty_title">尚未加载模型</string>
+    <string name="live2d_empty_hint">请点击右侧按钮导入 .zip 模型包</string>
 
     <string name="vts_approval_title">VTS 正在等待授权</string>
     <string name="vts_approval_body">请去电脑屏幕上的 VTube Studio 弹窗点击「Allow / 允许」。授权前无法推流。</string>

@@ -551,6 +551,12 @@ fun SettingsContent(
                     value = "",
                     onClick = { ossDialogVisible = true },
                 )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = stringResource(R.string.about_trademark),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
             }
         }
     }

@@ -1,0 +1,109 @@
+# Third-Party Notices
+
+ARVTubeLink bundles or links against the following third-party components.
+The same list is shown in-app under **设置 → 关于 → 使用项目**.
+
+---
+
+## Sakura2D Purism Core
+
+- **Version**: 1.1.0 (`PSM_TRUE_VERSION` 0x01010000), bundled as `app/src/main/cpp/PurismCoreBundle.h`
+- **License**: MIT License
+- **Copyright**: © 2025, 2026 Sakura Motion Project — <https://sakura2d.org/>
+- **Purpose**: Native rendering core for Live2D models. An independent,
+  clean-room reimplementation of the Live2D Cubism Core API in plain C99.
+  It contains no code from Live2D Inc.
+
+```
+MIT License
+
+Copyright (c) 2025, 2026 Sakura Motion Project
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+"Sakura Motion", "Sakura2D" and "Purism Core" are trademarks of Sakura Motion
+Project. "Live2D" and "Cubism" are trademarks of Live2D Inc.; all references
+thereto are purely nominative.
+
+---
+
+## stb_image
+
+- **Version**: v2.30, bundled as `app/src/main/cpp/stb_image.h`
+- **License**: Public Domain (Unlicense) **or** MIT — dual-licensed by the author
+- **Copyright**: © 2017 Sean Barrett
+- **Purpose**: Single-header PNG/JPEG decoder used to load Live2D model textures
+  in the native rendering pipeline.
+
+```
+ALTERNATIVE A - MIT License
+Copyright (c) 2017 Sean Barrett
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+
+ALTERNATIVE B - Public Domain (www.unlicense.org)
+This is free and unencumbered software released into the public domain.
+For more information, please refer to <http://unlicense.org/>
+```
+
+---
+
+## Other dependencies
+
+AndroidX / Jetpack Compose, Kotlin Coroutines & Standard Library, OkHttp & Okio,
+Gson and AndroidX WorkManager are licensed under the Apache License 2.0. The
+full text is available in-app and at <http://www.apache.org/licenses/LICENSE-2.0>.
+
+## Proprietary SDKs (not open source)
+
+- **HUAWEI AR Engine SDK** (`com.huawei.hms:arenginesdk`) — proprietary, governed
+  by the HUAWEI AR Engine Service Agreement. Not covered by any open source
+  license listed here; ARVTubeLink is not affiliated with or endorsed by Huawei.
+- **VTube Studio** — used only through its publicly documented local WebSocket
+  API. No VTube Studio code is included, linked against, or redistributed.
+
+## Model assets
+
+**ARVTubeLink ships no Live2D models, textures, or other model assets.** Live2D
+models are imported by the user from `.zip` packages and stored locally on the
+device. Copyright and legality of any imported model, texture, or related asset
+are the user's sole responsibility; the project does not provide, store, or
+distribute model assets.
+
+## Trademarks
+
+Live2D and Cubism are trademarks of Live2D Inc. This project is not affiliated
+with or endorsed by Live2D Inc.

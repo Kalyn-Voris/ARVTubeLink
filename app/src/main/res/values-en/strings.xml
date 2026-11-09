@@ -66,6 +66,19 @@
     <string name="push_chip_vts_on">Connected</string>
     <string name="push_chip_vts_off">Offline</string>
 
+    <!-- Live2D model import (WorkManager foreground job) -->
+    <string name="live2d_import_notif_title">Importing Live2D model</string>
+    <string name="live2d_import_channel_name">Model import</string>
+    <string name="live2d_import_channel_desc">Shows progress while importing a Live2D model. You can switch away or lock the screen; the import keeps running.</string>
+    <string name="live2d_import_stage_staging">Preparing file…</string>
+    <string name="live2d_import_stage_extracting">Extracting model…</string>
+    <string name="live2d_import_stage_validating">Verifying model…</string>
+    <string name="live2d_import_background_hint">Import continues in the background. You can switch away or lock the screen.</string>
+
+    <!-- Live2D empty state: the app ships no model, shown on first visit -->
+    <string name="live2d_empty_title">No model loaded yet</string>
+    <string name="live2d_empty_hint">Tap the button on the right to import a .zip model package</string>
+
     <string name="tab_home">Home</string>
     <string name="tab_settings">Settings</string>
     <string name="tab_live2d">Live2D</string>
@@ -85,6 +98,7 @@
     <string name="switch_burn_in_mask_desc">Dims after 2s of inactivity to protect OLED screens</string>
 
     <string name="about_app_intro">ARVTubeLink uses Huawei AR Engine to capture facial expressions and head pose, mapping them in real time into VTube Studio so your Live2D model follows your face.</string>
+    <string name="about_trademark">Live2D and Cubism are trademarks of Live2D Inc. This project is not affiliated with or endorsed by Live2D Inc.</string>
 
     <string name="settings_oss_label">Used Projects</string>
     <string name="settings_oss_desc">ARVTubeLink relies on these projects</string>
@@ -105,6 +119,9 @@
     <string name="oss_lib_kotlin">The Kotlin runtime and coroutine scheduler: reconnect backoff, the parameter probing pipeline, and the UI-side suspend functions.</string>
     <string name="oss_lib_okhttp">The WebSocket client used to talk to VTube Studio, plus its low-level I/O (Okio, bundled as an implementation dependency); it also handles reconnects and heartbeats.</string>
     <string name="oss_lib_vtubestudio">Interoperated with through its public WebSocket API; no code from it is bundled.</string>
+    <string name="oss_lib_workmanager">Background scheduling for model import: when you switch away or lock the screen, extraction continues on the system scheduler instead of dying with the UI.</string>
+    <string name="oss_lib_purism">The native rendering core for Live2D models. Sakura2D\'s independent reimplementation of the Cubism Core interface (plain C99, no Live2D code), handling .moc3 parsing and parameter evaluation.</string>
+    <string name="oss_lib_stb_image">The PNG/JPEG decoder in the native rendering pipeline — a single-header implementation used to load model textures.</string>
 
     <string name="settings_card_language">Language</string>
     <string name="settings_language_label">App language</string>

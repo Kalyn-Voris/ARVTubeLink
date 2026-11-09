@@ -34,20 +34,20 @@ private const val TAG = "Live2D"
  */
 class Live2DRenderer(
     private val assetManager: AssetManager,
-    mocAssetPath: String = DEFAULT_MOC_PATH,
+    mocAssetPath: String? = null,
 ) : GLSurfaceView.Renderer {
 
     /**
-     * 当前模型的 .moc3 路径。
+     * 当前模型的 .moc3 路径；null = 还没有加载任何模型（首次进入且用户未导入）。
      *
      * 两种形态：
-     *  - **assets 相对路径**（内置模型，如 `live2d_demo/model/sample/xxx.moc3`）；
-     *  - **本地绝对路径**（用户导入的模型，如 `/data/.../live2d_models/1730/xxx.moc3`）。
+     *  - **本地绝对路径**（用户导入的模型，如 `/data/.../live2d_models/1730/xxx.moc3`）；
+     *  - **assets 相对路径**（历史内置模型形态，仅保留兼容，当前 APK 不再内置任何模型）。
      *
      * 用是否以 `/` 开头区分，见 [loadModel]。
      */
     @Volatile
-    var mocAssetPath: String = mocAssetPath
+    var mocAssetPath: String? = mocAssetPath
         private set
 
     /** 模型是否已成功加载（false 时 [onDrawFrame] 只清屏）。 */
@@ -66,10 +66,18 @@ class Live2DRenderer(
     /**
      * 加载模型。幂等：成功后重复调用直接返回 true。
      *
+     * 应用不内置模型，[mocAssetPath] 为 null 表示用户还没有导入——这不是错误，
+     * 只返回 false 并保持 `lastError = null`，由 UI 呈现空状态引导导入。
+     *
      * @return true = 模型可用
      */
     fun init(): Boolean = synchronized(initLock) {
         if (modelReady) return true
+        val path = mocAssetPath
+        if (path == null) {
+            lastError = null
+            return false
+        }
         if (!libraryLoaded) {
             // so 未打进 APK / ABI 不匹配：companion init 已失败，不再尝试 native 调用
             lastError = libraryError ?: "liblive2d_jni.so 加载失败"
@@ -82,7 +90,7 @@ class Live2DRenderer(
         }
         initAttempted = true
 
-        val error = loadNative(mocAssetPath)
+        val error = loadNative(path)
 
         if (error == null) {
             modelReady = true
@@ -114,7 +122,7 @@ class Live2DRenderer(
     }
 
     /**
-     * 切换到另一个模型（内置或本地导入）。
+     * 加载/切换到指定的模型（用户导入的本地文件）。
      *
      * 与 [init] 的区别：这里**允许重复调用**，且会清掉参数绑定缓存与 init 重试
      * 标记 —— 新模型的参数表与旧模型不同，必须重新解析。
@@ -416,14 +424,6 @@ class Live2DRenderer(
     companion object {
         /** native 不可用时的平移兜底区间（对称、够用即可）。 */
         private val FALLBACK_PAN_LIMITS = floatArrayOf(-2f, 2f, -2f, 2f)
-
-        /**
-         * 内置 Sample 模型的 .moc3 路径（assets 相对路径）。
-         *
-         * 与 `assets/live2d_demo/model/sample/sample_greeter_t03.moc3` 保持一致；
-         * P0 只认这一个模型，模型切换/导入是后续阶段的事。
-         */
-        const val DEFAULT_MOC_PATH = "live2d_demo/model/sample/sample_greeter_t03.moc3"
 
         /**
          * so 是否加载成功。

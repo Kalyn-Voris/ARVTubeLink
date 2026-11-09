@@ -74,6 +74,14 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 
 完整条款见 [app/src/main/res/raw/license.txt](app/src/main/res/raw/license.txt)。
 
+第三方组件（含 Sakura2D Purism Core、stb_image 的 MIT / Public Domain 全文）见 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)，App 内「设置 → 关于 → 使用项目」有同一份清单。
+
+## Live2D 模型
+
+**本仓库与安装包不附带任何 Live2D 模型或贴图素材。** 首次进入 Live2D 页面时显示空状态；
+点击右侧悬浮按钮 →「导入 zip」，选择你自己的 `.zip` 模型包即可。导入的模型与贴图只存在
+设备本地，版权与合法性由导入者自行负责（详见用户协议「用户导入内容免责」）。
+
 ## 关于 tools/
 
 `tools/` 下是写映射参数时用的 VTS 探针脚本，App 本体不依赖它们。
@@ -87,3 +95,7 @@ python tools/probe_vts_params.py --ip 192.168.1.10 --port 8001
 ```
 
 `probe_mapping_range.py` 会驱动模型动作，别在正式直播时跑。用法见 [tools/README.md](tools/README.md)。
+
+---
+
+Live2D 及 Cubism 是 Live2D Inc. 的商标，本项目与其无隶属或背书关系。
