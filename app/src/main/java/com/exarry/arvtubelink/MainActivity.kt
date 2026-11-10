@@ -62,7 +62,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import com.exarry.arvtubelink.utils.InAppLog
 
-/** UI 装配层，不参与逐帧；帧链路 FaceRenderer(GL) -> mapper -> Smoother -> 30Hz -> VtsWsClient(IO) */
+/** UI 装配层；帧链路 FaceRenderer(GL) -> mapper -> Smoother -> 30Hz -> VtsWsClient(IO) */
 class MainActivity : AppCompatActivity() {
 
     private val arSessionManager by lazy { ArSessionManager(this) }
@@ -72,7 +72,7 @@ class MainActivity : AppCompatActivity() {
 
     private val smoother by lazy { Smoother() }
 
-    // lazy：构造期 base context 未 attach，不能取 ApplicationContext
+    // lazy：构造期 base context 未 attach，取不到 ApplicationContext
     private val calibrationStorage by lazy { CalibrationStorage(this) }
 
     private val appPrefs by lazy {
@@ -111,7 +111,6 @@ class MainActivity : AppCompatActivity() {
         )
     }
 
-    // 自动发现：UDP 广播 + TCP 兜底探测；缓存地址在 discover() 时从 prefs 惰性读取
     private val discoveryClient by lazy {
         VtsDiscoveryClient(
             context = this,
@@ -154,7 +153,7 @@ class MainActivity : AppCompatActivity() {
 
     private val attemptedModelIds = mutableSetOf<String>()
 
-    // 字段初始化早于 attachBaseContext，getString 取默认资源：初值空串，onCreate 回填
+    // 字段初始化早于 attachBaseContext，getString 取默认资源，onCreate 回填
     private val arStatusState = mutableStateOf("")
     private val vtsStatusState = mutableStateOf("")
     private val trackingState = mutableStateOf(false)
@@ -179,7 +178,7 @@ class MainActivity : AppCompatActivity() {
     private val calibrationActiveState = mutableStateOf(false)
     private val calibFacePresentState = mutableStateOf<Boolean?>(null)
 
-    // mapper.calibrationData 是 @Volatile，Compose 观察不到变化，需投影成 State
+    // calibrationData 是 @Volatile，Compose 观察不到，投影成 State
     private val calibrationDoneState = mutableStateOf(false)
 
     private val calibrationGuideDismissedState = mutableStateOf(false)
@@ -189,13 +188,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val agreementAcceptedState = mutableStateOf(false)
-    /** 当前 agreement.txt 声明的协议版本；冷启动时读取，同意时按此版本落盘。 */
     private var agreementVersion: String = AgreementConsent.FALLBACK_VERSION
     private val showFullLicenseState = mutableStateOf(false)
     private val showPolyFormState = mutableStateOf(false)
 
     private val dimHandler = Handler(Looper.getMainLooper())
-    // 空闲到点：普通页面落防烧屏黑屏；Live2D 页改走沉浸模式（绝不全黑）
     private val dimRunnable = Runnable { onIdleTimeout() }
 
     @Volatile
@@ -203,15 +200,13 @@ class MainActivity : AppCompatActivity() {
 
     private val burnInMaskState = mutableStateOf(false)
 
-    // Live2D 页沉浸模式：false = App 顶栏/底栏与系统栏收起，只留模型
     private val live2dUiVisibleState = mutableStateOf(true)
 
     private var adaptationRunning = false
 
-    // 首页引导触发权限申请后，授权回调据此续上校准
     private var pendingCalibrationFromHome = false
 
-    // GLSurfaceView 由 AppRoot 的 AndroidView factory 创建后经 onGlSurfaceCreated 回传
+    // 由 AppRoot 的 AndroidView factory 创建后回传
     private lateinit var glSurfaceView: GLSurfaceView
     private lateinit var faceRenderer: FaceRenderer
 
@@ -225,7 +220,6 @@ class MainActivity : AppCompatActivity() {
         super.attachBaseContext(newBase)
     }
 
-    // API 33+ 系统 LocaleManager 持久化，<33 写 AppCompat 静态 sRequestedAppLocales
     private fun applyAppLanguage(tag: String) {
         appPrefs.edit().putString(KEY_APP_LANGUAGE, tag).apply()
         AppCompatDelegate.setApplicationLocales(localesFor(tag))
@@ -387,7 +381,7 @@ class MainActivity : AppCompatActivity() {
         loadPersistedMappingConfig()
     }
 
-    // SharedPreferences 首次读取含磁盘 IO，放 IO 协程
+    // 首次读 prefs 含磁盘 IO，放 IO 协程
     private fun loadPersistedMappingConfig() {
         lifecycleScope.launch(Dispatchers.IO) {
             val calibration = calibrationStorage.load()
@@ -414,7 +408,6 @@ class MainActivity : AppCompatActivity() {
             windowManager.defaultDisplay.rotation
         }
 
-    // 置渲染器 @Volatile 标志 + 隐藏 Tab 骨架 + GLView 全屏 + 挂起防烧屏
     private fun enterCalibrationMode() {
         if (calibrationActiveState.value) return
         if (!trackingState.value) {
@@ -428,7 +421,6 @@ class MainActivity : AppCompatActivity() {
         cancelIdleDim()
     }
 
-    // 确认/取消/返回/stopTracking/onDestroy 统一收尾，幂等
     private fun closeCalibration() {
         if (!calibrationActiveState.value) return
         calibrationActiveState.value = false
@@ -532,7 +524,7 @@ class MainActivity : AppCompatActivity() {
         is VtsState.Reconnecting -> getString(R.string.vts_status_reconnecting, state.attempt)
     }
 
-    // 开关开且 modelID 非空：命中 adaptation_prefs 直接应用，否则启动探测
+    // 命中 adaptation_prefs 直接应用，否则启动探测
     private fun handleModelInfo(modelName: String?, modelID: String?) {
         val id = modelID?.trim().takeUnless { it.isNullOrEmpty() } ?: return
         val name = modelName?.trim().takeUnless { it.isNullOrEmpty() } ?: id
@@ -557,7 +549,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // Running 暂停推流并挂起防烧屏；Done/Failed 重启计时，Idle 不重启
     private fun onAdaptationState(state: AdaptationState) {
         adaptationRunning = state is AdaptationState.Running
         when (state) {
@@ -608,7 +599,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    // 先落盘再走分支：ON 分支读同一键做早退判定
     private fun onAdaptationToggle(enabled: Boolean) {
         appPrefs.edit().putBoolean(KEY_ENABLE_ADAPTATION, enabled).apply()
         if (enabled) {
@@ -655,7 +645,7 @@ class MainActivity : AppCompatActivity() {
 
     private fun beginTracking() {
         if (trackingState.value) return
-        // 未认证时 FaceRenderer 的 injectParameters 静默丢弃
+        // 未认证时 faceRenderer.injectParameters 静默丢弃
         val session = arSessionManager.createArSession()
         if (session == null) {
             arStatusState.value = getString(R.string.ar_status_create_session_failed)
@@ -669,7 +659,6 @@ class MainActivity : AppCompatActivity() {
         smoother.reset()
         glSurfaceView.onResume()
         trackingState.value = true
-        // 启动点击早于本回调，计时须在此补启动
         if (!adaptationRunning) {
             scheduleIdleDim()
         }
@@ -686,7 +675,7 @@ class MainActivity : AppCompatActivity() {
         if (!trackingState.value) return
         closeCalibration()
         cancelIdleDim()
-        // 顺序：先停 GL 再暂停/释放 session
+        // 先停 GL 再暂停/释放 session
         glSurfaceView.onPause()
         arSessionManager.pauseSession()
         arSessionManager.releaseSession()
@@ -700,7 +689,6 @@ class MainActivity : AppCompatActivity() {
     // 仅 ACTION_DOWN 调用；遮罩移除由 BurnInMask 的 UP tap 回调上收
     override fun onUserInteraction() {
         if (calibrationActiveState.value || adaptationRunning) return
-        // Live2D 页：任何触摸（点击/拖动模型）都先唤醒 UI，再重启 2s 计时
         if (tabIndexState.value == TAB_LIVE2D) {
             wakeLive2dUi()
             return
@@ -710,7 +698,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /** 唤醒 Live2D 沉浸模式：UI 淡入 + 系统栏恢复（由 AppRoot 的 effect 驱动） */
     private fun wakeLive2dUi() {
         live2dUiVisibleState.value = true
         scheduleIdleDim()
@@ -731,7 +718,6 @@ class MainActivity : AppCompatActivity() {
         dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
     }
 
-    /** 空闲到点：Live2D 页进沉浸模式，其余页面落防烧屏黑屏遮罩 */
     private fun onIdleTimeout() {
         if (tabIndexState.value == TAB_LIVE2D) {
             InAppLog.i(TAG, "空闲 2s → Live2D 沉浸模式")
@@ -742,18 +728,15 @@ class MainActivity : AppCompatActivity() {
         burnInMaskState.value = true
     }
 
-    /** Tab 切换统一入口：负责 Live2D 沉浸态的进入与退出收尾 */
     private fun selectTab(tab: Int) {
         val previous = tabIndexState.value
         if (previous == tab) return
         tabIndexState.value = tab
         if (tab == TAB_LIVE2D) {
-            // 进页先亮 UI，2s 后自动进沉浸；若刚从黑屏遮罩过来须先撤掉
             live2dUiVisibleState.value = true
             cancelIdleDim()
             scheduleIdleDim()
         } else if (previous == TAB_LIVE2D) {
-            // 离开 Live2D：退出沉浸并恢复默认防烧屏规则（系统栏由 AppRoot 复原）
             live2dUiVisibleState.value = true
             cancelIdleDim()
             if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
@@ -814,7 +797,6 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.toast_resume_session_failed, Toast.LENGTH_SHORT).show()
         }
         super.onResume()
-        // 回前台先亮 UI，避免带着沉浸态（系统栏隐藏）直接回来
         if (tabIndexState.value == TAB_LIVE2D) {
             live2dUiVisibleState.value = true
             cancelIdleDim()
@@ -846,7 +828,6 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val TAG = "MainActivity"
         private const val REQUEST_CAMERA = 100
-        /** 首次使用默认 IP 前缀 */
         private const val DEFAULT_IP = "192.168."
         private const val DEFAULT_PORT = 8001
 
@@ -857,7 +838,5 @@ class MainActivity : AppCompatActivity() {
         private const val PREFS_APP = "app_settings"
 
         private const val PREFS_ADAPTATION_MANUAL = "adaptation_manual_prefs"
-
-        // KEY_* 与 DEFAULT_SEND_FREQUENCY_HZ 定义在 ui/SettingsScreen.kt，经 import 引用
     }
 }

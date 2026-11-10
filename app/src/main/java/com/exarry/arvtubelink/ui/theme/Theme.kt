@@ -11,15 +11,14 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.res.colorResource
 import com.exarry.arvtubelink.R
 
-/** 当前是否深色，由 AppRoot 的 isDark 经 CompositionLocalProvider 下发 */
+/** 由 AppRoot 的 isDark 经 CompositionLocalProvider 下发 */
 val LocalThemeIsDark = compositionLocalOf { true }
 
-/** 按 LocalThemeIsDark 在 colors_compose.xml 的 *Dark / *Light 条目间二选一 */
 @Composable
 fun themedColorResource(@ColorRes dark: Int, @ColorRes light: Int): Color =
     colorResource(if (LocalThemeIsDark.current) dark else light)
 
-/** 色板取 colors_compose.xml 的显式后缀条目；amoledBlack 仅深色分支把 background 换成纯黑 */
+/** 色板取 colors_compose.xml 的显式后缀条目；amoledBlack 仅把 background 换成纯黑，容器色仍取色板 */
 @Composable
 fun ARVTubeLinkTheme(darkTheme: Boolean, amoledBlack: Boolean = false, content: @Composable () -> Unit) {
     MaterialTheme(
@@ -45,7 +44,6 @@ internal fun arvColorScheme(dark: Boolean, amoledBlack: Boolean = false): ColorS
             onTertiary = colorResource(R.color.colorOnSecondaryDark),
             tertiaryContainer = colorResource(R.color.colorTertiaryContainerDark),
             onTertiaryContainer = colorResource(R.color.colorOnTertiaryContainerDark),
-            // AMOLED 只换 background 槽，容器色仍取色板
             background =
                 if (amoledBlack) colorResource(R.color.black)
                 else colorResource(R.color.colorBackgroundDark),
@@ -54,7 +52,7 @@ internal fun arvColorScheme(dark: Boolean, amoledBlack: Boolean = false): ColorS
             onSurface = colorResource(R.color.colorOnSurfaceDark),
             surfaceVariant = colorResource(R.color.colorSurfaceContainerHighDark),
             onSurfaceVariant = colorResource(R.color.colorOnSurfaceVariantDark),
-            // 板未提供，按明度取 ContainerLow / ContainerHigh / surface
+            // 板未提供 surfaceDim / surfaceBright，按明度取 ContainerLow / ContainerHigh
             surfaceDim = colorResource(R.color.colorSurfaceContainerLowDark),
             surfaceBright = colorResource(R.color.colorSurfaceContainerHighDark),
             surfaceContainerLowest = colorResource(R.color.colorSurfaceDark),
@@ -83,7 +81,6 @@ internal fun arvColorScheme(dark: Boolean, amoledBlack: Boolean = false): ColorS
             onSecondary = colorResource(R.color.colorOnSecondaryLight),
             secondaryContainer = colorResource(R.color.colorSecondaryContainerLight),
             onSecondaryContainer = colorResource(R.color.colorOnSecondaryContainerLight),
-            // 板未提供 tertiary 本体，沿用 secondary 系
             tertiary = colorResource(R.color.colorSecondaryLight),
             onTertiary = colorResource(R.color.colorOnSecondaryLight),
             tertiaryContainer = colorResource(R.color.colorTertiaryContainerLight),
@@ -94,7 +91,6 @@ internal fun arvColorScheme(dark: Boolean, amoledBlack: Boolean = false): ColorS
             onSurface = colorResource(R.color.colorOnSurfaceLight),
             surfaceVariant = colorResource(R.color.colorSurfaceContainerHighLight),
             onSurfaceVariant = colorResource(R.color.colorOnSurfaceVariantLight),
-            // 板未提供，按明度取 ContainerLow / ContainerHigh / surface
             surfaceDim = colorResource(R.color.colorSurfaceContainerLowLight),
             surfaceBright = colorResource(R.color.colorSurfaceContainerHighLight),
             surfaceContainerLowest = colorResource(R.color.colorSurfaceLight),

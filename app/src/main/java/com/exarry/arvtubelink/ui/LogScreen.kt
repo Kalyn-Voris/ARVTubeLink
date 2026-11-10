@@ -34,7 +34,7 @@ import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.utils.InAppLog
 
-/** InAppLog.version 每次追加 +1，驱动重组并按 version 缓存 getAll() 结果 */
+/** InAppLog.version 每次追加 +1，驱动重组并按 version 缓存 getAll() */
 @Composable
 fun LogContent() {
     val context = LocalContext.current
@@ -42,7 +42,6 @@ fun LogContent() {
     val logs = remember(version) { InAppLog.getAll() }
     val listState = rememberLazyListState()
 
-    // version 变化即滚到最后一行
     LaunchedEffect(version) {
         if (logs.isNotEmpty()) listState.scrollToItem(logs.lastIndex)
     }
@@ -93,7 +92,6 @@ fun LogContent() {
     }
 }
 
-/** 日志按 \n 拼接后写入剪贴板 */
 private fun copyAllLogs(context: Context) {
     val text = InAppLog.getAll().joinToString("\n")
     val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager

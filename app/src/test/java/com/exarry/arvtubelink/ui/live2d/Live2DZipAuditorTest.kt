@@ -14,13 +14,12 @@ import java.util.zip.CRC32
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** 条目类型白名单与解析一致性回归：手写 zip 字节流以控制 version-made-by 与 external attributes */
+// 手写 ZIP 本地头/中央目录/EOCD 字段，控制 version-made-by 与 external attributes
 class Live2DZipAuditorTest {
 
     @get:Rule
     val tmp = TemporaryFolder()
 
-    /** 待写入条目：platform 为 version-made-by 高字节，unixMode 为 st_mode，dosAttributes 为低字节 */
     private data class RawEntry(
         val name: String,
         val content: ByteArray = ByteArray(0),
@@ -30,9 +29,7 @@ class Live2DZipAuditorTest {
         val declaredUncompressed: Long? = null,
         val method: Int = 0,
         val flags: Int = 0,
-        /** 覆盖本地头条目名，构造本地头与中央目录不一致 */
         val localName: String? = null,
-        /** 覆盖中央目录压缩后长度，构造声明值造假 */
         val declaredCompressed: Long? = null,
     )
 
@@ -196,7 +193,7 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** macOS 的 platform 19 也用 Unix 类型位，符号链接须一并拦截 */
+    // macOS 的 platform 19 也用 Unix 类型位
     @Test
     fun `macos symlink entry is rejected`() {
         val root = newRoot()
@@ -215,7 +212,6 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** 合法 Unix 普通文件放行 */
     @Test
     fun `unix regular file is allowed`() {
         val root = newRoot()
@@ -226,7 +222,6 @@ class Live2DZipAuditorTest {
         assertEquals("MOC", File(root, "sample.moc3").readText())
     }
 
-    /** 合法 Unix 目录放行，名字可带尾斜杠 */
     @Test
     fun `unix directory entry is allowed`() {
         val root = newRoot()
@@ -239,7 +234,7 @@ class Live2DZipAuditorTest {
         assertTrue(File(root, "textures/t.png").isFile)
     }
 
-    /** 本地头与中央目录文件名不一致 */
+    // 本地头与中央目录条目名不一致
     @Test
     fun `local header name mismatch is rejected`() {
         val root = newRoot()
@@ -258,7 +253,7 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** 中央目录声明解压长度与实际字节数不符 */
+    // 中央目录声明长度与实际字节数不符
     @Test
     fun `declared size mismatch is rejected`() {
         val root = newRoot()
@@ -276,7 +271,7 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** 压缩后 16 字节声明解压 200 MB，压缩比 1.3 万倍 */
+    // 16 字节声明解压 200 MB，压缩比 1.3 万倍
     @Test
     fun `absurd compression ratio is rejected`() {
         val root = newRoot()
@@ -297,7 +292,6 @@ class Live2DZipAuditorTest {
         assertFalse("炸弹文件不应落盘", File(root, "bomb.bin").exists())
     }
 
-    /** 单条目声明 500 MB，越过 450 MB 上限 */
     @Test
     fun `declared entry over 450 MB is rejected`() {
         val root = newRoot()
@@ -315,7 +309,6 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** 同名条目重复出现 */
     @Test
     fun `duplicate entry names are rejected`() {
         val root = newRoot()
@@ -331,7 +324,7 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** 加密标志位 0x0001 */
+    // 通用标志位 bit0 置位
     @Test
     fun `encrypted entry is rejected`() {
         val root = newRoot()
@@ -346,7 +339,7 @@ class Live2DZipAuditorTest {
         }
     }
 
-    /** ZipOutputStream 生成的 FAT 平台包必须正常解压 */
+    // ZipOutputStream 产出的 FAT 平台包，无 Unix 类型位
     @Test
     fun `fat platform archive from ZipOutputStream still works`() {
         val root = newRoot()

@@ -45,7 +45,6 @@ private val ThumbSizeIdle = 12.dp
 
 private val ThumbSizeActive = 20.dp
 
-/** 视觉 4dp 轨道，热区靠根 Box 撑到 48dp 获得 */
 private val SliderTouchTargetHeight = 48.dp
 
 private const val TrackMorphMs = 150
@@ -54,10 +53,9 @@ private const val HaloAlphaIdle = 0.10f
 
 private const val HaloAlphaActive = 0.24f
 
-/** 取放大态 thumb 半径，保证 thumb 圆心不超出轨道可视范围 */
 private val TrackInset = ThumbSizeActive / 2
 
-/** 自绘参数滑块；m3 Slider 的 thumb/track 槽拿不到拖拽态 */
+/** m3 Slider 的 thumb/track 槽拿不到拖拽态 */
 @Composable
 fun ARVSlider(
     value: Float,
@@ -72,17 +70,15 @@ fun ARVSlider(
     inactiveColor: Color = MaterialTheme.colorScheme.outlineVariant,
     thumbColor: Color = Color.White,
 ) {
-    // 内部监听 DragInteraction.Start / Stop / Cancel
     val dragging by interactionSource.collectIsDraggedAsState()
 
-    // DrawScope 内访问不到 MaterialTheme，颜色在组合期取出
+    // DrawScope 内取不到 MaterialTheme，颜色在组合期取出
     val trackColor = inactiveColor
     val progressColor = activeColor
     val thumbRingColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f)
 
     val dragSource = interactionSource
 
-    // 轨道与光环 tween(150)，thumb 用带回弹的 spring
     val trackHeight by animateDpAsState(
         targetValue = if (dragging) TrackHeightActive else TrackHeightIdle,
         animationSpec = tween(durationMillis = TrackMorphMs, easing = FastOutSlowInEasing),
@@ -102,7 +98,7 @@ fun ARVSlider(
         label = "arvSliderHaloAlpha",
     )
 
-    // pointerInput 闭包会捕获陈旧引用，回调与值须包一层
+    // pointerInput 闭包捕获陈旧引用，回调与值须包一层
     val currentOnValueChange by rememberUpdatedState(onValueChange)
     val currentOnFinished by rememberUpdatedState(onValueChangeFinished)
     val currentValue by rememberUpdatedState(value)
@@ -114,7 +110,6 @@ fun ARVSlider(
     val lower = if (start <= end) start else end
     val upper = if (start <= end) end else start
 
-    // steps>0 按 (end-start)/(steps+1) 网格吸附，steps=0 只 clamp
     fun snap(raw: Float): Float {
         val coerced = raw.coerceIn(lower, upper)
         if (segments <= 0) return coerced
@@ -142,14 +137,13 @@ fun ARVSlider(
                             return snap(start + f * span)
                         }
 
-                        // DOWN 当帧即写入值，thumb 立刻跟手；纵向滚动则回滚
                         val valueBeforeDown = currentValue
                         currentOnValueChange(valueAtX(down.position.x))
 
                         var isDragging = false
                         var cancelled = false
 
-                        // awaitEachGesture 是 restricted 挂起作用域，用非挂起的 tryEmit
+                        // awaitEachGesture 是 restricted 挂起作用域，只能用非挂起的 tryEmit
                         val press = PressInteraction.Press(down.position)
                         val dragStart = DragInteraction.Start()
                         dragSource.tryEmit(press)
@@ -161,12 +155,11 @@ fun ARVSlider(
                                     ?: break
 
                                 if (!change.pressed) {
-                                    // 抬手只消费事件，值在 DOWN 与拖动中已写入
                                     change.consume()
                                     break
                                 }
 
-                                // 用相对按下点的累计位移判定 slop，单帧增量在慢拖时永远小于 slop
+                                // slop 按相对按下点的累计位移判定，单帧增量永远小于 slop
                                 val totalX = change.position.x - down.position.x
                                 val totalY = change.position.y - down.position.y
 
@@ -187,7 +180,6 @@ fun ARVSlider(
                                 change.consume()
                             }
                         } finally {
-                            // 正常与取消都在 finally 复位，Cancel/Stop 驱动轨道缩回
                             if (cancelled) {
                                 currentOnValueChange(valueBeforeDown)
                                 dragSource.tryEmit(DragInteraction.Cancel(dragStart))
@@ -201,7 +193,6 @@ fun ARVSlider(
                     }
                 }
             )
-            // 自绘控件须显式补 progressBarRangeInfo / setProgress 供读屏
             .semantics {
                 progressBarRangeInfo = ProgressBarRangeInfo(
                     current = currentValue,
@@ -225,7 +216,6 @@ fun ARVSlider(
             val centerY = size.height / 2f
             val thumbX = insetPx + trackWidth * fraction
 
-            // 胶囊 = 圆角半径取高度一半
             drawRoundRect(
                 color = if (enabled) trackColor else trackColor.copy(alpha = 0.5f),
                 topLeft = Offset(insetPx, centerY - tPx / 2f),
@@ -233,7 +223,6 @@ fun ARVSlider(
                 cornerRadius = CornerRadius(tPx / 2f),
             )
 
-            // 最小宽度取轨道高，value=0 时呈圆头起点
             val progressWidth = (thumbX - insetPx).coerceAtLeast(tPx)
             drawRoundRect(
                 color = if (enabled) progressColor else progressColor.copy(alpha = 0.5f),
@@ -256,7 +245,6 @@ fun ARVSlider(
                 )
             }
 
-            // 浅色主题下纯白会融进背景，常驻 1dp 极淡描边
             drawCircle(
                 color = thumbColor,
                 radius = thumbPx / 2f,

@@ -87,7 +87,6 @@ private const val ONBOARDING_ANIM_MS = 300
 /** 与 OutlinedTextField 最小高 56dp 对齐 */
 private val AutoDiscoverButtonSize = 56.dp
 
-/** 自动发现 UI 状态机，网络实现在 VtsDiscoveryClient */
 sealed interface DiscoveryUiState {
     data object Idle : DiscoveryUiState
 
@@ -103,12 +102,11 @@ sealed interface DiscoveryUiState {
     data class Failed(val reason: VtsDiscoveryClient.DiscoveryResult.Reason) : DiscoveryUiState
 }
 
-/** 首页 Tab 内容；GL 表面常驻 AppRoot，挪进来会在切 Tab 时销毁 EGL context */
+/** GL 表面常驻 AppRoot，挪进来切 Tab 会销毁 EGL context */
 @Composable
 fun HomeContent(
     arStatus: String,
     arReady: Boolean,
-    /** 参数自适应进度行，null = 不显示 */
     adaptationStatus: String?,
     tracking: Boolean,
     showCalibrationGuide: Boolean,
@@ -121,23 +119,18 @@ fun HomeContent(
     onStopTracking: () -> Unit,
     onConnectVts: (ip: String, portText: String) -> Unit,
     onClearToken: () -> Unit,
-    /** 未追踪时会先自动开追踪再拉起对准视图 */
     onStartCalibration: () -> Unit,
-    /** 写 appPrefs，本次冷启动周期内不再显示 */
     onDismissCalibrationGuide: () -> Unit,
     /** AppRoot 每秒采样一次 */
     telemetry: TelemetryState,
     configuredHz: Int,
     vtsConnected: Boolean,
-    /** VTS 握手进行中（Connecting/WaitingForTokenApproval/Authenticating/Reconnecting） */
     vtsInFlight: Boolean = false,
-    /** VTS 异常/等待态文案，null = 不显示 */
     vtsWarning: String? = null,
     vtsWarningIsError: Boolean = false,
     vtsAwaitingApproval: Boolean = false,
     calibrated: Boolean = false,
 ) {
-    // 握手期一律钉在步骤 3，避免卡片抖动
     val onboardingStep = currentOnboardingStep(
         arReady = arReady,
         calibrated = calibrated,
@@ -152,7 +145,7 @@ fun HomeContent(
             .padding(PagePadding),
         verticalArrangement = Arrangement.spacedBy(SectionSpacing),
     ) {
-        // 300ms 高度插值，避免授权卡瞬时插入把下方内容顶掉
+        // 300ms 展开/收起插值
         AnimatedVisibility(
             visible = vtsAwaitingApproval,
             enter = expandVertically(animationSpec = tween(ONBOARDING_ANIM_MS)) +
@@ -170,7 +163,7 @@ fun HomeContent(
             onAutoDiscover = onAutoDiscover,
         )
 
-        // 步骤卡停在 CALIBRATION 时由它独占，隐藏旧引导卡
+        // 步骤卡停在 CALIBRATION 时独占，隐藏旧引导卡
         if (showCalibrationGuide && onboardingStep != OnboardingStep.CALIBRATION) {
             CalibrationGuideCard(
                 onStartCalibration = onStartCalibration,
@@ -207,7 +200,6 @@ fun HomeContent(
             )
         }
 
-        // 探测期间显示，结束后清 null 隐藏
         adaptationStatus?.let { text ->
             Text(
                 text = text,
@@ -222,7 +214,6 @@ fun HomeContent(
     }
 }
 
-/** 未追踪时才显示状态行，追踪后由推流卡接管 */
 @Composable
 private fun ControlCard(
     arStatus: String,
@@ -286,7 +277,6 @@ private fun ControlCard(
     }
 }
 
-/** AR 状态行，未检查时圆点保持中性灰 */
 @Composable
 private fun StatusIndicatorRow(
     arStatus: String,
@@ -299,7 +289,6 @@ private fun StatusIndicatorRow(
     )
 }
 
-/** Top 对齐 + 5dp 顶偏移，圆点对齐折行文字首行 */
 @Composable
 private fun StatusIndicatorLine(
     label: String,
@@ -439,7 +428,7 @@ private fun VtsConnectCard(
     }
 }
 
-/** 局域网发现按钮；clickable 而非 IconButton，后者图标槽装不下两行 */
+/** clickable 而非 IconButton，后者图标槽装不下两行 */
 @Composable
 private fun AutoDiscoverButton(
     state: DiscoveryUiState,
@@ -459,7 +448,6 @@ private fun AutoDiscoverButton(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center,
     ) {
-        // 转圈与图标同尺寸，切换时文字不跳动
         Box(modifier = Modifier.size(StatusIconSize), contentAlignment = Alignment.Center) {
             if (busy) {
                 CircularProgressIndicator(
@@ -544,7 +532,7 @@ private fun CalibrationGuideCard(
     }
 }
 
-/** 图标 + 文字；M3 Button content 无自动 spacedBy */
+/** M3 Button content 无自动 spacedBy */
 @Composable
 private fun ButtonIconText(
     icon: ImageVector,
@@ -561,7 +549,6 @@ private fun ButtonIconText(
     }
 }
 
-/** 清除 Token 确认框，确认按钮用 error 色 */
 @Composable
 private fun ClearTokenConfirmDialog(
     onConfirm: () -> Unit,

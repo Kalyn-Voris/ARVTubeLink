@@ -60,18 +60,16 @@ import com.exarry.arvtubelink.R
 
 private const val NavAnimMs = 220
 
-/** 单 Dialog 内两级页面，null 库 = 列表页 */
+/** 单 Dialog 内两级页面 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
-    // 可见性与内容拆开：退出动画 220ms 内仍需渲染内容，拆开避免滑走白板
+    // 可见性与内容拆开：退出动画 220ms 内仍需渲染 detailContent
     var detailVisible by remember { mutableStateOf(false) }
     var detailContent by remember { mutableStateOf<OpenSourceLibrary?>(null) }
 
-    // 始终 enabled，由内部分流；Dialog 的 onDismissRequest 走同一套分流
     BackHandler(enabled = true) {
         if (detailVisible) {
-            // 不清 detailContent，退出动画还要用它渲染
             detailVisible = false
         } else {
             onDismiss()
@@ -83,7 +81,6 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
         onDismissRequest = {
             if (detailVisible) detailVisible = false else onDismiss()
         },
-        // usePlatformDefaultWidth=false 才不留平台默认边距
         properties = DialogProperties(
             usePlatformDefaultWidth = false,
             dismissOnClickOutside = false,
@@ -130,7 +127,7 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
                 )
             },
         ) { innerPadding ->
-            // 列表常驻组合树保留滚动位置，详情层用 AnimatedVisibility 覆盖其上
+            // 列表常驻保留滚动位置，详情层用 AnimatedVisibility 覆盖其上
             Box(
                 modifier = Modifier
                     .padding(innerPadding)
@@ -138,13 +135,11 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
             ) {
                 LicenseList(
                     onSelect = { library ->
-                        // 先定内容再置可见，写入点都在事件回调里
                         detailContent = library
                         detailVisible = true
                     }
                 )
 
-                // zIndex(1f) 确保详情画在列表之上
                 AnimatedVisibility(
                     visible = detailVisible,
                     enter = slideInHorizontally(
@@ -162,7 +157,7 @@ fun OpenSourceLicensesDialog(onDismiss: () -> Unit) {
     }
 }
 
-/** 分级列表：核心平台 / 开源库两段，段内保持 licenseSections 手写顺序 */
+/** 分级列表：段内保持 licenseSections 手写顺序 */
 @Composable
 private fun LicenseList(onSelect: (OpenSourceLibrary) -> Unit) {
     val sections = remember { licenseSections }
@@ -250,12 +245,11 @@ private fun LicenseRow(library: OpenSourceLibrary, onClick: () -> Unit) {
     }
 }
 
-/** 详情页：头部信息 + 等宽字体的协议全文 */
 @Composable
 private fun LicenseDetail(library: OpenSourceLibrary) {
     val uriHandler = LocalUriHandler.current
 
-    // 必须不透明底色并 fillMaxSize，否则下层列表文字会叠印或从右侧漏出
+    // 须不透明底色 + fillMaxSize，否则下层列表文字叠印或从右侧漏出
     Surface(
         modifier = Modifier.fillMaxSize(),
         color = MaterialTheme.colorScheme.background,
@@ -292,7 +286,7 @@ private fun LicenseDetail(library: OpenSourceLibrary) {
                             onClick = { runCatching { uriHandler.openUri(library.url) } }
                         ) {
                             Icon(
-                                // 本工程只依赖 material-icons-core，无 OpenInNew，用 Share 代替
+                                // 仅依赖 material-icons-core，无 OpenInNew，用 Share 代替
                                 imageVector = Icons.Filled.Share,
                                 contentDescription = stringResource(R.string.oss_open_link),
                                 tint = MaterialTheme.colorScheme.primary,
@@ -315,7 +309,7 @@ private fun LicenseDetail(library: OpenSourceLibrary) {
             HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
             Spacer(Modifier.height(16.dp))
 
-            // 等宽字体 + lineHeight 18sp，保持条款缩进对齐
+            // 等宽 + lineHeight 18sp 保持条款缩进对齐
             Text(
                 text = library.licenseText,
                 style = MaterialTheme.typography.bodySmall.copy(

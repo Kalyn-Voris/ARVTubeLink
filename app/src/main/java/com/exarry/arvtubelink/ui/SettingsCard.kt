@@ -23,10 +23,8 @@ import androidx.compose.ui.unit.dp
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ui.theme.themedColorResource
 
-/** 卡片圆角 12dp */
 private val CardCornerRadius = 12.dp
 
-/** 设置页卡片容器：标题 + 内容槽，Surface 承载 */
 @Composable
 fun SettingsCard(
     title: String,
@@ -36,7 +34,7 @@ fun SettingsCard(
     Surface(
         modifier = modifier.fillMaxWidth(),
         shape = RoundedCornerShape(CardCornerRadius),
-        // 容器色深浅跨档（深=Container、浅=High），单槽取不到，走 themedColorResource
+        // 容器色深色取 Container、浅色取 High，单槽取不到
         color = themedColorResource(R.color.colorCardContainerDark, R.color.colorCardContainerLight),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
     ) {
@@ -52,7 +50,6 @@ fun SettingsCard(
     }
 }
 
-/** 标签 + 当前值 + 右箭头可点击行，行内纵向内距 4dp */
 @Composable
 fun ClickableValueRow(
     label: String,
@@ -84,7 +81,6 @@ fun ClickableValueRow(
             style = MaterialTheme.typography.bodyMedium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        // AutoMirrored 版本：RTL 下箭头自动指左
         Icon(
             imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
             contentDescription = null,

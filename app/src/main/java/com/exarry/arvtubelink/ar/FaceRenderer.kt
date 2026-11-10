@@ -26,7 +26,6 @@ import java.util.concurrent.atomic.AtomicBoolean
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-/** GL 线程驱动 AR 帧循环：AR 系数 + 头姿 -> 映射 -> 平滑 -> 30Hz 节流 -> IO 协程发 VTS */
 class FaceRenderer(
     private val manager: ArSessionManager,
     private val displayRotation: () -> Int,
@@ -45,14 +44,12 @@ class FaceRenderer(
 
     private var wasFaceFound = false
 
-    /** 网络发送协程池，不复用 GL 线程做 IO */
     private val sendScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     /** UI 线程写、GL 线程读 */
     @Volatile
     private var calibrationMode = false
 
-    /** 节流间隔 ms，UI 线程写、GL 线程读 */
     @Volatile
     private var sendIntervalMs = 1000L / 30
 
@@ -60,7 +57,6 @@ class FaceRenderer(
     private var meshPositionLoc = -1
     private var meshMvpLoc = -1
     private var meshColorLoc = -1
-    // 径向淡出 uniform：屏幕中心像素坐标 + 起止半径（像素）
     private var meshCenterLoc = -1
     private var meshFadeRLoc = -1
     private var meshFadeEndLoc = -1
@@ -70,15 +66,13 @@ class FaceRenderer(
     private var meshPointVbo = 0
     private var crossVbo = 0
 
-    /** 拓扑固定，顶点数不变则不重建线段索引 */
     private var meshTopologyVertexCount = -1
 
-    /** 网格链路失败后本会话只画十字，重进校准模式时重试 */
+    /** 网格失败后本会话只画十字，重进校准模式重试 */
     private var meshDrawFailed = false
 
     private var prevCalibrationActive = false
 
-    /** null = 待首次回调，仅变化时 post 到主线程 */
     private var lastFacePresence: Boolean? = null
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -86,10 +80,9 @@ class FaceRenderer(
     private var surfaceWidth = 1
     private var surfaceHeight = 1
 
-    // GL 线程复用；2D 方案全场景共用同一正交矩阵，坐标已在 CPU 端投影
+    /** 2D 方案全场景共用同一正交矩阵，坐标已在 CPU 端投影 */
     private val orthoMatrix = FloatArray(16)
 
-    // 单顶点 CPU 投影中间量 [x,y,z,1]，GL 线程复用
     private val vertexH = FloatArray(4)
 
     private var projected2d = FloatArray(0)
@@ -100,7 +93,6 @@ class FaceRenderer(
         calibrationMode = enabled
     }
 
-    /** hz 钳到 10..60，间隔 = 1000/hz 毫秒取整（60Hz 实为 16ms 约 62Hz） */
     fun setSendFrequencyHz(hz: Int) {
         sendIntervalMs = 1000L / hz.coerceIn(10, 60)
     }
@@ -108,7 +100,7 @@ class FaceRenderer(
     @Volatile
     private var streamingPaused = false
 
-    /** 最近一帧 VTS 参数快照，GL 线程写、Live2D 协程读；人脸丢失置 null */
+    /** GL 线程写、Live2D 协程读，人脸丢失置 null */
     @Volatile
     var latestFaceSnapshot: Map<String, Float>? = null
         private set
@@ -117,7 +109,7 @@ class FaceRenderer(
         streamingPaused = paused
     }
 
-    /** 实际送达帧计数，IO 协程写、UI 线程读 */
+    /** IO 协程写、UI 线程读 */
     private val sentFrameCount = java.util.concurrent.atomic.AtomicLong(0L)
 
     fun readAndResetSentFrames(): Long = sentFrameCount.getAndSet(0L)
@@ -163,7 +155,6 @@ class FaceRenderer(
 
         val session = manager.getSession() ?: return
 
-        // 相机不可用或会话异常时跳过本帧，不让渲染线程崩溃
         val frame = try {
             session.update()
         } catch (e: Exception) {
@@ -175,7 +166,7 @@ class FaceRenderer(
         if (calibActive != prevCalibrationActive) {
             prevCalibrationActive = calibActive
             meshDrawFailed = false
-            meshTopologyVertexCount = -1 // 强制重试网格拓扑
+            meshTopologyVertexCount = -1
             lastFacePresence = null
         }
 
@@ -207,7 +198,6 @@ class FaceRenderer(
             }
             if (wasFaceFound) {
                 wasFaceFound = false
-                // 人脸丢失：清 Live2D 快照 → 模型回中性姿态（不冻结在最后一帧）
                 latestFaceSnapshot = null
                 dispatchSend(emptyMap())
             }
@@ -252,7 +242,6 @@ class FaceRenderer(
             }
         }
 
-        // 绘制只降级不抛出，放在发送之前
         if (calibActive) {
             drawCalibrationVisualization(frame, face)
         }
@@ -278,7 +267,6 @@ class FaceRenderer(
         }
     }
 
-    /** GL 线程懒创建 program，编译或链接失败置降级并返回 false */
     private fun ensureCalibrationProgram(): Boolean {
         if (meshProgram != 0) return true
         if (meshDrawFailed) return false
@@ -315,7 +303,7 @@ class FaceRenderer(
                 meshDrawFailed = true
                 return false
             }
-            // 淡出 uniform 缺失不致命：老驱动可能优化掉未用变量，-1 对 glUniform* 是空操作
+            // 淡出 uniform 缺失不致命：驱动可能优化掉未用变量，-1 对 glUniform* 是空操作
             if (centerLoc < 0 || fadeRLoc < 0 || fadeEndLoc < 0) {
                 InAppLog.w(
                     TAG,
@@ -368,7 +356,6 @@ class FaceRenderer(
         GLES20.glUniform1f(meshFadeEndLoc, shortSide * FADE_END_RATIO)
     }
 
-    /** 正交投影，x 轴按 aspect 校正，几何中心在 (0,0) */
     private fun drawCrosshair() {
         if (crossVbo == 0) {
             crossVbo = genBuffer()
@@ -429,7 +416,7 @@ class FaceRenderer(
 
             val aspect = surfaceWidth.toFloat() / surfaceHeight.toFloat()
 
-            // ARPose.toMatrix 输出列主序，与 multiplyMV 布局一致，循环外建一次复用
+            // ARPose.toMatrix 输出列主序，与 multiplyMV 布局一致
             val modelMatrix = FloatArray(16)
             face.getPose().toMatrix(modelMatrix, 0)
             val worldV = FloatArray(4)
@@ -485,7 +472,6 @@ class FaceRenderer(
             GLES20.glVertexAttribPointer(meshPositionLoc, 3, GLES20.GL_FLOAT, false, 0, 0)
             GLES20.glUniformMatrix4fv(meshMvpLoc, 1, false, orthoMatrix, 0)
             applyFadeUniforms()
-            // 网格线低饱和青 #59D9F2，0.45 alpha 约 3.2:1 对比度
             GLES20.glUniform4f(
                 meshColorLoc, MESH_R, MESH_G, MESH_B, MESH_ALPHA
             )
@@ -519,7 +505,7 @@ class FaceRenderer(
         }
     }
 
-    /** 三角索引 -> 线段索引，按顶点对去重（3F=2E），键为 (min shl 32) or max */
+    /** 三角索引 -> 线段索引，按顶点对去重（3F=2E） */
     private fun rebuildLineTopology(geometry: ARFaceGeometry, vertexCount: Int) {
         try {
             val idxBuf = geometry.getTriangleIndices()
@@ -531,7 +517,6 @@ class FaceRenderer(
             val n = idxBuf.remaining()
             val idx = IntArray(n)
             idxBuf.get(idx)
-            // 非流形数据下三角形数可能远多于 V，按 3F 上限分配
             val lines = ShortArray((n / 3) * 6)
             val seen = HashSet<Long>((n / 3) * 3)
             var w = 0
@@ -580,7 +565,7 @@ class FaceRenderer(
         return seen.add((lo.toLong() shl 32) or hi.toLong())
     }
 
-    /** 有效顶点平均 NDC，与十字重合即对准；无有效顶点或 |NDC|>1 时不画 */
+    /** 有效顶点平均 NDC，与十字重合即对准 */
     private fun drawCentroidMarker(sumNdcX: Float, sumNdcY: Float, validCount: Int) {
         if (validCount <= 0) return
         val ndcX = sumNdcX / validCount
@@ -623,17 +608,15 @@ class FaceRenderer(
         return buf
     }
 
-    /** translation 单位米，quaternion 顺序 (x,y,z,w) */
     private data class HeadPose(val translation: FloatArray, val quaternion: FloatArray)
 
-    /** 纯内存 JNI 读取（微秒级），可在 GL 线程直接调用；失败返回 null 仅缺头姿项 */
+    /** 纯内存 JNI 读取，可在 GL 线程直接调用；失败返回 null 仅缺头姿项 */
     private fun readHeadPose(face: ARFace): HeadPose? {
         return try {
             val pose = face.getPose()
             val translation = FloatArray(3)
             pose.getTranslation(translation, 0)
             val quaternion = FloatArray(4)
-            // ARQuaternion 按 INDEX_X/Y/Z/W 顺序写出，getRotationQuaternion 直通无重排
             pose.getRotationQuaternion(quaternion, 0)
             HeadPose(translation, quaternion)
         } catch (e: Exception) {
@@ -642,7 +625,6 @@ class FaceRenderer(
         }
     }
 
-    /** 节流 + 防积压 + IO 协程发送的统一出口，参数 Map 交给 IO 后不再被 GL 线程修改 */
     private fun dispatchSend(params: Map<String, Float>) {
         if (streamingPaused) return
         val now = System.currentTimeMillis()
@@ -654,7 +636,6 @@ class FaceRenderer(
         if (!sendPending.compareAndSet(false, true)) {
             return
         }
-        // 网络发送在 IO 协程，VTS 端卡死也不阻塞 GL 渲染线程
         sendScope.launch {
             try {
                 // 未认证时内部静默丢弃并返回 false，不抛异常
@@ -676,8 +657,6 @@ class FaceRenderer(
         private const val TAG = "ARBlendShapes"
         private const val LOG_INTERVAL = 10L
         private const val INAPP_LOG_INTERVAL = 60L
-
-        /** 仅开启详细日志时输出 */
         private const val CALIB_LOG_INTERVAL = 30L
 
         private const val CALIB_BG_R = 0.05f
@@ -692,18 +671,17 @@ class FaceRenderer(
         private const val FRAME_ALPHA = 0.7f
         private const val CENTROID_ALPHA = 0.9f
 
-        // 视口上移比例，须与 onSurfaceChanged 的 glViewport 一致
+        /** 视口上移比例，须与 onSurfaceChanged 的 glViewport 一致 */
         private const val CALIB_VIEWPORT_Y_OFFSET = 0.25f
-        /** 满亮度半径 = 短边 × 本值 */
+        /** 淡出半径：满亮度 = 短边 × 本值，全透明 = 短边 × FADE_END_RATIO */
         private const val FADE_START_RATIO = 0.30f
-        /** 全透明半径 = 短边 × 本值 */
         private const val FADE_END_RATIO = 0.75f
 
         private const val CROSS_ARM = 0.09f
         private const val FRAME_HALF_W = 0.34f
         private const val FRAME_HALF_H = 0.42f
 
-        // GLSL 源码保持 ASCII；gl_PointSize 仅作用于 GL_POINTS
+        /** GLSL 源码保持 ASCII；gl_PointSize 仅作用于 GL_POINTS */
         private const val CALIB_VERTEX_SHADER =
             "attribute vec4 aPosition;\n" +
                 "uniform mat4 uMVP;\n" +
@@ -711,7 +689,6 @@ class FaceRenderer(
                 "    gl_Position = uMVP * aPosition;\n" +
                 "    gl_PointSize = 10.0;\n" +
                 "}\n"
-        // 径向淡出用 gl_FragCoord，不改 VBO 布局，无额外顶点开销
         private const val CALIB_FRAGMENT_SHADER =
             "precision mediump float;\n" +
                 "uniform vec4 uColor;\n" +

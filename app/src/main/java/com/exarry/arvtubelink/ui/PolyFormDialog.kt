@@ -15,11 +15,10 @@ import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.unit.dp
 import com.exarry.arvtubelink.R
 
-/** 读 res/raw/license.txt 全文展示，默认 DialogProperties 允许 back 关闭 */
+/** remember 缓存 res/raw/license.txt 全文，避免重组重复 IO */
 @Composable
 fun PolyFormDialog(onDismiss: () -> Unit) {
     val context = LocalContext.current
-    // remember 缓存正文，避免重组重复 IO
     val licenseText = remember {
         context.resources.openRawResource(R.raw.license)
             .bufferedReader(Charsets.UTF_8)

@@ -13,13 +13,12 @@ import java.io.File
 import java.util.zip.ZipEntry
 import java.util.zip.ZipOutputStream
 
-/** Zip Slip 防线回归：构造恶意条目名走真实 extractZip，确认抛异常且解压根外无文件 */
+// 恶意条目名走真实 extractZip，确认抛异常且解压根外无文件
 class Live2DModelStoreZipSlipTest {
 
     @get:Rule
     val tmp = TemporaryFolder()
 
-    /** 条目名原样写入 zip，不做规范化 */
     private fun zipWith(vararg entries: Pair<String, String>): ByteArray {
         val out = ByteArrayOutputStream()
         ZipOutputStream(out).use { zos ->
@@ -143,7 +142,7 @@ class Live2DModelStoreZipSlipTest {
         }
     }
 
-    /** 合法条目与穿越条目同包时须整包拒绝，不跳过坏的保留好的 */
+    // 合法条目与穿越条目同包时整包拒绝
     @Test
     fun `one malicious entry aborts the whole archive`() {
         val root = newRoot()
@@ -200,7 +199,7 @@ class Live2DModelStoreZipSlipTest {
         assertEquals("x", File(root, "a/b/c/deep.txt").readText())
     }
 
-    /** 条目数越过 MAX_ENTRIES = 4096 上限 */
+    // 条目数越过 MAX_ENTRIES = 4096 上限
     @Test
     fun `entry count limit is enforced`() {
         val root = newRoot()

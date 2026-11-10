@@ -5,20 +5,19 @@ import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
-/** 灵敏度系数，与校准数据同文件持久化 */
 data class SensitivityConfig(
     val angle: Float,
     val position: Float,
     val expression: Float
 )
 
-/** 校准数据与灵敏度持久化；写方法 suspend 且 commit 落盘后返回，读方法同步 */
+/** 校准数据与灵敏度持久化 */
 class CalibrationStorage(context: Context) {
 
     private val prefs =
         context.applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
 
-    /** IO 协程，commit 落盘后返回 */
+    /** commit 同步落盘，返回即可读 */
     suspend fun save(data: CalibrationData): Unit = withContext(Dispatchers.IO) {
         val ok = prefs.edit()
             .putStringSet(KEY_BASE_ANGLES, encodeSet(data.baseAngles))
@@ -28,14 +27,12 @@ class CalibrationStorage(context: Context) {
         if (!ok) InAppLog.w(TAG, "校准数据写入 SharedPreferences 失败")
     }
 
-    /** 同步 IO；未保存或条目损坏时对应类别返回空 Map */
     fun load(): CalibrationData = CalibrationData(
         baseAngles = decodeSet(prefs.getStringSet(KEY_BASE_ANGLES, null)),
         basePositions = decodeSet(prefs.getStringSet(KEY_BASE_POSITIONS, null)),
         baseExpressions = decodeSet(prefs.getStringSet(KEY_BASE_EXPRESSIONS, null))
     )
 
-    /** 只清三类基准键，灵敏度保留 */
     suspend fun reset(): Unit = withContext(Dispatchers.IO) {
         val ok = prefs.edit()
             .remove(KEY_BASE_ANGLES)
@@ -45,7 +42,7 @@ class CalibrationStorage(context: Context) {
         if (!ok) InAppLog.w(TAG, "校准数据重置失败")
     }
 
-    /** IO 协程，commit 落盘后返回 */    suspend fun saveSensitivities(config: SensitivityConfig): Unit =
+    suspend fun saveSensitivities(config: SensitivityConfig): Unit =
         withContext(Dispatchers.IO) {
             val ok = prefs.edit()
                 .putFloat(KEY_SENS_ANGLE, config.angle)
@@ -55,7 +52,6 @@ class CalibrationStorage(context: Context) {
             if (!ok) InAppLog.w(TAG, "灵敏度写入 SharedPreferences 失败")
         }
 
-    /** 同步 IO，缺省 1.0 */
     fun loadSensitivities(): SensitivityConfig = SensitivityConfig(
         angle = prefs.getFloat(KEY_SENS_ANGLE, BlendShapeMapper.SENSITIVITY_DEFAULT),
         position = prefs.getFloat(KEY_SENS_POSITION, BlendShapeMapper.SENSITIVITY_DEFAULT),

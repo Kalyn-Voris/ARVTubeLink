@@ -28,7 +28,6 @@ import org.json.JSONObject
 /** 局域网 VTube Studio 自动发现：UDP 47779 广播监听 + TCP 8001 网段扫描竞速 */
 class VtsDiscoveryClient(
     context: Context,
-    /** 上次成功连接的地址（ip to port）提供者，返回 null 或空串表示无缓存 */
     private val cachedAddressProvider: () -> Pair<String, Int>? = { null },
 ) {
 
@@ -64,7 +63,6 @@ class VtsDiscoveryClient(
 
         val udpJob = launch(Dispatchers.IO) { listenUdpBroadcast(hit, udpBound) }
         val tcpJob = launch(Dispatchers.IO) {
-            // bind 结果在 T0 附近返回：端口被占则提前启动兜底
             val bound = runCatching { udpBound.await() }.getOrDefault(false)
             delay(if (bound) TCP_FALLBACK_DELAY_MS else TCP_EARLY_FALLBACK_DELAY_MS)
             if (!hit.isCompleted) scanTcpSubnet(subnetPrefix, hit)
@@ -80,7 +78,6 @@ class VtsDiscoveryClient(
         if (found != null) found else DiscoveryResult.Failed(DiscoveryResult.Reason.TIMEOUT)
     }
 
-    /** 绑定 47779 收广播，窗口内首个合法包即命中 */
     private suspend fun listenUdpBroadcast(
         hit: CompletableDeferred<DiscoveryResult.Found>,
         udpBound: CompletableDeferred<Boolean>,
@@ -108,7 +105,6 @@ class VtsDiscoveryClient(
                     break
                 }
             } catch (e: IOException) {
-                // bind 失败或收包异常，均按 UDP 不可用降级
                 udpBound.complete(false)
             } finally {
                 runCatching { socket.close() }
@@ -118,7 +114,6 @@ class VtsDiscoveryClient(
         }
     }
 
-    /** 并发探测 /24 网段 8001，可连即候选 */
     private suspend fun scanTcpSubnet(
         subnetPrefix: String,
         hit: CompletableDeferred<DiscoveryResult.Found>,
@@ -139,7 +134,7 @@ class VtsDiscoveryClient(
         }
     }
 
-    /** 阻塞调用，须在 IO 线程执行；异常一律视为不可达 */
+    /** 阻塞调用，须在 IO 线程执行 */
     private fun probeTcp(ip: String, port: Int, timeoutMs: Int): Boolean = runCatching {
         Socket().use { socket ->
             socket.connect(InetSocketAddress(ip, port), timeoutMs)
@@ -147,7 +142,7 @@ class VtsDiscoveryClient(
         true
     }.getOrDefault(false)
 
-    /** 取缓存的上次连接地址。只接受合法 IPv4 与非空端口 */
+    /** 只接受合法 IPv4 与非空端口 */
     private fun cachedAddress(): Pair<String, Int>? {
         val (rawIp, port) = runCatching { cachedAddressProvider() }.getOrNull() ?: return null
         val ip = rawIp.trim()
@@ -157,7 +152,7 @@ class VtsDiscoveryClient(
         return if (isIpv4) ip to port else null
     }
 
-    /** 校验并解析广播包：标准信封（apiName + messageType + data.port/active） */
+    /** 校验标准信封（apiName + messageType + data.port/active），IP 取 UDP 源地址 */
     private fun parseBroadcast(buf: ByteArray, packet: DatagramPacket): DiscoveryResult.Found? {
         val text = String(buf, 0, packet.length, StandardCharsets.UTF_8).trim()
         val obj = runCatching { JSONObject(text) }.getOrNull() ?: return null
@@ -174,7 +169,7 @@ class VtsDiscoveryClient(
         )
     }
 
-    /** 部分 OEM 驱动按组播路径过滤广播包，持锁收包；获取失败静默降级 */
+    /** 部分 OEM 驱动按组播路径过滤广播包，须持锁收包 */
     private fun acquireMulticastLock(): MulticastLock? = runCatching {
         val wifi = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
         wifi?.createMulticastLock("arvtubelink-discovery")?.apply {
@@ -183,7 +178,7 @@ class VtsDiscoveryClient(
         }
     }.getOrNull()
 
-    /** 取私有网段 IPv4，优先带硬件地址的网卡 */
+    /** 优先带硬件地址的网卡 */
     private fun pickPrivateIpv4(): Inet4Address? {
         val interfaces = runCatching { NetworkInterface.getNetworkInterfaces() }.getOrNull() ?: return null
         val withMac = ArrayList<Inet4Address>()
@@ -201,7 +196,6 @@ class VtsDiscoveryClient(
         return (withMac + withoutMac).firstOrNull()
     }
 
-    /** 192.168 / 10 / 172.16~31 网段判定 */
     private fun isPrivateIpv4(ip: Inet4Address): Boolean {
         val bytes = ip.address
         val first = bytes[0].toInt() and 0xFF
@@ -226,7 +220,6 @@ class VtsDiscoveryClient(
         private const val API_NAME = "VTubeStudioPublicAPI"
         private const val MSG_TYPE = "VTubeStudioAPIStateBroadcast"
 
-        /** 监听窗口：VTS 每 2s 一包 */
         private const val UDP_WINDOW_MS = 5_000L
 
         private const val UDP_POLL_INTERVAL_MS = 500L
@@ -236,10 +229,8 @@ class VtsDiscoveryClient(
 
         private const val TCP_EARLY_FALLBACK_DELAY_MS = 500L
 
-        /** 总闸，正常双路收工即提前终局 */
         private const val TOTAL_DEADLINE_MS = 8_000L
 
-        /** VTS 默认 WS 端口 */
         private const val TCP_SCAN_PORT = 8001
         private const val TCP_CONNECT_TIMEOUT_MS = 200
 

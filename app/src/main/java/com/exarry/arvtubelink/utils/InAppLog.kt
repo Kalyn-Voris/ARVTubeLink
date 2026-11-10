@@ -8,7 +8,7 @@ import java.util.Date
 import java.util.Locale
 import java.util.concurrent.ConcurrentLinkedQueue
 
-/** 进程内日志环形缓冲（最多 500 条）+ 全进程日志级别闸门 */
+/** 进程内日志 500 条环形缓冲 + 全进程日志级别闸门 */
 object InAppLog {
 
     private const val MAX_LINES = 500
@@ -19,11 +19,9 @@ object InAppLog {
     private val _version = MutableStateFlow(0L)
     val version: StateFlow<Long> = _version
 
-    /** 进程级开关，由 MainActivity 从 enable_debug_logs 同步进来，本类不读 prefs */
     @Volatile
     private var debugEnabled = false
 
-    /** 热路径先读它短路，避免为已丢弃日志拼字符串 */
     val isDebugEnabled: Boolean get() = debugEnabled
 
     fun setDebugEnabled(enabled: Boolean) {
@@ -55,7 +53,7 @@ object InAppLog {
         append("W", tag, "$msg ${t.javaClass.simpleName}: ${t.message}$top")
     }
 
-    /** 无条件输出，不受 setDebugEnabled 影响 */
+    /** 不受 setDebugEnabled 影响 */
     fun e(tag: String, msg: String) {
         Log.e(tag, msg)
         append("E", tag, msg)
@@ -74,7 +72,7 @@ object InAppLog {
         _version.value++
     }
 
-    /** 每条 +1 供 UI 增量刷新；超 500 条丢最旧 */
+    /** 版本号每条 +1，供 UI 增量刷新 */
     private fun append(level: String, tag: String, msg: String) {
         lines.add("${timeFmt.format(Date())} $level/$tag: $msg")
         while (lines.size > MAX_LINES) lines.poll()

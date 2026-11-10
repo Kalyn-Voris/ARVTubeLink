@@ -4,7 +4,6 @@ import com.google.gson.Gson
 import com.google.gson.JsonObject
 
 /** VTube Studio Public API 1.0 JSON 协议数据类 */
-
 object VtsApi {
     const val API_NAME = "VTubeStudioPublicAPI"
     const val API_VERSION = "1.0"
@@ -31,7 +30,6 @@ data class AuthenticationTokenRequest(
         // 1.0 规范必填，缺失则静默忽略不回包
         val pluginName: String = VtsApi.PLUGIN_NAME,
         val pluginDeveloper: String = VtsApi.PLUGIN_DEVELOPER,
-        // 空串表示不带图标
         val pluginIcon: String = ""
     )
 }
@@ -58,7 +56,7 @@ data class AuthenticationRequest(
     )
 }
 
-/** mode="set" 直接覆盖当前值 */
+/** mode="set" 覆盖当前值而非叠加 */
 data class InjectParameterDataRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -73,7 +71,6 @@ data class InjectParameterDataRequest(
     )
 }
 
-/** 通用响应信封，按 messageType 分派后再解析 data */
 data class VtsEnvelope(
     val apiName: String? = null,
     val apiVersion: String? = null,
@@ -104,7 +101,6 @@ data class AuthenticationResponse(
     )
 }
 
-/** 注入不存在的参数会返回 APIError */
 data class InputParameterListRequest(
     val apiName: String = VtsApi.API_NAME,
     val apiVersion: String = VtsApi.API_VERSION,
@@ -154,7 +150,7 @@ data class Live2DParameterListResponse(
         val parameters: List<Live2DParam>? = null
     )
 
-    /** min/max 为模型配置量程，用于 OUT 钳制判定 */
+    /** min/max 为模型配置量程，OUT 钳制依据 */
     data class Live2DParam(
         val name: String,
         val value: Float = 0f,
@@ -188,7 +184,6 @@ data class EventSubscriptionResponse(
     )
 }
 
-/** 模型加载/卸载推送，须先订阅 */
 data class ModelLoadedEvent(
     val messageType: String? = null,
     val data: Data? = null

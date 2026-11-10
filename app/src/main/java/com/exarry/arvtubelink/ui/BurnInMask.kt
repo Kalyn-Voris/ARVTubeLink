@@ -38,7 +38,6 @@ fun BurnInMask(visible: Boolean, onDismiss: () -> Unit) {
     var textVisible by remember { mutableStateOf(true) }
     var textOffsetY by remember { mutableIntStateOf(0) }
 
-    // 55/5=11 次换位后灭屏
     LaunchedEffect(Unit) {
         while (true) {
             textVisible = true
@@ -57,7 +56,6 @@ fun BurnInMask(visible: Boolean, onDismiss: () -> Unit) {
             .background(Color.Black)
             .pointerInput(Unit) {
                 // 手写 tap 状态机：detectTapGestures 与 consume-all 共用消费状态会让 UP 变 CANCEL
-                // UP 未超 slop → tap 移除；收到外部已消费事件（系统 pilfer）→ 保持；超 slop → 拖动
                 awaitEachGesture {
                     val down = awaitFirstDown(requireUnconsumed = false)
                     down.consume()
@@ -80,7 +78,6 @@ fun BurnInMask(visible: Boolean, onDismiss: () -> Unit) {
                         ) {
                             isTap = false
                         }
-                        // 吞掉本事件所有指针，防穿透到下层的 clickable/scrollable
                         event.changes.forEach { it.consume() }
                     }
                     if (isTap && upChange != null) {
@@ -102,17 +99,12 @@ fun BurnInMask(visible: Boolean, onDismiss: () -> Unit) {
     }
 }
 
-/** 文字亮期 55s */
 private const val TEXT_LIT_SECONDS = 55L
 
-/** 文字灭期 25s，灭期全屏纯黑 */
 private const val TEXT_DIM_SECONDS = 25L
 
-/** 换位间隔 5s */
 private const val TEXT_SHIFT_INTERVAL_SECONDS = 5L
 
-/** 垂直随机偏移 ±12px */
 private const val TEXT_OFFSET_PX = 12
 
-/** #1A1A1A，黑底观感亮度≈0.1 */
 private val MASK_TEXT_COLOR = Color(0xFF1A1A1A)

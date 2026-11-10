@@ -76,41 +76,35 @@ internal const val KEY_ENABLE_ONE_EURO_FILTER = "enable_one_euro_filter"
 
 internal const val KEY_ENABLE_ADAPTATION = "enable_adaptation"
 
-// 手动值存独立 prefs，与自适应 overrides 互不覆盖；探测值生效中时手动区禁用
-/** Float 0~1，默认 0.5，对应 MapperOverrides.mouthSmileNeutralBase */
+/** Float 0~1，默认 0.5 */
 internal const val KEY_MANUAL_MOUTHSMILE_NEUTRAL = "manual_mouthsmile_neutral"
 
-/** Float 0.5~2.0，默认 1.0；应用时 browDeviceMax = 1.0f / 倍率 */
+/** Float 0.5~2.0，默认 1.0；browDeviceMax = 1.0f / 倍率 */
 internal const val KEY_MANUAL_BROW_SENSITIVITY = "manual_brow_sensitivity"
 
-/** Float 0.5~2.0，默认 1.0；应用时 mouthOpenDeviceMax = 0.30f / 倍率 */
+/** Float 0.5~2.0，默认 1.0；mouthOpenDeviceMax = 0.30f / 倍率 */
 internal const val KEY_MANUAL_MOUTHOPEN_SENSITIVITY = "manual_mouthopen_sensitivity"
 
-/** Boolean，默认 false；开启后 mapper 对所有出网参数左右镜像 */
 internal const val KEY_FACE_MIRROR = "face_mirror"
 
-/** ON = 跟随系统（默认），OFF = 强制深色 */
 internal const val KEY_THEME_FOLLOW_SYSTEM = "theme_follow_system"
 
-/** 默认关闭；仅深色模式下生效 */
+/** 仅深色模式下生效 */
 internal const val KEY_THEME_AMOLED_BLACK = "theme_amoled_black"
 
 internal const val KEY_VTS_IP = "vts_ip"
 internal const val KEY_VTS_PORT = "vts_port"
 
-/** Int，10/20/30/40/50/60 Hz */
+/** Int，10~60 Hz 每 5Hz 一档，默认 30 与 FaceRenderer 初始 1000/30ms 节流对齐 */
 internal const val KEY_SEND_FREQUENCY_HZ = "send_frequency_hz"
 
-/** 默认 30，与 FaceRenderer 初始节流间隔 1000/30ms 对齐 */
 internal const val DEFAULT_SEND_FREQUENCY_HZ = 30
 
-/** 控制 MainActivity 的 2s 空闲全屏纯黑遮罩（ui/BurnInMask.kt） */
 internal const val KEY_BURN_IN_MASK_ENABLED = "burn_in_mask_enabled"
 
 internal const val DEFAULT_BURN_IN_MASK_ENABLED = true
 
-// 存 language tag，空串 = 跟随系统；values/ 为中文默认资源，values-en/ 为英文
-/** 值见 [LANGUAGE_SYSTEM] / [LANGUAGE_ZH] / [LANGUAGE_EN] */
+// 存 language tag，空串 = 跟随系统
 internal const val KEY_APP_LANGUAGE = "app_language"
 
 internal const val LANGUAGE_SYSTEM = ""
@@ -119,21 +113,18 @@ internal const val LANGUAGE_ZH = "zh"
 
 internal const val LANGUAGE_EN = "en"
 
-/** 关于卡在 LazyColumn 中的 item 索引（第 7 张卡） */
+/** 第 7 张卡（0 基） */
 private const val AboutCardIndex = 6
 
-/** 由 MainActivity 构造，经 AppRoot 传入 */
 data class SettingsDeps(
     val mapper: BlendShapeMapper,
     val smoother: Smoother,
     val calibrationStorage: CalibrationStorage,
     val appPrefs: SharedPreferences,
-    /** 手动映射值独立 prefs（adaptation_manual_prefs） */
     val adaptationManualPrefs: SharedPreferences,
     val faceRenderer: FaceRenderer
 )
 
-/** Tab 内容：进入组合时读一次 mapper/prefs 进本地 state，交互同时写透 mapper */
 @Composable
 fun SettingsContent(
     deps: SettingsDeps,
@@ -144,7 +135,6 @@ fun SettingsContent(
     onThemeRevealOrigin: (Offset) -> Unit,
     onCalibrateRequested: () -> Unit,
     onCalibrationReset: () -> Unit,
-    /** 探测值生效中（开关 ON 且最近 Done/缓存命中）时手动映射区禁用 */
     adaptationProbeActive: Boolean,
     onAdaptationToggle: (Boolean) -> Unit,
     onManualOverridesChange: (MapperOverrides) -> Unit,
@@ -197,7 +187,6 @@ fun SettingsContent(
     // 必须用 remember：rememberSaveable 会把 true 存进 Bundle，Activity 重建后弹窗自动重开
     var languageDialogVisible by remember { mutableStateOf(false) }
 
-    // 同样用 remember，Activity 重建后不恢复打开态
     var ossDialogVisible by remember { mutableStateOf(false) }
 
     // API < 33 的 setApplicationLocales 同步调用 recreate()，须等弹窗窗口移除后再应用
@@ -210,7 +199,7 @@ fun SettingsContent(
         onLanguageChange(tag)
     }
 
-    // ON_STOP 早于 onDestroy，此时改 false 让 Dialog 走正常 dismiss，不留孤儿窗口
+    // ON_STOP 早于 onDestroy，改 false 让 Dialog 正常 dismiss
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
@@ -229,7 +218,7 @@ fun SettingsContent(
         )
     }
 
-    // 倍率 ÷ 换算基线：brow 1.0 / mouthOpen 0.30，倍率越大分母越小越灵敏
+    // 倍率 ÷ 基线：brow 1.0 / mouthOpen 0.30
     fun manualOverrides() = MapperOverrides(
         mouthSmileNeutralBase = manualMouthSmileNeutral,
         browDeviceMax = MANUAL_BROW_DEVICE_BASELINE / manualBrowSensitivity,
@@ -425,7 +414,6 @@ fun SettingsContent(
                         manualMouthSmileNeutral = MANUAL_MOUTHSMILE_NEUTRAL_DEFAULT
                         manualBrowSensitivity = MANUAL_SENSITIVITY_DEFAULT
                         manualMouthOpenSensitivity = MANUAL_SENSITIVITY_DEFAULT
-                        // 清手动 prefs 并重置滑块，不动自适应 overrides
                         deps.adaptationManualPrefs.edit()
                             .remove(KEY_MANUAL_MOUTHSMILE_NEUTRAL)
                             .remove(KEY_MANUAL_BROW_SENSITIVITY)
@@ -446,14 +434,13 @@ fun SettingsContent(
                         themeFollowSystem = checked
                         onThemeFollowSystemChange(checked)
                     },
-                    // origin 先于 onCheckedChange 上收，同一帧快照送达 Reveal
+                    // origin 先于 onCheckedChange 上收，同帧快照送达 Reveal
                     onCheckedChangeWithOrigin = { _, origin -> onThemeRevealOrigin(origin) },
                 )
                 HorizontalDivider(
                     modifier = Modifier.padding(vertical = 8.dp),
                     color = MaterialTheme.colorScheme.outlineVariant,
                 )
-                // 不走 Reveal 过渡；浅色模式下 pref 照写，切回深色自动生效
                 SwitchRow(
                     label = stringResource(R.string.theme_amoled_black),
                     subtitle = stringResource(R.string.theme_amoled_black_desc),
@@ -482,7 +469,6 @@ fun SettingsContent(
 
         item {
             SettingsCard(title = stringResource(R.string.settings_card_language)) {
-                // 语言名用各自的自称，不随界面语言变化
                 val currentLanguageLabel = when (appLanguage) {
                     LANGUAGE_ZH -> stringResource(R.string.language_zh)
                     LANGUAGE_EN -> stringResource(R.string.language_en)
@@ -504,7 +490,6 @@ fun SettingsContent(
                     onCheckedChange = { checked ->
                         debugLogsEnabled = checked
                         deps.appPrefs.edit().putBoolean(KEY_ENABLE_DEBUG_LOGS, checked).apply()
-                        // InAppLog 进程级闸门，WARN/INFO/DEBUG 全部受控
                         InAppLog.setDebugEnabled(checked)
                         Toast.makeText(
                             context,
@@ -582,7 +567,6 @@ fun SettingsContent(
     }
 }
 
-/** 三个单选：跟随系统 / 简体中文 / English */
 @Composable
 private fun LanguageDialog(
     current: String,
@@ -659,7 +643,6 @@ private fun LanguageOptionRow(
     }
 }
 
-/** 开关行；onCheckedChangeWithOrigin 上收 Switch 中心 root 坐标且先于 onCheckedChange */
 @Composable
 private fun SwitchRow(
     label: String,
@@ -711,7 +694,7 @@ private fun SwitchRow(
     }
 }
 
-/** 灵敏度滑块 0.10x~3.00x，步进 0.01（steps=289） */
+/** 0.10x~3.00x 步进 0.01 */
 @Composable
 private fun SensitivitySlider(
     label: String,
@@ -730,7 +713,7 @@ private fun SensitivitySlider(
         ARVSlider(
             value = value,
             onValueChange = { raw ->
-                // tick 值带 ~1e-7 浮点尾差，先按 0.01 吸附再 coerceIn
+                // tick 值带 ~1e-7 浮点尾差，先吸附 0.01 再 coerceIn
                 onValueChange(
                     ((raw * 100).roundToInt() / 100f).coerceIn(
                         BlendShapeMapper.SENSITIVITY_MIN,
@@ -748,12 +731,11 @@ private fun SensitivitySlider(
 /** 含两端 291 个离散值 → steps = 291 - 2 */
 private const val SENSITIVITY_STEPS = 289
 
-/** 10..60 Hz 每 5Hz 一档共 11 档，steps = 10 段 - 2 */
+/** 10..60 Hz 每 5Hz 一档，steps = 10 段 - 2 */
 private const val FREQUENCY_MIN = 10f
 private const val FREQUENCY_MAX = 60f
 private const val FREQUENCY_STEPS = 9
 
-/** 推流频率滑块 10..60 Hz，吸附 5Hz 网格 */
 @Composable
 private fun FrequencySlider(
     label: String,
@@ -792,34 +774,28 @@ private fun FrequencySlider(
 private val PrimaryButtonHeight = 48.dp
 private val SecondaryButtonHeight = 40.dp
 
-/** 默认 0.5，与 BlendShapeMapper.SYNTH_NEUTRAL_BASE 对齐 */
 internal const val MANUAL_MOUTHSMILE_NEUTRAL_DEFAULT = 0.5f
 
 internal const val MANUAL_SENSITIVITY_DEFAULT = 1.0f
 
-/** 与 BlendShapeMapper 私有 BROW_DEVICE_MAX=1.0 对齐 */
 internal const val MANUAL_BROW_DEVICE_BASELINE = 1.0f
 
-/** 与 BlendShapeMapper 私有 MouthOpen deviceMax=0.30 对齐 */
 internal const val MANUAL_MOUTHOPEN_DEVICE_BASELINE = 0.30f
 
-/** 0.50x~2.00x 每 0.05 一档（31 值，steps=29） */
+/** 0.50x~2.00x 每 0.05 一档，steps = 29；从 steps 反推会多算一段，1.00x 吸附不到 */
 private const val MANUAL_SENSITIVITY_MIN = 0.5f
 private const val MANUAL_SENSITIVITY_MAX = 2.0f
 private const val MANUAL_SENSITIVITY_STEPS = 29
 
-/** 显式吸附步长 0.05；从 steps 反推会多算一段，1.00x 吸附不到 */
 private const val MANUAL_SENSITIVITY_STEP = 0.05f
 
-/** 0~1 每 0.01 一档（101 值，steps=99） */
+/** 0~1 每 0.01 一档，steps = 99 */
 private const val MANUAL_NEUTRAL_MIN = 0f
 private const val MANUAL_NEUTRAL_MAX = 1f
 private const val MANUAL_NEUTRAL_STEPS = 99
 
-/** 显式吸附步长 0.01 */
 private const val MANUAL_NEUTRAL_STEP = 0.01f
 
-/** 折叠区：中性点 / 眉毛灵敏度 / 说话灵敏度滑块；probeActive 时整区禁用 */
 @Composable
 private fun ManualMappingSection(
     expanded: Boolean,
@@ -906,7 +882,6 @@ private fun ManualMappingSection(
     }
 }
 
-/** 标签 + 数值 + ARVSlider；零锚定吸附 (raw / step).roundToInt() * step */
 @Composable
 private fun ManualRangeSlider(
     label: String,

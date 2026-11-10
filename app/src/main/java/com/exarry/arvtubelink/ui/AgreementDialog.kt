@@ -20,7 +20,6 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import com.exarry.arvtubelink.R
 
-/** dismissOnBackPress / dismissOnClickOutside 均关闭，唯一出口是同意/不同意 */
 @Composable
 fun AgreementDialog(
     onAgree: () -> Unit,
@@ -53,7 +52,7 @@ fun AgreementDialog(
                     Text(
                         text = stringResource(R.string.agreement_view_full),
                         color = MaterialTheme.colorScheme.primary,
-                        // weight(fill=false)：宽屏两端对齐，窄屏不占满剩余宽度
+                        // weight(fill = false)：宽屏两端对齐，窄屏按内容宽
                         modifier = Modifier
                             .weight(1f, fill = false)
                             .clickable(onClick = onViewFullLicense),

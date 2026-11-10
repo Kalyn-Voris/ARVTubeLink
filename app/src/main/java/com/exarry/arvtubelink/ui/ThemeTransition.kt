@@ -25,10 +25,9 @@ import androidx.compose.ui.unit.IntSize
 import kotlin.math.hypot
 import kotlin.math.roundToInt
 
-/** 圆半径线性扩大到全屏的时长 350ms */
 private const val RevealDurationMs = 350
 
-/** 主题切换过渡：旧主题截图盖在新主题上，EvenOdd 圆外裁剪从点击位置向外扩散 */
+/** 主题切换过渡：旧主题截图盖在新主题上，圆外裁剪从点击位置向外扩散 */
 @Composable
 fun ThemeTransition(
     isDark: Boolean,
@@ -54,7 +53,6 @@ fun ThemeTransition(
     }
 }
 
-/** 覆盖层：旧主题截图 + 圆形裁剪，progress 0f→1f 圆扩大 */
 @Composable
 private fun TransitionOverlay(
     screenshot: ImageBitmap,
@@ -95,8 +93,7 @@ private fun TransitionOverlay(
                     }
                 }
             }
-            // EvenOdd：全屏矩形减圆 = 圆外区域，clipPath 内只画旧图，圆内露出新主题
-            // Modifier.clipPath 在 Compose ui 1.12 已移除，须用 DrawScope.clipPath
+            // EvenOdd：全屏矩形减圆 = 圆外区域；clipPath 须用 DrawScope 版，Modifier.clipPath 已移除
             .drawBehind {
                 val radius = maxRevealRadius(origin, size) * progressState.value
                 val outsideCircle = Path().apply {

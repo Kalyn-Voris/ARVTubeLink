@@ -3,7 +3,7 @@ package com.exarry.arvtubelink.ui.licenses
 import androidx.annotation.StringRes
 import com.exarry.arvtubelink.R
 
-/** name 保留上游英文原名，descriptionRes 走 @StringRes 供 values / values-en 切换 */
+/** name 保留上游英文原名，descriptionRes 走 values / values-en 切换 */
 data class OpenSourceLibrary(
     val name: String,
     @param:StringRes val descriptionRes: Int,
@@ -13,7 +13,6 @@ data class OpenSourceLibrary(
     val url: String,
 )
 
-/** libraries 按声明顺序展示，不重排 */
 data class OpenSourceLibrarySection(
     @param:StringRes val titleRes: Int,
     val libraries: List<OpenSourceLibrary>,

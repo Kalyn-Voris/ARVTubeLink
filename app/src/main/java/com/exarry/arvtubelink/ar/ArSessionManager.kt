@@ -28,7 +28,6 @@ sealed class ArEngineState {
     data object Unsupported : ArEngineState()
 }
 
-/** 人脸追踪会话生命周期管理，不做相机渲染 */
 class ArSessionManager(private val context: Context) {
 
     var state: ArEngineState = ArEngineState.NotInstalled
@@ -36,8 +35,8 @@ class ArSessionManager(private val context: Context) {
 
     private var session: ARSession? = null
 
-    /** 在 Default 调度器检测，UNKNOWN_* 一律按 Unsupported */
-    @Suppress("DEPRECATION") // checkAvailability/ARAvailability 已过时，但仍是唯一能区分三态的 API
+    /** UNKNOWN_* 一律按 Unsupported */
+    @Suppress("DEPRECATION")
     suspend fun checkAvailability(): ArEngineState = withContext(Dispatchers.Default) {
         val result = if (AREnginesApk.isAREngineApkReady(context)) {
             ArEngineState.Available
@@ -56,7 +55,7 @@ class ArSessionManager(private val context: Context) {
         ContextCompat.checkSelfPermission(context, Manifest.permission.CAMERA) ==
             PackageManager.PERMISSION_GRANTED
 
-    /** 已存在会话时直接返回；配置为前置摄像头 + BlendShape */
+    /** 前置摄像头 + BlendShape，后者靠 FaceDetectMode 与 FACE_ENABLE_DEFAULT 按位或 */
     fun createArSession(): ARSession? {
         if (!hasCameraPermission()) {
             InAppLog.w(TAG, "camera permission not granted")

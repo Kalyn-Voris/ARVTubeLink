@@ -9,13 +9,11 @@ import androidx.compose.runtime.setValue
 import com.exarry.arvtubelink.ar.FaceRenderer
 import kotlinx.coroutines.delay
 
-/** 采样窗口 30 点，每秒一点 = 最近 30 秒 */
 internal const val TELEMETRY_WINDOW = 30
 
-/** 采样间隔 1000ms */
 private const val TELEMETRY_SAMPLE_MS = 1000L
 
-/** 发送频率环形缓冲：固定容量 FloatArray + 头指针，写入 O(1)，空槽填 NaN */
+/** 固定容量 FloatArray + 头指针，写入 O(1)，空槽填 NaN */
 internal class FpsWindow(private val capacity: Int = TELEMETRY_WINDOW) {
     private val data = FloatArray(capacity) { Float.NaN }
     private var head = 0
@@ -29,7 +27,6 @@ internal class FpsWindow(private val capacity: Int = TELEMETRY_WINDOW) {
 
     val validCount: Int get() = size
 
-    /** 按最旧 → 最新导出，未填满时只返回已有部分 */
     fun snapshot(): FloatArray {
         if (size == 0) return FloatArray(0)
         return FloatArray(size) { i ->
@@ -38,7 +35,6 @@ internal class FpsWindow(private val capacity: Int = TELEMETRY_WINDOW) {
         }
     }
 
-    /** 最近一个样本，无样本返回 null */
     fun latest(): Float? = if (size == 0) null else data[(head - 1 + capacity) % capacity]
 
     fun clear() {
@@ -48,7 +44,6 @@ internal class FpsWindow(private val capacity: Int = TELEMETRY_WINDOW) {
     }
 }
 
-/** 遥测采样与状态发布：一次循环内先采样再递增 version */
 @Composable
 internal fun rememberTelemetryState(
     renderer: FaceRenderer,
@@ -59,19 +54,17 @@ internal fun rememberTelemetryState(
 
     LaunchedEffect(tracking) {
         if (!tracking) return@LaunchedEffect
-        // 追踪重启：清空窗口与计数器，第一个点从 0 起计
         window.clear()
         renderer.readAndResetSentFrames()
         version++
         while (true) {
             delay(TELEMETRY_SAMPLE_MS)
             val frames = renderer.readAndResetSentFrames()
-            // 帧数 / 固定 1s 得实际 Hz，不记时间戳省分配
+            // 帧数 / 固定 1s 得 Hz，不记时间戳省分配
             window.push(frames.toFloat() / (TELEMETRY_SAMPLE_MS / 1000f))
             version++
         }
     }
-    // key 含 tracking：切 Tab/重进组合也能拿到最新快照
     return remember(version, tracking) {
         TelemetryState(
             samples = window.snapshot(),
@@ -81,7 +74,7 @@ internal fun rememberTelemetryState(
     }
 }
 
-/** 图表数据快照，FloatArray 按内容比较 equals/hashCode */
+/** FloatArray 按内容比较 equals/hashCode */
 data class TelemetryState(
     val samples: FloatArray,
     val latest: Float?,

@@ -18,7 +18,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
 
-/** 底部半透明面板叠在 GlSurfaceHost 的 GL 网格之上；facePresent 为 null 表示首帧回调尚未到达 */
+/** facePresent = null 表示首帧回调尚未到达 */
 @Composable
 fun CalibrationOverlay(
     visible: Boolean,

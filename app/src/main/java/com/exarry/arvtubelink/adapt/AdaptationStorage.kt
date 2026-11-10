@@ -13,7 +13,6 @@ data class StoredAdaptation(
     val overrides: MapperOverrides
 )
 
-/** adaptation_prefs 存 schema_version / model_id / model_name / overrides_json 四键 */
 class AdaptationStorage(context: Context) {
 
     private val gson = Gson()
@@ -31,7 +30,7 @@ class AdaptationStorage(context: Context) {
             if (!ok) InAppLog.w(TAG, "自适应覆盖写入 SharedPreferences 失败（本次会话仍生效，仅不持久化）")
         }
 
-    /** 同步读盘，调用方放 IO 协程；版本不符或 JSON 损坏即清空 prefs */
+    /** 同步读盘，须在 IO 协程调用 */
     fun load(): StoredAdaptation? {
         val modelId = prefs.getString(KEY_MODEL_ID, null)
         val json = prefs.getString(KEY_OVERRIDES_JSON, null)
@@ -68,7 +67,7 @@ class AdaptationStorage(context: Context) {
         private const val KEY_MODEL_NAME = "model_name"
         private const val KEY_OVERRIDES_JSON = "overrides_json"
 
-        /** 字段语义变更时 bump，用 != 判定（含未来版本） */
+        /** 字段语义变更时 bump */
         const val SCHEMA_VERSION = 2
     }
 }

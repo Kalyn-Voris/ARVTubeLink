@@ -69,24 +69,22 @@ import com.exarry.arvtubelink.ui.theme.LocalThemeIsDark
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Tab 索引；tabIndex 由 MainActivity 持有，切换经 onSelectTab 上收 */
+// Tab 索引，tabIndex 由 MainActivity 持有，切换经 onSelectTab 上收
 internal const val TAB_HOME = 0
 internal const val TAB_SETTINGS = 1
-
-/** Live2D 页（Purism Core 原生渲染 + 面捕参数驱动，内容见 [Live2DContent]）。 */
 internal const val TAB_LIVE2D = 2
 internal const val TAB_LOG = 3
 
 private const val DISCOVERY_STATUS_CLEAR_MS = 4_000L
 
-/** Compose 根：GL 宿主常驻 Box 根层之外无 if/when，切 Tab 不销毁 GLSurfaceView（EGL context 不丢） */
+// Compose 根：GL 宿主常驻 Box 根层，切 Tab 不销毁 GLSurfaceView，EGL context 不丢
 @Suppress("DEPRECATION") // statusBarColor/navigationBarColor API 35 起 deprecated，minSdk 26 无替代 API
 @Composable
 fun AppRoot(
     arStatus: State<String>,
     vtsStatus: State<String>,
     vtsState: State<VtsState>,
-    /** VtsState 无 Error 子类型，错误串单独标记 */
+    // VtsState 无 Error 子类型，错误串单独标记
     vtsError: State<Boolean>,
     arReady: State<Boolean>,
     tracking: State<Boolean>,
@@ -97,9 +95,7 @@ fun AppRoot(
     burnInMask: State<Boolean>,
     onBurnInMaskDismiss: () -> Unit,
     tabIndex: State<Int>,
-    /** Live2D 沉浸模式：false = 顶栏/底栏收起、系统栏隐藏，只留模型画布 */
     live2dUiVisible: State<Boolean>,
-    /** 用户在 Live2D 画布上的触摸：唤醒沉浸 UI 并重启空闲计时 */
     onLive2dUserActivity: () -> Unit,
     themeFollowSystem: State<Boolean>,
     amoledBlack: State<Boolean>,
@@ -113,9 +109,8 @@ fun AppRoot(
     onStartTracking: () -> Unit,
     onStopTracking: () -> Unit,
     onConnectVts: (ip: String, portText: String) -> Unit,
-    /** 自动发现命中且 API 开启时先于 onConnectVts 调用 */
     onAutoConnectStarted: () -> Unit,
-    /** 自动发现客户端，只持 applicationContext */
+    // 自动发现客户端，只持 applicationContext
     discoveryClient: VtsDiscoveryClient,
     onClearToken: () -> Unit,
     onSelectTab: (Int) -> Unit,
@@ -127,11 +122,8 @@ fun AppRoot(
     onConfirmCalibration: () -> Unit,
     onDismissCalibration: () -> Unit,
     showCalibrationGuide: State<Boolean>,
-    /** 零点校准完成标记，源于持久化校准数据 */
     calibrationDone: State<Boolean>,
-    /** 引导卡开始校准：未追踪时先自动开追踪 */
     onStartCalibrationFromHome: () -> Unit,
-    /** 引导卡稍后：落盘忽略标记 */
     onDismissCalibrationGuide: () -> Unit,
     onCalibrationReset: () -> Unit,
     agreementAccepted: State<Boolean>,
@@ -143,19 +135,13 @@ fun AppRoot(
     onDismissLicense: () -> Unit,
     onOpenPolyForm: () -> Unit,
     onDismissPolyForm: () -> Unit,
-    /** 自适应状态文本，null 不显示 */
     adaptationStatus: State<String?>? = null,
-    /** 探测值生效中，手动映射区禁用 */
     adaptationProbeActive: State<Boolean>,
     onAdaptationToggle: (Boolean) -> Unit,
-    /** 拖动中即时回传的成品 MapperOverrides */
     onManualOverridesChange: (MapperOverrides) -> Unit,
-    /** 语言切换：写 prefs + setApplicationLocales */
     onLanguageChange: (String) -> Unit,
-    /** 写 prefs + 取消/重启空闲计时器 */
     onBurnInMaskEnabledChange: (Boolean) -> Unit,
 ) {
-    // Tab 互切保留；Activity 重建以 defaultIp/defaultPort 重新初始化
     val ipState = remember { mutableStateOf(defaultIp) }
     val portState = remember { mutableStateOf(defaultPort.toString()) }
 
@@ -178,18 +164,16 @@ fun AppRoot(
     // 每秒取一次真实送达帧数进 30 点环形缓冲，采样器随组合生命周期
     val telemetry = rememberTelemetryState(renderer = renderer, tracking = tracking.value)
 
-    // 警示行仅覆盖等待授权/认证失败/重连/onError
     val vtsWarningVisible = vtsError.value || when (vtsState.value) {
         VtsState.WaitingForTokenApproval,
         VtsState.AuthenticationFailed,
         is VtsState.Reconnecting -> true
         else -> false
     }
-    // 故障态取 error 色；等待授权/重连为过程态
     val vtsWarningIsError = vtsError.value ||
         vtsState.value is VtsState.AuthenticationFailed
 
-    // 握手态含等待授权弹窗与重连，AuthenticationFailed 不算
+    // 握手态：等待授权弹窗与重连算在内，AuthenticationFailed 不算
     val vtsInFlight = when (vtsState.value) {
         VtsState.Connecting,
         VtsState.WaitingForTokenApproval,
@@ -232,7 +216,6 @@ fun AppRoot(
         }
     }
 
-    // Found/Failed 定时回 Idle；Searching 满 TCP_FALLBACK_DELAY_MS 转 Scanning，key 挂状态对象
     LaunchedEffect(discoveryState.value) {
         when (discoveryState.value) {
             is DiscoveryUiState.Found, is DiscoveryUiState.Failed -> {
@@ -254,15 +237,11 @@ fun AppRoot(
     val themeScreenshot = remember { mutableStateOf<ImageBitmap?>(null) }
     val themeSwitchSignal = remember { mutableStateOf(0) }
 
-    // OFF 强制深色；isDark 在顶层求值，切换即整树重组
     val isDark = if (themeFollowSystem.value) isSystemInDarkTheme() else true
 
-    // amoledBlack 仅深色下生效（Theme 内部判定）
     ARVTubeLinkTheme(darkTheme = isDark, amoledBlack = amoledBlack.value) {
-        // Surface 提供底色兜底
         Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
             CompositionLocalProvider(LocalThemeIsDark provides isDark) {
-                // statusBar 取 surfaceContainerHigh、navBar 取 surfaceContainer
                 val view = LocalView.current
                 val statusBarArgb = MaterialTheme.colorScheme.surfaceContainerHigh.toArgb()
                 val navBarArgb = MaterialTheme.colorScheme.surfaceContainer.toArgb()
@@ -279,7 +258,7 @@ fun AppRoot(
 
                 // 遮罩期隐藏系统栏：API≤34 非 EtE 窗口靠 hide 扩展进栏区；下拉时 transient overlay 不触发 relayout
                 val burnInMaskVisible = burnInMask.value
-                // Live2D 沉浸：顶栏/底栏收起的同时系统栏一并隐藏，触摸唤醒后恢复
+                // 沉浸时顶栏/底栏收起，系统栏一并隐藏，触摸唤醒后恢复
                 val live2dImmersive = tabIndex.value == TAB_LIVE2D && !live2dUiVisible.value
                 LaunchedEffect(burnInMaskVisible, live2dImmersive) {
                     view.context.findWindow()?.let { window ->
@@ -302,7 +281,6 @@ fun AppRoot(
                     fullscreen = surfaceFullscreen.value,
                     tracking = tracking,
                     onCreated = onGlSurfaceCreated,
-                    // zIndex(-1f) 把 interop View 压到 Compose 内容之下
                     modifier = Modifier
                         .zIndex(-1f)
                         .then(
@@ -311,7 +289,6 @@ fun AppRoot(
                         ),
                 )
 
-                // 校准期间 Scaffold 整体让位，GL 在外不受影响
                 ThemeTransition(
                     isDark = isDark,
                     screenshot = themeScreenshot.value,
@@ -324,7 +301,6 @@ fun AppRoot(
                     },
                 ) { _ ->
                     if (!calibrationActive.value) {
-                        // Live2D 沉浸：顶栏/底栏平滑收起（innerPadding 随之归零，画面自动铺满）
                         val chromeVisible =
                             tabIndex.value != TAB_LIVE2D || live2dUiVisible.value
                         Scaffold(
@@ -407,7 +383,6 @@ fun AppRoot(
                                                 null
                                             }
                                             if (shot != null) {
-                                                // 覆盖旧值前 recycle：旧图最后一次 draw 已在上一帧完成
                                                 themeScreenshot.value?.asAndroidBitmap()?.let { old ->
                                                     if (!old.isRecycled) old.recycle()
                                                 }
@@ -426,13 +401,10 @@ fun AppRoot(
                                     )
                                     TAB_LIVE2D -> Live2DContent(
                                         modifier = Modifier.fillMaxSize(),
-                                        // 面捕参数源：只读快照，映射算法仍全在 FaceRenderer 内
                                         faceRenderer = renderer,
                                         // 点击/拖动画布：宿主唤醒沉浸 UI 并重启 2s 计时
                                         onUserActivity = onLive2dUserActivity,
-                                        // 沉浸模式下页内控件一并淡出
                                         chromeVisible = live2dUiVisible.value,
-                                        // 画布恒铺满，只有悬浮控件让开 App 栏
                                         chromePadding = innerPadding,
                                     )
                                     TAB_LOG -> LogContent()
@@ -442,7 +414,6 @@ fun AppRoot(
                     }
                 }
 
-                // 校准视图压在 GL 表面之上
                 CalibrationOverlay(
                     visible = calibrationActive.value,
                     facePresent = calibFacePresent.value,
@@ -466,7 +437,6 @@ fun AppRoot(
                     PolyFormDialog(onDismiss = onDismissPolyForm)
                 }
 
-                // Box 最后子项 = 视觉最上层；置 ThemeTransition 之外避免被截进主题帧
                 BurnInMask(visible = burnInMask.value, onDismiss = onBurnInMaskDismiss)
                 }
             }
@@ -474,7 +444,6 @@ fun AppRoot(
     }
 }
 
-/** 顶栏：标题随 Tab 切换；首页 info 图标跳设置并滚到关于卡，设置页回首页 */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ArvTopBar(
@@ -510,7 +479,6 @@ private fun ArvTopBar(
                         contentDescription = stringResource(R.string.tab_home),
                     )
                 }
-                // 日志页无右上角图标
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(
@@ -522,7 +490,6 @@ private fun ArvTopBar(
     )
 }
 
-/** 底部导航：contentDescription=null，label 承担无障碍语义 */
 @Composable
 private fun ArvBottomBar(
     selected: Int,
@@ -541,7 +508,6 @@ private fun ArvBottomBar(
             icon = { Icon(imageVector = Icons.Filled.Settings, contentDescription = null) },
             label = { Text(stringResource(R.string.tab_settings)) },
         )
-        // Live2D 页图标用 Face，不额外引入图标依赖
         NavigationBarItem(
             selected = selected == TAB_LIVE2D,
             onClick = { onSelect(TAB_LIVE2D) },
@@ -557,7 +523,7 @@ private fun ArvBottomBar(
     }
 }
 
-/** GLSurfaceView 宿主：setRenderer 只在 factory，update/onRelease 空实现，onResume 仅追踪中调用 */
+// GLSurfaceView 宿主：setRenderer 只在 factory，update/onRelease 空实现，onResume 仅追踪中调用
 @Composable
 private fun GlSurfaceHost(
     renderer: FaceRenderer,
@@ -588,12 +554,10 @@ private fun GlSurfaceHost(
         DisposableEffect(lifecycleOwner, surfaceView) {
             val observer = object : DefaultLifecycleObserver {
                 override fun onResume(owner: LifecycleOwner) {
-                    // 仅追踪中恢复渲染循环
                     if (tracking.value) surfaceView.onResume()
                 }
 
                 override fun onPause(owner: LifecycleOwner) {
-                    // 无条件暂停
                     surfaceView.onPause()
                 }
             }
@@ -603,7 +567,6 @@ private fun GlSurfaceHost(
     }
 }
 
-/** 沿 ContextWrapper 链找宿主 Activity 的 Window */
 private tailrec fun Context.findWindow(): Window? = when (this) {
     is Activity -> window
     is ContextWrapper -> baseContext.findWindow()

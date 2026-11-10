@@ -48,22 +48,17 @@ import androidx.compose.ui.unit.sp
 import com.exarry.arvtubelink.R
 import com.exarry.arvtubelink.ui.theme.accentColor
 
-/** 雷达直径 88dp */
 private val RadarSize = 88.dp
 
-/** 雷达带圆角 14dp */
 private val RadarBandCorner = 14.dp
 
-/** Searching 态扫描一圈 2000ms，与 UDP 每 2 秒一包同节奏 */
+/** Searching 一圈 2000ms，与 UDP 每 2 秒一包同节奏 */
 private const val SWEEP_PERIOD_SEARCHING_MS = 2000
 
-/** Scanning 态扫描一圈 3600ms，为 Searching 的 1.8 倍 */
 private const val SWEEP_PERIOD_SCANNING_MS = 3600
 
-/** 脉冲波纹周期 1800ms */
 private const val PULSE_PERIOD_MS = 1800
 
-/** 一键发现雷达带：Searching 实线环 2000ms/圈，Scanning 虚线环 3600ms/圈 */
 @Composable
 fun DiscoveryRadarBand(
     state: DiscoveryUiState,
@@ -122,14 +117,13 @@ fun DiscoveryRadarBand(
     }
 }
 
-/** 雷达本体：单个 rememberInfiniteTransition 主时钟驱动扫描角与脉冲相位 */
 @Composable
 private fun DiscoveryRadar(
     scanning: Boolean,
     accent: Color,
     modifier: Modifier = Modifier,
 ) {
-    // 转周期用 animateIntAsState 过渡：直切 infiniteRepeatable 的 spec 会重启动画跳帧
+    // 直切 infiniteRepeatable 的 spec 会重启动画跳帧，周期先经动画过渡
     val periodMs by animateIntAsState(
         targetValue = if (scanning) SWEEP_PERIOD_SCANNING_MS else SWEEP_PERIOD_SEARCHING_MS,
         animationSpec = tween(600),
@@ -188,7 +182,7 @@ private fun DiscoveryRadar(
                     strokeWidth = 1.dp.toPx(),
                 )
 
-                // rotate 包住绘制：sweepBrush 随坐标系旋转而不重建
+                // rotate 包住绘制，sweepBrush 随坐标系旋转而不重建
                 rotate(sweepAngle, center) {
                     drawCircle(brush = sweepBrush, radius = radius, center = center)
                     drawLine(
@@ -200,7 +194,6 @@ private fun DiscoveryRadar(
                     )
                 }
 
-                // 脉冲：3 圈（scanning 时 2 圈）以 1/3 相位差向外扩散
                 val ringCount = if (scanning) 2 else 3
                 repeat(ringCount) { i ->
                     val p = (pulse + i / 3f) % 1f
@@ -227,7 +220,7 @@ private fun DiscoveryRadar(
     )
 }
 
-/** 不确定进度条 2dp：光条占轨道宽 36%，1400ms 从左外滑到右外 */
+/** 光条占轨道宽 36%，1400ms 从左外滑到右外 */
 @Composable
 private fun IndeterminateBar(color: Color) {
     val transition = rememberInfiniteTransition(label = "bar")
@@ -266,7 +259,6 @@ private fun IndeterminateBar(color: Color) {
     )
 }
 
-/** 发现状态提示行：左侧 6dp 状态色点 + 文字 */
 @Composable
 internal fun DiscoveryStatusText(text: String, isFailure: Boolean = false) {
     val dotColor = if (isFailure) MaterialTheme.colorScheme.error else accentColor()

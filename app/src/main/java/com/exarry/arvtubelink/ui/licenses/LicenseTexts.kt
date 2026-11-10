@@ -1,9 +1,8 @@
 package com.exarry.arvtubelink.ui.licenses
 
-/** release 构建剔除了 META-INF 下的 LICENSE.txt，全文以常量内嵌；多库共用同一 String 实例 */
+/** release 构建剔除了 META-INF 下的 LICENSE.txt，全文以常量内嵌 */
 object LicenseTexts {
 
-    /** Apache-2.0 全文，供 OkHttp / Okio / Gson / Coroutines / Compose 复用 */
     const val APACHE_2_0: String = """
                                  Apache License
                            Version 2.0, January 2004
@@ -208,7 +207,6 @@ object LicenseTexts {
    limitations under the License.
 """
 
-    /** 华为 AR Engine 为专有 SDK，此处只放性质说明，不复制商业协议原文 */
     const val HUAWEI_PROPRIETARY: String = """
                         HUAWEI AR Engine SDK
 
@@ -250,7 +248,6 @@ object LicenseTexts {
     affiliated with, endorsed by, or sponsored by Huawei Technologies Co., Ltd.
 """
 
-    /** 仅经公开 WebSocket API 互操作，不链接也不分发 VTube Studio 代码 */
     const val VTUBE_STUDIO_INTEROP: String = """
                             VTube Studio
 
@@ -268,7 +265,6 @@ object LicenseTexts {
         https://denchisoft.com/
 """
 
-    /** Sakura2D Purism Core：MIT；上游声明其与 Live2D Cubism Core 无代码关系 */
     const val MIT_PURISM_CORE: String = """
     MIT License
 
@@ -304,7 +300,6 @@ object LicenseTexts {
     references thereto are purely nominative.
 """
 
-    /** stb_image：双许可（Public Domain / MIT），上游自行提供二选一 */
     const val STB_IMAGE: String = """
     stb_image - v2.30 - public domain image loader - http://nothings.org/stb
 

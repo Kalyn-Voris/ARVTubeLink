@@ -40,19 +40,16 @@ import androidx.compose.ui.unit.dp
 import com.exarry.arvtubelink.R
 import kotlinx.coroutines.delay
 
-// HomeScreen / SettingsCard 的同名常量是 private，跨文件不可见，故此处保留副本
 private val CardCornerRadius = 12.dp
 private val CardPadding = 16.dp
 private val CardContentSpacing = 12.dp
 private val PrimaryActionHeight = 48.dp
 
-/** 必须显著大于网络抖动周期，否则一收一放仍可见 */
+/** 须显著大于网络抖动周期；收起侧去抖窗口同长 */
 private const val ONBOARDING_ANIM_MS = 300
 
-/** 收起侧去抖窗口，约等于动画时长 */
 private const val ONBOARDING_EXIT_DEBOUNCE_MS = 300L
 
-/** 当前步是第一个未完成项，之前的按顺序算完成 */
 enum class OnboardingStep {
     AR_ENGINE,
 
@@ -60,11 +57,10 @@ enum class OnboardingStep {
 
     VTS,
 
-    /** 三步就绪，引导卡收起 */
     DONE,
 }
 
-/** 由三个完成标记推导当前步骤；vtsInFlight 为 true 时钉在 VTS，避免瞬时抖动推到 DONE */
+/** vtsInFlight 为 true 时钉在 VTS */
 fun currentOnboardingStep(
     arReady: Boolean,
     calibrated: Boolean,
@@ -73,13 +69,11 @@ fun currentOnboardingStep(
 ): OnboardingStep = when {
     !arReady -> OnboardingStep.AR_ENGINE
     !calibrated -> OnboardingStep.CALIBRATION
-    // 握手期不允许 vtsConnected 瞬时抖动把卡片推到 DONE
     vtsInFlight -> OnboardingStep.VTS
     !vtsConnected -> OnboardingStep.VTS
     else -> OnboardingStep.DONE
 }
 
-/** 单步展示的引导卡，三步全完成后整卡收起 */
 @Composable
 fun OnboardingStepCard(
     step: OnboardingStep,
@@ -88,7 +82,7 @@ fun OnboardingStepCard(
     onAutoDiscover: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
-    // 去抖只作用于收起：持续 DONE 超过窗口才收起，展开永远即时
+    // 去抖只作用于收起，展开永远即时
     var visible by remember { mutableStateOf(step != OnboardingStep.DONE) }
     LaunchedEffect(step) {
         if (step == OnboardingStep.DONE) {
@@ -102,7 +96,7 @@ fun OnboardingStepCard(
 
     AnimatedVisibility(
         visible = visible,
-        // 300ms + FastOutSlowInEasing，比默认 200ms 慢一档，抹平 1~2 帧的状态翻转
+        // 300ms + FastOutSlowInEasing，比默认 200ms 慢一档
         enter = expandVertically(animationSpec = tween(ONBOARDING_ANIM_MS)) +
             fadeIn(animationSpec = tween(ONBOARDING_ANIM_MS)),
         exit = shrinkVertically(animationSpec = tween(ONBOARDING_ANIM_MS)) +
@@ -225,7 +219,7 @@ private data class OnboardingAction(
     val onAction: () -> Unit,
 )
 
-/** 等待授权高亮卡，不受 tracking/vtsConnected 门控 */
+/** 不受 tracking/vtsConnected 门控 */
 @Composable
 fun VtsApprovalCard(modifier: Modifier = Modifier) {
     Surface(
