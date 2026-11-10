@@ -10,9 +10,12 @@ The same list is shown in-app under **设置 → 关于 → 使用项目**.
 - **Version**: 1.1.0 (`PSM_TRUE_VERSION` 0x01010000), bundled as `app/src/main/cpp/PurismCoreBundle.h`
 - **License**: MIT License
 - **Copyright**: © 2025, 2026 Sakura Motion Project — <https://sakura2d.org/>
-- **Purpose**: Native rendering core for Live2D models. An independent,
-  clean-room reimplementation of the Live2D Cubism Core API in plain C99.
-  It contains no code from Live2D Inc.
+- **Purpose**: Native rendering core for Live2D models. Upstream declares it to
+  be a clean-room reimplementation of the Live2D Cubism Core API in plain C99,
+  and further states that it contains no code from Live2D Inc. ARVTubeLink
+  bundles the component unmodified and makes no independent claim of its own
+  about its provenance; the licence text is reproduced verbatim in
+  `app/src/main/cpp/LICENSE-PURISM-CORE`.
 
 ```
 MIT License

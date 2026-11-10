@@ -176,6 +176,8 @@ fun Live2DContent(
     // 当前观测中的导入任务 id。跨重组保持，避免每次重组重复接流。
     var importWorkId by remember { mutableStateOf<UUID?>(null) }
     var pendingDelete by remember { mutableStateOf<Live2DModelStore.Model?>(null) }
+    // 已选中但尚未确认免责声明的 zip：确认后才入队 WorkManager（null = 无待确认导入）。
+    var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var importMessage by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
 
@@ -788,10 +790,10 @@ fun Live2DContent(
     // GetContent 走 SAF，不需要任何存储权限。但它的读授权只在当前 Activity 存活期内有效，
     // 而 Worker 可能在那之后才执行——所以 enqueue 会先把内容暂存到 cacheDir，
     // Worker 读暂存文件，与 Uri 授权生命周期解耦（详见 Live2DImportScheduler 注释）。
-    val zipPicker = rememberLauncherForActivityResult(
-        contract = ActivityResultContracts.GetContent(),
-    ) { uri: Uri? ->
-        if (uri == null) return@rememberLauncherForActivityResult
+    // 选到文件后先挂起，等用户在免责声明里点「同意并导入」再入队。
+    // 把已确认的 Uri 交给 WorkManager。抽成局部函数：确认按钮与「待确认」状态
+    // 的一生只走这一条路径，避免两处各写一份入队逻辑。
+    val enqueueImport: (Uri) -> Unit = { uri ->
         importInProgress = true
         importMessage = context.getString(R.string.live2d_import_background_hint)
         scope.launch {
@@ -808,6 +810,15 @@ fun Live2DContent(
             importWorkId = workId
             InAppLog.i(TAG, "导入已入队 WorkManager: $workId")
         }
+    }
+
+    val zipPicker = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.GetContent(),
+    ) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        // 只记录选择结果；免责确认由下面的 AlertDialog 负责，同意后才真正入队。
+        // 模型管理弹窗保持打开：确认后进度提示仍显示在它里面。
+        pendingImportUri = uri
     }
 
     if (modelDialogVisible) {
@@ -864,6 +875,35 @@ fun Live2DContent(
             },
             dismissButton = {
                 TextButton(onClick = { pendingDelete = null }) {
+                    Text("取消")
+                }
+            },
+        )
+    }
+
+    // 导入免责确认：选中 zip 之后、解压入队之前的一道闸。
+    // 为什么必须挡在这里：模型资产由用户从外部带入，应用无法核实其版权归属；
+    // 这条确认是「用户自认有授权」的显式记录点（agree 才把 Uri 交给 WorkManager）。
+    pendingImportUri?.let { uri ->
+        AlertDialog(
+            onDismissRequest = { pendingImportUri = null },
+            title = { Text("导入前确认") },
+            text = {
+                Text(
+                    "导入即表示您确认拥有该模型的合法使用授权。" +
+                        "本应用仅提供本地渲染，不承担因导入侵权资产导致的任何法律责任。"
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = {
+                    pendingImportUri = null
+                    enqueueImport(uri)
+                }) {
+                    Text("同意并导入")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { pendingImportUri = null }) {
                     Text("取消")
                 }
             },

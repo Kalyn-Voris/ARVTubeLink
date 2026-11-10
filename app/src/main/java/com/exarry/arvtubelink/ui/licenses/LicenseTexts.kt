@@ -263,7 +263,7 @@ object LicenseTexts {
         https://denchisoft.com/
 """
 
-    /** Sakura2D Purism Core：MIT，与 Live2D Cubism Core 无代码关系 */
+    /** Sakura2D Purism Core：MIT；上游声明其与 Live2D Cubism Core 无代码关系 */
     const val MIT_PURISM_CORE: String = """
     MIT License
 
@@ -288,9 +288,11 @@ object LicenseTexts {
     OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
     SOFTWARE.
 
-    Purism Core is an independent, clean-room reimplementation of the Live2D
-    Cubism Core API. It contains no code from Live2D Inc. and does not require
-    an SDK release license from Live2D Inc.
+    Upstream declares Purism Core to be a clean-room reimplementation of the
+    Live2D Cubism Core API, and states that it contains no code from Live2D Inc.
+    and does not require an SDK release license from Live2D Inc. ARVTubeLink
+    bundles the component unmodified and makes no independent claim of its own
+    about its provenance.
 
     "Sakura Motion", "Sakura2D" and "Purism Core" are trademarks of Sakura
     Motion Project. "Live2D" and "Cubism" are trademarks of Live2D Inc.; all
