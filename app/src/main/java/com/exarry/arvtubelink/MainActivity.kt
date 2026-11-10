@@ -54,6 +54,7 @@ import com.exarry.arvtubelink.ui.KEY_VTS_IP
 import com.exarry.arvtubelink.ui.KEY_VTS_PORT
 import com.exarry.arvtubelink.ui.SettingsDeps
 import com.exarry.arvtubelink.ui.TAB_HOME
+import com.exarry.arvtubelink.ui.TAB_LIVE2D
 import com.exarry.arvtubelink.ui.TAB_SETTINGS
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -191,12 +192,16 @@ class MainActivity : AppCompatActivity() {
     private val showPolyFormState = mutableStateOf(false)
 
     private val dimHandler = Handler(Looper.getMainLooper())
-    private val dimRunnable = Runnable { burnInMaskState.value = true }
+    // 空闲到点：普通页面落防烧屏黑屏；Live2D 页改走沉浸模式（绝不全黑）
+    private val dimRunnable = Runnable { onIdleTimeout() }
 
     @Volatile
     private var burnInMaskEnabled = true
 
     private val burnInMaskState = mutableStateOf(false)
+
+    // Live2D 页沉浸模式：false = App 顶栏/底栏与系统栏收起，只留模型
+    private val live2dUiVisibleState = mutableStateOf(true)
 
     private var adaptationRunning = false
 
@@ -292,6 +297,8 @@ class MainActivity : AppCompatActivity() {
                 burnInMask = burnInMaskState,
                 onBurnInMaskDismiss = { burnInMaskState.value = false },
                 tabIndex = tabIndexState,
+                live2dUiVisible = live2dUiVisibleState,
+                onLive2dUserActivity = { wakeLive2dUi() },
                 themeFollowSystem = themeFollowSystemState,
                 amoledBlack = amoledBlackState,
                 aboutScrollSignal = aboutScrollSignalState,
@@ -310,9 +317,9 @@ class MainActivity : AppCompatActivity() {
                     vtsClient.clearSavedToken()
                     Toast.makeText(this, R.string.toast_token_cleared, Toast.LENGTH_SHORT).show()
                 },
-                onSelectTab = { tabIndexState.value = it },
+                onSelectTab = { selectTab(it) },
                 onOpenAbout = {
-                    tabIndexState.value = TAB_SETTINGS
+                    selectTab(TAB_SETTINGS)
                     aboutScrollSignalState.value++
                 },
                 onAboutScrollConsumed = { aboutScrollSignalState.value = 0 },
@@ -684,14 +691,31 @@ class MainActivity : AppCompatActivity() {
 
     // 仅 ACTION_DOWN 调用；遮罩移除由 BurnInMask 的 UP tap 回调上收
     override fun onUserInteraction() {
+        if (calibrationActiveState.value || adaptationRunning) return
+        // Live2D 页：任何触摸（点击/拖动模型）都先唤醒 UI，再重启 2s 计时
+        if (tabIndexState.value == TAB_LIVE2D) {
+            wakeLive2dUi()
+            return
+        }
         if (trackingState.value) {
-            if (calibrationActiveState.value || adaptationRunning) return
             scheduleIdleDim()
         }
     }
 
+    /** 唤醒 Live2D 沉浸模式：UI 淡入 + 系统栏恢复（由 AppRoot 的 effect 驱动） */
+    private fun wakeLive2dUi() {
+        live2dUiVisibleState.value = true
+        scheduleIdleDim()
+    }
+
     private fun scheduleIdleDim() {
         dimHandler.removeCallbacks(dimRunnable)
+        // Live2D 页的空闲不是防烧屏：到点只收 UI，与防烧屏开关无关
+        if (tabIndexState.value == TAB_LIVE2D) {
+            burnInMaskState.value = false
+            dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
+            return
+        }
         if (!burnInMaskEnabled) {
             burnInMaskState.value = false
             return
@@ -699,9 +723,45 @@ class MainActivity : AppCompatActivity() {
         dimHandler.postDelayed(dimRunnable, IDLE_DIM_DELAY_MS)
     }
 
+    /** 空闲到点：Live2D 页进沉浸模式，其余页面落防烧屏黑屏遮罩 */
+    private fun onIdleTimeout() {
+        if (tabIndexState.value == TAB_LIVE2D) {
+            InAppLog.i(TAG, "空闲 2s → Live2D 沉浸模式")
+            live2dUiVisibleState.value = false
+            return
+        }
+        live2dUiVisibleState.value = true
+        burnInMaskState.value = true
+    }
+
+    /** Tab 切换统一入口：负责 Live2D 沉浸态的进入与退出收尾 */
+    private fun selectTab(tab: Int) {
+        val previous = tabIndexState.value
+        if (previous == tab) return
+        tabIndexState.value = tab
+        if (tab == TAB_LIVE2D) {
+            // 进页先亮 UI，2s 后自动进沉浸；若刚从黑屏遮罩过来须先撤掉
+            live2dUiVisibleState.value = true
+            cancelIdleDim()
+            scheduleIdleDim()
+        } else if (previous == TAB_LIVE2D) {
+            // 离开 Live2D：退出沉浸并恢复默认防烧屏规则（系统栏由 AppRoot 复原）
+            live2dUiVisibleState.value = true
+            cancelIdleDim()
+            if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
+                scheduleIdleDim()
+            }
+        }
+    }
+
     private fun setBurnInMaskEnabled(enabled: Boolean) {
         burnInMaskEnabled = enabled
         appPrefs.edit().putBoolean(KEY_BURN_IN_MASK_ENABLED, enabled).apply()
+        if (tabIndexState.value == TAB_LIVE2D) {
+            burnInMaskState.value = false
+            scheduleIdleDim()
+            return
+        }
         if (!enabled) {
             cancelIdleDim()
         } else if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
@@ -746,7 +806,12 @@ class MainActivity : AppCompatActivity() {
             Toast.makeText(this, R.string.toast_resume_session_failed, Toast.LENGTH_SHORT).show()
         }
         super.onResume()
-        if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
+        // 回前台先亮 UI，避免带着沉浸态（系统栏隐藏）直接回来
+        if (tabIndexState.value == TAB_LIVE2D) {
+            live2dUiVisibleState.value = true
+            cancelIdleDim()
+            scheduleIdleDim()
+        } else if (trackingState.value && !calibrationActiveState.value && !adaptationRunning) {
             scheduleIdleDim()
         }
     }

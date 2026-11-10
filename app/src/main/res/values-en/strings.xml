@@ -113,14 +113,14 @@
     <string name="oss_label_license">License</string>
     <string name="oss_open_link">Open in browser</string>
 
-    <string name="oss_lib_androidx">The UI foundation: AppCompat, Activity, Lifecycle and Compose UI / Material 3 build every screen in this app.</string>
+    <string name="oss_lib_androidx">The UI foundation.</string>
     <string name="oss_lib_gson">Serializes and parses the JSON messages exchanged with VTube Studio over WebSocket.</string>
     <string name="oss_lib_arengine">Provides facial expression and head pose tracking. A proprietary SDK by Huawei — not open source.</string>
-    <string name="oss_lib_kotlin">The Kotlin runtime and coroutine scheduler: reconnect backoff, the parameter probing pipeline, and the UI-side suspend functions.</string>
+    <string name="oss_lib_kotlin">The Kotlin runtime and coroutine scheduler.</string>
     <string name="oss_lib_okhttp">The WebSocket client used to talk to VTube Studio, plus its low-level I/O (Okio, bundled as an implementation dependency); it also handles reconnects and heartbeats.</string>
     <string name="oss_lib_vtubestudio">Interoperated with through its public WebSocket API; no code from it is bundled.</string>
-    <string name="oss_lib_workmanager">Background scheduling for model import: when you switch away or lock the screen, extraction continues on the system scheduler instead of dying with the UI.</string>
-    <string name="oss_lib_purism">The native rendering core for Live2D models. Sakura2D\'s independent reimplementation of the Cubism Core interface (plain C99, no Live2D code), handling .moc3 parsing and parameter evaluation.</string>
+    <string name="oss_lib_workmanager">Background scheduling for model import.</string>
+    <string name="oss_lib_purism">The rendering core for Live2D models, handling .moc3 parsing and parameter evaluation.</string>
     <string name="oss_lib_stb_image">The PNG/JPEG decoder in the native rendering pipeline — a single-header implementation used to load model textures.</string>
 
     <string name="settings_card_language">Language</string>

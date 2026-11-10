@@ -1,15 +1,23 @@
 package com.exarry.arvtubelink.ui
 
+import android.content.Context
 import android.net.Uri
 import android.opengl.GLSurfaceView
+import android.view.SurfaceHolder
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -48,6 +56,7 @@ import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -136,11 +145,18 @@ import java.util.UUID
  *
  * @param modifier 布局修饰符（由 AppRoot 传入，占满内容区）
  * @param faceRenderer 面捕渲染器（参数源）；null = 只渲染静态姿态
+ * @param onUserActivity 用户在画布上的任意触摸（点击/拖动）：宿主据此唤醒沉浸 UI 并重启空闲计时
+ * @param chromeVisible 页内控件（FPS / 状态 / 动作表情条 / 侧边按钮）是否可见；沉浸模式下收起
+ * @param chromePadding 页内控件的安全区内边距（App 顶/底栏占位）。画布本身恒定铺满，
+ *   只有悬浮控件让位——否则进出沉浸时 GLSurfaceView 会跟着改尺寸、模型整体缩放。
  */
 @Composable
 fun Live2DContent(
     modifier: Modifier = Modifier,
     faceRenderer: FaceRenderer? = null,
+    onUserActivity: () -> Unit = {},
+    chromeVisible: Boolean = true,
+    chromePadding: PaddingValues = PaddingValues(),
 ) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -318,6 +334,28 @@ fun Live2DContent(
 
         // 参数下标只解析一次：模型里不存在的名字会被标成 -1 并在推流时跳过
         renderer.bindParameters(Live2DParamMap.TARGETS)
+        // 调试开关：合成面捕（无摄像头时复现物理抽风）。默认关闭，仅由 prefs 打开，
+        // 发布路径不受影响；写 prefs 后重新进入本页（或换模型）即生效。
+        renderer.setSyntheticFace(
+            context.getSharedPreferences(PREFS_DEBUG, Context.MODE_PRIVATE)
+                .getBoolean(KEY_SYNTHETIC_FACE, false)
+        )
+        // 调试开关：A/B 兜底互斥（缺 pose3 的模型只保留一套手臂）。默认开启，
+        // 仅在 prefs 里显式写 false 时关闭，用于真机开/关 A/B 对比。
+        renderer.setPoseFallback(
+            context.getSharedPreferences(PREFS_DEBUG, Context.MODE_PRIVATE)
+                .getBoolean(KEY_POSE_FALLBACK, true)
+        )
+        // 调试开关：物理逐帧曲线追踪（与CubismPhysics 参考实现对照）
+        renderer.setPhysicsTrace(
+            context.getSharedPreferences(PREFS_DEBUG, Context.MODE_PRIVATE)
+                .getBoolean(KEY_PHYSICS_TRACE, false)
+        )
+        // 调试开关：物理参考模式（旁路 P8 抑制项，与标准语义对齐）
+        renderer.setPhysicsReferenceMode(
+            context.getSharedPreferences(PREFS_DEBUG, Context.MODE_PRIVATE)
+                .getBoolean(KEY_PHYSICS_REFMODE, false)
+        )
         surfaceViewRef[0]?.requestRender()
 
         // ---- P4：读取动作与表情清单 ----
@@ -335,7 +373,7 @@ fun Live2DContent(
             status = "Purism Core 就绪（无面捕源）"
             return@LaunchedEffect
         }
-        status = "Purism Core 就绪 · 面捕驱动中"
+        status = "Purism Core 就绪"
         val indices = renderer.parameterIndexMap()
         // 只保留模型真正拥有的参数：-1 的项直接不进数组，C++ 侧无需逐帧丢
         val bound = Live2DParamMap.TARGETS.mapNotNull { name ->
@@ -390,9 +428,70 @@ fun Live2DContent(
         }
     }
 
-    // 组合离开：释放 native 资源（GL 线程由 GLSurfaceView 保证）
+    // ---- P14：动态分辨率（LOD）----
+    //
+    // 用户建议的「全身低精度、放大高精度」：模型未放大时用 0.75× 的 EGL 缓冲，
+    // 放大（zoom > 1.15）时恢复全分辨率。
+    //
+    // 为什么用 SurfaceHolder.setFixedSize 而不是 FBO：
+    //  - setFixedSize 直接缩小 **EGL Surface 的像素缓冲**，片元着色与显存带宽
+    //    按 0.75² = 56% 计，是最省的一档；
+    //  - 放大合成交给系统合成器（Hardware Composer / GPU 双线性），不占我们的
+    //    draw call，也不需要额外的 FBO + 全屏 quad + shader（GLES2 下还要自己
+    //    管理 FBO 的模板缓冲 —— 我们的遮罩依赖 stencil，多一套 FBO 就多一份风险）；
+    //  - 缩小时 onSurfaceChanged 会带新的宽高回来，视口与投影自动按新尺寸重算，
+    //    宽高比不变 → 构图完全不动。
+    //
+    // 阈值 1.15 本身带迟滞：1x 附近的小幅手势（捏合抖动）不会把分辨率
+    // 在 0.75× 与 1.0× 之间反复切换 —— 每次切换都要重建 EGL Surface
+    // （surfaceCreated → 纹理重传），代价远大于那一点填充率的收益。
+    //
+    // 关键顺序（为什么必须走 [LodSurfaceView] 而不是在这里直接调 setFixedSize）：
+    // GLSurfaceView 的 surfaceCreated 内部会先执行 `holder.setSizeFromLayout()`，
+    // 把缓冲尺寸重置回 View 大小。任何在 surface 创建**之前**（或之后不重设）调用
+    // setFixedSize 的写法都会被它覆盖，实测首帧仍是全分辨率。
+    LaunchedEffect(zoom) {
+        val lod = surfaceViewRef[0] as? LodSurfaceView ?: return@LaunchedEffect
+        // P15 诊断覆盖：仅当 /data/local/tmp/arvt_lod_scale 存在时生效
+        val scale = lodScaleOverride()
+            ?: if (zoom > LOD_FULL_ZOOM) 1.0f else LOD_DEFAULT_SCALE
+        if (lod.lodScale != scale) {
+            InAppLog.i(TAG, "LOD: zoom=$zoom → 缓冲倍率 $scale")
+            lod.lodScale = scale
+        }
+    }
+
+    // 组合离开：先停 GL 线程再释放 native 资源    //
+    // P14：旧实现只调 renderer.release()，依赖 GLSurfaceView 在 detach 时自己
+    // 收线程。问题在于 detach 与本 onDispose 的先后不确定：切 Tab 时 GL 线程
+    // 可能还在 nativeDrawFrame 里跑（RENDERMODE_CONTINUOUSLY），而 nativeRelease
+    // 已经把 CPU 侧模型/顶点清空 —— 这一帧要么白跑，要么在锁上等待，表现为
+    // 「切 Tab 的瞬间卡一下」。显式 onPause 让渲染线程在释放前就停下。
     DisposableEffect(renderer) {
-        onDispose { renderer.release() }
+        onDispose {
+            // P15 诊断：切 Tab 时序对照。这里打时间戳，与 AndroidView.onRelease
+            // 及 nativeRelease 的日志连起来看「停线程是否真的先于清模型」。
+            val t = android.os.SystemClock.elapsedRealtimeNanos() / 1_000_000.0
+            InAppLog.i(TAG, "teardown: onPause begin t=%.1fms".format(t))
+            // P15 A/B 对照开关：/data/local/tmp/arvt_teardown_legacy 存在时
+            // 跳过 onPause，复现 P14 之前「只 release、靠 detach 收线程」的行为，
+            // 用于测同一版本下的切 Tab 卡顿对照。默认（文件不存在）走新路径。
+            val legacy = java.io.File("/data/local/tmp/arvt_teardown_legacy").exists()
+            if (!legacy) surfaceViewRef[0]?.onPause()
+            InAppLog.i(
+                TAG,
+                "teardown: onPause done t=%.1fms legacy=%b".format(
+                    android.os.SystemClock.elapsedRealtimeNanos() / 1_000_000.0, legacy
+                )
+            )
+            renderer.release()
+            InAppLog.i(
+                TAG,
+                "teardown: release done t=%.1fms".format(
+                    android.os.SystemClock.elapsedRealtimeNanos() / 1_000_000.0
+                )
+            )
+        }
     }
 
     Box(
@@ -403,7 +502,7 @@ fun Live2DContent(
         AndroidView(
             modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
-                GLSurfaceView(ctx).apply {
+                LodSurfaceView(ctx).apply {
                     setEGLContextClientVersion(2)
                     // ★ P2 Clipping Mask 的前提：Surface 必须带模板缓冲。
                     // GLSurfaceView 默认配置（setEGLConfigChooser(true)）只有
@@ -421,7 +520,18 @@ fun Live2DContent(
                 }
             },
             update = { /* 空实现：绝不在此重复 setRenderer（二次调用抛异常） */ },
-            onRelease = {
+            onRelease = { view ->
+                // P14：切 Tab / 离开页面时 View 从这里被回收。旧实现只清引用，
+                // 依赖 GLSurfaceView 在 detach 时才停线程；而 nativeRelease 可能
+                // 已经在此之前把模型清空，GL 线程还在 nativeDrawFrame 里跑 →
+                // 切 Tab 瞬间卡一下（甚至拿到半清空的几何）。先显式停线程。
+                InAppLog.i(
+                    TAG,
+                    "teardown: onRelease begin t=%.1fms".format(
+                        android.os.SystemClock.elapsedRealtimeNanos() / 1_000_000.0
+                    )
+                )
+                view.onPause()
                 surfaceViewRef[0] = null
                 // 不在这里 release native：Renderer 仍可能被 GLSurfaceView 引用，
                 // 统一由上方 DisposableEffect 在组合真正离开时处理
@@ -457,11 +567,25 @@ fun Live2DContent(
         // GLSurfaceView 是原生 View，它自己的 dispatchTouchEvent 会先吃掉事件，
         // Compose 侧挂在 AndroidView modifier 上的 pointerInput 收不全序列
         // （多指缩放尤其明显）。铺一层透明 Box 后事件走纯 Compose 分发，稳定。
+        // 唤醒：不进 pointerInput，直接挂 onTouchEvent 之前的 Compose 监听会与
+        // detectTransformGestures 抢消费状态；这里用同一 pointerInput 的初始按下
+        // （awaitFirstDown 不消费事件）通知宿主，手势序列仍完整下发给 transform。
+        // 回调经 rememberUpdatedState 取最新值：pointerInput(Unit) 不随重组重启。
+        val currentOnUserActivity by rememberUpdatedState(onUserActivity)
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .pointerInput(Unit) {
+                    awaitEachGesture {
+                        awaitFirstDown(requireUnconsumed = false)
+                        currentOnUserActivity()
+                    }
+                }
                 .pointerInput(renderer) {
                     detectTransformGestures { _, pan, zoomChange, _ ->
+                        // 拖动/缩放期间持续续期空闲计时：Activity.onUserInteraction
+                        // 只在 ACTION_DOWN 触发，长时间拖拽会被 2s 计时打断。
+                        currentOnUserActivity()
                         // 像素位移 → 归一化偏移（±1 = 屏幕半宽/半高）。
                         // 屏幕 Y 向下为正，NDC 向上为正，故 panY 取负。
                         val halfW = size.width.coerceAtLeast(1) * 0.5f
@@ -481,152 +605,179 @@ fun Live2DContent(
         )
 
         // ---- P6：重置视图 + 模型管理（右侧竖排，垂直居中）----
-        // 为什么放在右边缘而不是顶栏：沉浸模式（系统栏隐藏 + 顶栏让位）下仍要
-        // 一伸手就够到；同时避开左上 FPS、右上状态、底部动作条三处已有内容。
-        // 位置随手势层之上（后声明 = 更上层），点击不会被手势层吃掉。
-        Column(
+        // 沉浸模式下随其余控件一起淡出：唤醒后重新出现，位置不变。
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.CenterEnd)
-                .padding(end = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+                .padding(chromePadding),
         ) {
-            SmallFloatingActionButton(
-                onClick = {
-                    panX = 0f
-                    panY = 0f
-                    zoom = 1f
-                    renderer.resetTransform()
-                    InAppLog.i(TAG, "重置视图: 1x 居中")
-                },
-                containerColor = Color.Black.copy(alpha = 0.45f),
-                contentColor = Color.White.copy(alpha = 0.9f),
+            Column(
+                modifier = Modifier.padding(end = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
-                Icon(
-                    imageVector = Icons.Filled.Refresh,
-                    contentDescription = "重置视图",
-                )
-            }
+                SmallFloatingActionButton(
+                    onClick = {
+                        panX = 0f
+                        panY = 0f
+                        zoom = 1f
+                        renderer.resetTransform()
+                        InAppLog.i(TAG, "重置视图: 1x 居中")
+                    },
+                    containerColor = Color.Black.copy(alpha = 0.45f),
+                    contentColor = Color.White.copy(alpha = 0.9f),
+                ) {
+                    Icon(
+                        imageVector = Icons.Filled.Refresh,
+                        contentDescription = "重置视图",
+                    )
+                }
 
-            // 模型管理：列表 / 导入 / 删除都在弹窗里
-            SmallFloatingActionButton(
-                onClick = { modelDialogVisible = true },
-                containerColor = Color.Black.copy(alpha = 0.45f),
-                contentColor = Color.White.copy(alpha = 0.9f),
-            ) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.List,
-                    contentDescription = "切换模型",
-                )
+                // 模型管理：列表 / 导入 / 删除都在弹窗里
+                SmallFloatingActionButton(
+                    onClick = { modelDialogVisible = true },
+                    containerColor = Color.Black.copy(alpha = 0.45f),
+                    contentColor = Color.White.copy(alpha = 0.9f),
+                ) {
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Filled.List,
+                        contentDescription = "切换模型",
+                    )
+                }
             }
         }
 
         // ---- 任务 3：FPS HUD（左上角）----
-        Surface(
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.TopStart)
-                .padding(12.dp),
-            color = Color.Black.copy(alpha = 0.45f),
-            shape = RoundedCornerShape(6.dp),
+                .padding(chromePadding),
         ) {
-            Text(
-                text = if (fps > 0f) "%.0f fps".format(fps) else "-- fps",
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
-                color = Color.White.copy(alpha = 0.8f),
-            )
+            Surface(
+                modifier = Modifier.padding(12.dp),
+                color = Color.Black.copy(alpha = 0.45f),
+                shape = RoundedCornerShape(6.dp),
+            ) {
+                Text(
+                    text = if (fps > 0f) "%.0f fps".format(fps) else "-- fps",
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = Color.White.copy(alpha = 0.8f),
+                )
+            }
         }
 
         // ---- 任务 4：动作 / 表情按钮（底部）----
-        Column(
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.BottomStart)
-                .fillMaxWidth()
-                .padding(horizontal = 12.dp, vertical = 16.dp),
-            verticalArrangement = Arrangement.spacedBy(6.dp),
+                .padding(chromePadding),
         ) {
-            if (motionGroups.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    for (group in motionGroups) {
-                        FilterChip(
-                            selected = activeMotionGroup == group.index,
-                            onClick = {
-                                activeMotionGroup = group.index
-                                val played = renderer.playMotion(group.index, -1)
-                                InAppLog.i(TAG, "点击动作 ${group.name} → 实际播放 $played")
-                            },
-                            label = { Text(group.name) },
-                            colors = FilterChipDefaults.filterChipColors(
-                                containerColor = Color.Black.copy(alpha = 0.45f),
-                                labelColor = Color.White.copy(alpha = 0.85f),
-                            ),
-                        )
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 16.dp),
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                if (motionGroups.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        for (group in motionGroups) {
+                            FilterChip(
+                                selected = activeMotionGroup == group.index,
+                                onClick = {
+                                    activeMotionGroup = group.index
+                                    val played = renderer.playMotion(group.index, -1)
+                                    InAppLog.i(TAG, "点击动作 ${group.name} → 实际播放 $played")
+                                },
+                                label = { Text(group.name) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    containerColor = Color.Black.copy(alpha = 0.45f),
+                                    labelColor = Color.White.copy(alpha = 0.85f),
+                                ),
+                            )
+                        }
                     }
                 }
-            }
-            if (expressions.isNotEmpty()) {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                ) {
-                    // 「无」按钮取消表情：native 侧 -1 = 清空
-                    AssistChip(
-                        onClick = {
-                            activeExpression = -1
-                            renderer.setExpression(-1)
-                        },
-                        label = { Text("无表情") },
-                        colors = AssistChipDefaults.assistChipColors(
-                            containerColor = Color.Black.copy(alpha = 0.45f),
-                            labelColor = Color.White.copy(alpha = 0.85f),
-                        ),
-                    )
-                    for (exp in expressions) {
-                        FilterChip(
-                            selected = activeExpression == exp.index,
+                if (expressions.isNotEmpty()) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        // 「无」按钮取消表情：native 侧 -1 = 清空
+                        AssistChip(
                             onClick = {
-                                activeExpression = exp.index
-                                renderer.setExpression(exp.index)
+                                activeExpression = -1
+                                renderer.setExpression(-1)
                             },
-                            label = { Text(exp.name) },
-                            colors = FilterChipDefaults.filterChipColors(
+                            label = { Text("无表情") },
+                            colors = AssistChipDefaults.assistChipColors(
                                 containerColor = Color.Black.copy(alpha = 0.45f),
                                 labelColor = Color.White.copy(alpha = 0.85f),
                             ),
                         )
+                        for (exp in expressions) {
+                            FilterChip(
+                                selected = activeExpression == exp.index,
+                                onClick = {
+                                    activeExpression = exp.index
+                                    renderer.setExpression(exp.index)
+                                },
+                                label = { Text(exp.name) },
+                                colors = FilterChipDefaults.filterChipColors(
+                                    containerColor = Color.Black.copy(alpha = 0.45f),
+                                    labelColor = Color.White.copy(alpha = 0.85f),
+                                ),
+                            )
+                        }
                     }
                 }
             }
         }
 
         // 状态占位：右上角小字（左上角留给 FPS，底部留给动作/表情按钮条）
-        Surface(
+        AnimatedVisibility(
+            visible = chromeVisible,
+            enter = fadeIn(),
+            exit = fadeOut(),
             modifier = Modifier
                 .align(Alignment.TopEnd)
-                .padding(12.dp),
-            color = if (isError) {
-                MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
-            } else {
-                Color.Black.copy(alpha = 0.45f)
-            },
-            shape = RoundedCornerShape(6.dp),
+                .padding(chromePadding),
         ) {
-            Text(
-                text = status,
-                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.labelSmall,
+            Surface(
+                modifier = Modifier.padding(12.dp),
                 color = if (isError) {
-                    MaterialTheme.colorScheme.onErrorContainer
+                    MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.85f)
                 } else {
-                    Color.White.copy(alpha = 0.8f)
+                    Color.Black.copy(alpha = 0.45f)
                 },
-            )
+                shape = RoundedCornerShape(6.dp),
+            ) {
+                Text(
+                    text = status,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp),
+                    style = MaterialTheme.typography.labelSmall,
+                    color = if (isError) {
+                        MaterialTheme.colorScheme.onErrorContainer
+                    } else {
+                        Color.White.copy(alpha = 0.8f)
+                    },
+                )
+            }
         }
     }
 
@@ -687,7 +838,7 @@ fun Live2DContent(
         AlertDialog(
             onDismissRequest = { pendingDelete = null },
             title = { Text("删除模型") },
-            text = { Text("确定删除「${target.displayName}」？此操作不可恢复。") },
+            text = { Text("确定删除「${target.displayName}」？此操作不可恢复") },
             confirmButton = {
                 TextButton(onClick = {
                     pendingDelete = null
@@ -797,7 +948,7 @@ private fun ModelManagerDialog(
                 }
                 if (models.isEmpty() && !importInProgress) {
                     Text(
-                        text = "还没有模型。点下方「导入 zip」选择模型包。",
+                        text = "还没有模型。点下方「导入 zip」选择模型包",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant,
                     )
@@ -851,6 +1002,43 @@ private const val PARAM_PUSH_INTERVAL_MS = 1000L / PARAM_PUSH_HZ
 private const val FPS_POLL_INTERVAL_MS = 400L
 
 /**
+ * 调试用 prefs（与 MainActivity 的 app_settings 分开）。
+ *
+ * 为什么单独一个文件：合成面捕是**真机复现工具**，不属于用户设置，也不该
+ * 出现在设置页的开关里。用独立 prefs 文件，调试时 `adb shell run-as ... cat >
+ * shared_prefs/debug_repro.xml` 即可打开，无需改代码重新打包。
+ */
+internal const val PREFS_DEBUG = "debug_repro"
+
+/** 合成面捕开关（true = native 每帧注入 1Hz 正弦头动 + 0.5Hz 张嘴）。 */
+internal const val KEY_SYNTHETIC_FACE = "synthetic_face"
+
+/**
+ * A/B 部件兜底互斥开关（缺省 true）。
+ *
+ * 缺 pose3.json 的模型会把两套互斥手臂都导出成默认可显示，native 侧按
+ * 「同名 + A/B 后缀」推断互斥组、只保留一套。设为 false 可恢复原始行为，
+ * 用于同一段录屏做开/关 A/B 对比（见 local_debug/repro/FINDINGS.md §2.1）。
+ */
+internal const val KEY_POSE_FALLBACK = "pose_fallback_ab"
+
+/**
+ * 物理逐帧曲线追踪开关（缺省 false）。
+ *
+ * 打开后 native 每帧打一行 `trace:`（时间 / dt / ParamHairFront），供与
+ * CubismPhysics 参考实现逐帧比对。只用于取证，默认关闭。
+ */
+internal const val KEY_PHYSICS_TRACE = "physics_trace"
+
+/**
+ * 物理参考模式开关（缺省 false）。
+ *
+ * 打开后旁路 P8 的抑制项，把自研求解器切回标准语义，用于判定
+ * 「与标准参考实现的偏差来自抑制项还是积分数学」。仅取证用。
+ */
+internal const val KEY_PHYSICS_REFMODE = "physics_reference_mode"
+
+/**
  * 缩放边界（与 C++ 侧 kScaleMin / kScaleMax 保持一致）。
  *
  * 真正的钳制在 native 侧（单一事实来源）；这里的常量只用于让 Compose 状态
@@ -861,3 +1049,110 @@ private const val FPS_POLL_INTERVAL_MS = 400L
  */
 private const val SCALE_MIN = 0.5f
 private const val SCALE_MAX = 3.0f
+
+/**
+ * LOD：未放大时的 EGL Surface 分辨率倍率（P14）。
+ *
+ * 0.75 → 片元与填充带宽降到 56%，视觉上只有极轻微的柔化（模型本身是 4K 贴图
+ * 缩到 1080p 显示，本来就有一次降采样）。取 0.75 而不是更低：0.5 时边缘锯齿
+ * 在深色背景上已经明显。
+ */
+private const val LOD_DEFAULT_SCALE = 0.75f
+
+/**
+ * P15 诊断：GPU 瓶颈对照用的缓冲倍率覆盖。
+ *
+ * 文件 `/data/local/tmp/arvt_lod_scale` 内容是一个浮点倍率（如 `1.0` / `1.5`）。
+ * 存在时忽略 [LOD_DEFAULT_SCALE]，把渲染分辨率拉到足够高，让填充带宽成为瓶颈，
+ * 从而量化 scissor 模板清除的真实收益（90fps vsync 上限下，非瓶颈改动的帧时间
+ * 看不出差别）。仅在诊断时手动 `adb shell su -c 'echo 1.5 > ...'` 打开。
+ */
+private fun lodScaleOverride(): Float? = runCatching {
+    val f = java.io.File("/data/local/tmp/arvt_lod_scale")
+    if (!f.exists()) return@runCatching null
+    f.readText().trim().toFloatOrNull()?.takeIf { it in 0.25f..3.0f }
+}.getOrNull()
+
+/** 超过这个缩放才切换到全分辨率（用户「放大看细节」的意图阈值）。 */
+private const val LOD_FULL_ZOOM = 1.15f
+
+/**
+ * 带动态分辨率的 GLSurfaceView（P14）。
+ *
+ * 为什么必须是子类：[GLSurfaceView.surfaceCreated] 在通知 Renderer 之前会执行
+ * `holder.setSizeFromLayout()`，把像素缓冲重置为 View 尺寸。外部（组合层）
+ * 无论在哪一帧调用 setFixedSize，只要 surface 被重建（切后台回来、LOD 切换、
+ * 旋转）就会被这条重置覆盖。这里在 super 调用**之后**立刻按 [lodScale] 重设，
+ * 时机是唯一可靠的。
+ *
+ * setFixedSize 不会立即生效：它通过 SurfaceHolder 回调触发一次真实的
+ * onSurfaceChanged，视口与投影随之按新尺寸重算（宽高比不变，构图不动）。
+ */
+private class LodSurfaceView(context: Context) : GLSurfaceView(context) {
+
+    /** 像素缓冲倍率：1.0 = 全分辨率，<1 = 低精度（放大合成交给系统合成器）。 */
+    @Volatile
+    var lodScale: Float = LOD_DEFAULT_SCALE
+        set(value) {
+            if (field == value) return
+            field = value
+            applyLodSize()
+        }
+
+    /**
+     * 上一次真正下发给 SurfaceHolder 的尺寸（-1 = 未下发）。
+     *
+     * 为什么需要它而不是查 holder.surfaceFrame：setFixedSize 之后的
+     * surfaceFrame 不是同步更新的，用它做幂等判据会在回调里读回旧值而反复
+     * 重建 Surface；而 surfaceChanged 又是 setFixedSize 的回调入口，两者叠加
+     * 会变成「重建 — 回调 — 再重建」的死循环。
+     */
+    private var appliedW = -1
+    private var appliedH = -1
+
+    override fun surfaceCreated(holder: SurfaceHolder) {
+        super.surfaceCreated(holder)
+        // super 内部会把缓冲尺寸重置成 View 大小 —— 这一步之后重设才生效
+        appliedW = -1
+        appliedH = -1
+        applyLodSize()
+    }
+
+    override fun surfaceChanged(holder: SurfaceHolder, format: Int, width: Int, height: Int) {
+        super.surfaceChanged(holder, format, width, height)
+        // 布局层重置尺寸（旋转 / 分屏）后，把 LOD 目标重新下发一次。
+        // appliedW/H 保证「尺寸已经是我们想要的」时不会再次重建。
+        if (lodScale != 1.0f && (width != appliedW || height != appliedH)) {
+            applyLodSize()
+        }
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        // 尺寸变化后按新 View 尺寸重算（用 onSizeChanged 而不是 onMeasure：
+        // setSizeFromLayout() 会 requestLayout，放在 onMeasure 里会互相触发）
+        appliedW = -1
+        appliedH = -1
+        applyLodSize()
+    }
+
+    private fun applyLodSize() {
+        if (width <= 0 || height <= 0) return
+        val scale = lodScale
+        // 严格等于 1.0 才是「跟随布局」；>1 的高倍率（诊断用 GPU 瓶颈）同样走
+        // setFixedSize —— 否则大缓冲设不上，对照实验就没法做。
+        if (scale == 1.0f) {
+            if (appliedW == width && appliedH == height) return   // 已是全分辨率
+            appliedW = width
+            appliedH = height
+            holder.setSizeFromLayout()
+            return
+        }
+        val w = (width * scale).toInt().coerceAtLeast(1)
+        val h = (height * scale).toInt().coerceAtLeast(1)
+        if (appliedW == w && appliedH == h) return                // 已达标
+        appliedW = w
+        appliedH = h
+        holder.setFixedSize(w, h)
+    }
+}

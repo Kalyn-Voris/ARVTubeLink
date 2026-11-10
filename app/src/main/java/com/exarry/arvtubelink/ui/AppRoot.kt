@@ -5,6 +5,11 @@ import android.content.Context
 import android.content.ContextWrapper
 import android.opengl.GLSurfaceView
 import android.view.Window
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -92,6 +97,10 @@ fun AppRoot(
     burnInMask: State<Boolean>,
     onBurnInMaskDismiss: () -> Unit,
     tabIndex: State<Int>,
+    /** Live2D 沉浸模式：false = 顶栏/底栏收起、系统栏隐藏，只留模型画布 */
+    live2dUiVisible: State<Boolean>,
+    /** 用户在 Live2D 画布上的触摸：唤醒沉浸 UI 并重启空闲计时 */
+    onLive2dUserActivity: () -> Unit,
     themeFollowSystem: State<Boolean>,
     amoledBlack: State<Boolean>,
     aboutScrollSignal: State<Int>,
@@ -270,13 +279,18 @@ fun AppRoot(
 
                 // 遮罩期隐藏系统栏：API≤34 非 EtE 窗口靠 hide 扩展进栏区；下拉时 transient overlay 不触发 relayout
                 val burnInMaskVisible = burnInMask.value
-                LaunchedEffect(burnInMaskVisible) {
+                // Live2D 沉浸：顶栏/底栏收起的同时系统栏一并隐藏，触摸唤醒后恢复
+                val live2dImmersive = tabIndex.value == TAB_LIVE2D && !live2dUiVisible.value
+                LaunchedEffect(burnInMaskVisible, live2dImmersive) {
                     view.context.findWindow()?.let { window ->
                         WindowCompat.getInsetsController(window, view).apply {
                             systemBarsBehavior =
                                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-                            if (burnInMaskVisible) hide(WindowInsetsCompat.Type.systemBars())
-                            else show(WindowInsetsCompat.Type.systemBars())
+                            if (burnInMaskVisible || live2dImmersive) {
+                                hide(WindowInsetsCompat.Type.systemBars())
+                            } else {
+                                show(WindowInsetsCompat.Type.systemBars())
+                            }
                         }
                     }
                 }
@@ -310,22 +324,48 @@ fun AppRoot(
                     },
                 ) { _ ->
                     if (!calibrationActive.value) {
+                        // Live2D 沉浸：顶栏/底栏平滑收起（innerPadding 随之归零，画面自动铺满）
+                        val chromeVisible =
+                            tabIndex.value != TAB_LIVE2D || live2dUiVisible.value
                         Scaffold(
                             containerColor = MaterialTheme.colorScheme.background,
                             topBar = {
-                                ArvTopBar(
-                                    tabIndex = tabIndex.value,
-                                    onSelectTab = onSelectTab,
-                                    onOpenAbout = onOpenAbout,
-                                )
+                                AnimatedVisibility(
+                                    visible = chromeVisible,
+                                    enter = fadeIn() + expandVertically(),
+                                    exit = fadeOut() + shrinkVertically(),
+                                ) {
+                                    ArvTopBar(
+                                        tabIndex = tabIndex.value,
+                                        onSelectTab = onSelectTab,
+                                        onOpenAbout = onOpenAbout,
+                                    )
+                                }
                             },
-                            bottomBar = { ArvBottomBar(selected = tabIndex.value, onSelect = onSelectTab) },
+                            bottomBar = {
+                                AnimatedVisibility(
+                                    visible = chromeVisible,
+                                    enter = fadeIn() + expandVertically(),
+                                    exit = fadeOut() + shrinkVertically(),
+                                ) {
+                                    ArvBottomBar(
+                                        selected = tabIndex.value,
+                                        onSelect = onSelectTab,
+                                    )
+                                }
+                            },
                         ) { innerPadding ->
-                            Box(
-                                modifier = Modifier
-                                    .padding(innerPadding)
-                                    .fillMaxSize()
-                            ) {
+                            // Live2D 页忽略 Scaffold 内边距：画布恒定铺满窗口，
+                            // 顶/底栏改为叠加在画布之上。否则每次进出沉浸都会让
+                            // GLSurfaceView 跟着改尺寸（LOD 反复 setFixedSize），
+                            // 模型会整体缩放并触发一串 surfaceChanged。
+                            val contentModifier =
+                                if (tabIndex.value == TAB_LIVE2D) {
+                                    Modifier.fillMaxSize()
+                                } else {
+                                    Modifier.padding(innerPadding).fillMaxSize()
+                                }
+                            Box(modifier = contentModifier) {
                                 when (tabIndex.value) {
                                     TAB_HOME -> HomeContent(
                                         arStatus = arStatus.value,
@@ -391,6 +431,12 @@ fun AppRoot(
                                         modifier = Modifier.fillMaxSize(),
                                         // 面捕参数源：只读快照，映射算法仍全在 FaceRenderer 内
                                         faceRenderer = renderer,
+                                        // 点击/拖动画布：宿主唤醒沉浸 UI 并重启 2s 计时
+                                        onUserActivity = onLive2dUserActivity,
+                                        // 沉浸模式下页内控件一并淡出
+                                        chromeVisible = live2dUiVisible.value,
+                                        // 画布恒铺满，只有悬浮控件让开 App 栏
+                                        chromePadding = innerPadding,
                                     )
                                     TAB_LOG -> LogContent()
                                 }
