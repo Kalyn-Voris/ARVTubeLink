@@ -355,10 +355,7 @@ fun AppRoot(
                                 }
                             },
                         ) { innerPadding ->
-                            // Live2D 页忽略 Scaffold 内边距：画布恒定铺满窗口，
-                            // 顶/底栏改为叠加在画布之上。否则每次进出沉浸都会让
-                            // GLSurfaceView 跟着改尺寸（LOD 反复 setFixedSize），
-                            // 模型会整体缩放并触发一串 surfaceChanged。
+                            // Live2D 页忽略内边距：改尺寸会让 GLSurfaceView 反复 setFixedSize 并触发 surfaceChanged
                             val contentModifier =
                                 if (tabIndex.value == TAB_LIVE2D) {
                                     Modifier.fillMaxSize()
@@ -544,7 +541,7 @@ private fun ArvBottomBar(
             icon = { Icon(imageVector = Icons.Filled.Settings, contentDescription = null) },
             label = { Text(stringResource(R.string.tab_settings)) },
         )
-        // Live2D 页（P0 原型）：图标用 Face 表达「模型/人脸」，不额外引入图标依赖
+        // Live2D 页图标用 Face，不额外引入图标依赖
         NavigationBarItem(
             selected = selected == TAB_LIVE2D,
             onClick = { onSelect(TAB_LIVE2D) },

@@ -7,12 +7,12 @@ espressoCore = "3.5.1"
 appcompat = "1.6.1"
 material = "1.10.0"
 activityKtx = "1.8.0"
-# composePlugin 须与 Kotlin 版本一致（Kotlin 2.2.10 由 AGP 9.4.1 内置）
+# composePlugin 须与 Kotlin 版本一致（2.2.10 由 AGP 9.4.1 内置）
 composeBom = "2026.09.00"
 composePlugin = "2.2.10"
 activityCompose = "1.13.0"
 lifecycleRuntimeCompose = "2.11.0"
-# 模型导入的后台任务：2.12.0 提供 getWorkInfoByIdFlow（Flow API，免 LiveData 桥接）
+# 2.12.0 提供 getWorkInfoByIdFlow（Flow API，免 LiveData 桥接）
 workRuntime = "2.12.0"
 
 [libraries]
@@ -27,14 +27,14 @@ androidx-activity-ktx = { group = "androidx.activity", name = "activity-ktx", ve
 androidx-compose-bom = { group = "androidx.compose", name = "compose-bom", version.ref = "composeBom" }
 androidx-compose-ui = { group = "androidx.compose.ui", name = "ui" }
 androidx-compose-material3 = { group = "androidx.compose.material3", name = "material3" }
-# m3 1.4.0 不传递暴露 icons，Icons.Filled.Info 需显式声明，版本由 BOM 管理
+# material3 不传递暴露 icons，Icons.Filled.Info 须显式声明，版本由 BOM 管理
 androidx-compose-material-icons-core = { group = "androidx.compose.material", name = "material-icons-core" }
 androidx-compose-ui-tooling-preview = { group = "androidx.compose.ui", name = "ui-tooling-preview" }
 androidx-compose-ui-tooling = { group = "androidx.compose.ui", name = "ui-tooling" }
 # activity / lifecycle 不受 Compose BOM 管理，须显式版本
 androidx-activity-compose = { group = "androidx.activity", name = "activity-compose", version.ref = "activityCompose" }
 androidx-lifecycle-runtime-compose = { group = "androidx.lifecycle", name = "lifecycle-runtime-compose", version.ref = "lifecycleRuntimeCompose" }
-# work-runtime-ktx 对 2.10+ 已是空壳（API 全在 work-runtime 里），但显式声明可锁定协程互操作版本
+# 2.10+ 起 work-runtime-ktx 为空壳（API 在 work-runtime），显式声明可锁定协程互操作版本
 androidx-work-runtime-ktx = { group = "androidx.work", name = "work-runtime-ktx", version.ref = "workRuntime" }
 
 [plugins]

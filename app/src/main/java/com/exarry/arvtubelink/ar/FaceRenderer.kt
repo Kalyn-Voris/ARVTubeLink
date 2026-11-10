@@ -108,14 +108,7 @@ class FaceRenderer(
     @Volatile
     private var streamingPaused = false
 
-    /**
-     * 最近一帧的 VTS 参数快照（P3 Live2D 驱动源）。
-     *
-     * 写入在 GL 线程（onDrawFrame），读取在 Live2D 推流协程，故 @Volatile。
-     * 内容 = BlendShapeMapper/Smoother 的原有输出，本字段只是**发布**它，
-     * 不参与任何映射计算（红线：不修改 BlendShapeMapper 算法）。
-     * 人脸丢失时置 null，Live2D 侧据此回中性姿态而不是冻在最后一帧。
-     */
+    /** 最近一帧 VTS 参数快照，GL 线程写、Live2D 协程读；人脸丢失置 null */
     @Volatile
     var latestFaceSnapshot: Map<String, Float>? = null
         private set
@@ -238,9 +231,7 @@ class FaceRenderer(
 
         val smoothed = smoother.smoothAll(mergedParams)
 
-        // P3：把本帧最终映射结果发布给 Live2D 页（只读快照，不参与发送链路）。
-        // 故意放在 smoother 之后：Live2D 与 VTS 拿到的是同一份平滑值，
-        // 避免两边存在相位差导致模型与主播表情不同步。
+        // 放在 smoother 之后：Live2D 与 VTS 取同一份平滑值，避免相位差
         latestFaceSnapshot = if (vtsParams.faceFound) smoothed else null
 
         if (frameCount % LOG_INTERVAL == 0L && InAppLog.isDebugEnabled) {

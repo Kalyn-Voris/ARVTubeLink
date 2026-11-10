@@ -7,49 +7,20 @@ import javax.microedition.khronos.opengles.GL10
 
 private const val TAG = "Live2D"
 
-/**
- * Purism Core 原生渲染器的 Kotlin 桥接层（P0 静态渲染）。
- *
- * ## 这是什么
- * `GLSurfaceView.Renderer` 的实现，把三个 GL 回调原样转给 `liblive2d_jni.so`：
- * `onSurfaceCreated` → VBO/IBO 上传、`onSurfaceChanged` → 视口与投影、
- * `onDrawFrame` → glDrawElements。真正的模型加载（.moc3 → Purism Core →
- * 顶点/索引数组）也全在 C++ 侧完成，本类只负责把 `.moc3` 绝对路径递过去。
- *
- * ## 线程模型
- * - [init] 由宿主在**主线程**调用一次（也可重建时再调），内部持锁 + 记标记；
- * - GLSurfaceView 用独立 GL 线程回调 [onSurfaceCreated] 等，
- *   首次回调时若模型还没加载过，会在 GL 线程里补一次 [init]。
- *   为什么不能只在主线程 init 后就假设 GL 侧可用：Renderer 可能在 init 之前
- *   就被 setRenderer 触发首帧（组合顺序不保证），补一次幂等。
- * - C++ 侧所有 JNI 入口都在 GL 线程执行（init 例外），不跨线程访问 model。
- *
- * ## 生命周期
- * GLSurfaceView 销毁时不会自动调用 `nativeRelease`（Renderer 接口没有对应回调），
- * 因此由 [release] 显式调用；[Live2DScreen] 在组合离开时触发。
- *
- * ## P0 边界
- * 只画纯色几何面，不加载贴图、不读 model3.json、不驱动参数、不播动作。
- */
+/** Purism Core 原生渲染器桥接：三个 GL 回调转 JNI，模型加载在 C++ 侧 */
 class Live2DRenderer(
     mocPath: String? = null,
 ) : GLSurfaceView.Renderer {
 
-    /**
-     * 当前模型的 .moc3 **绝对路径**（用户导入的模型，如
-     * `/data/.../live2d_models/1730/xxx.moc3`）；null = 还没有加载任何模型
-     * （首次进入且用户未导入）。
-     */
+    /** 当前模型 .moc3 绝对路径，null = 未加载任何模型 */
     @Volatile
     var mocPath: String? = mocPath
         private set
 
-    /** 模型是否已成功加载（false 时 [onDrawFrame] 只清屏）。 */
     @Volatile
     var modelReady: Boolean = false
         private set
 
-    /** 最近一次失败原因（null = 无错误）；供 UI 展示诊断。 */
     @Volatile
     var lastError: String? = null
         private set
@@ -57,14 +28,7 @@ class Live2DRenderer(
     private val initLock = Any()
     private var initAttempted = false
 
-    /**
-     * 加载模型。幂等：成功后重复调用直接返回 true。
-     *
-     * [mocPath] 为 null 表示用户还没有导入模型——这不是错误，
-     * 只返回 false 并保持 `lastError = null`，由 UI 呈现空状态引导导入。
-     *
-     * @return true = 模型可用
-     */
+    /** 加载模型，幂等；mocPath 为 null 返回 false 且 lastError 保持 null */
     fun init(): Boolean = synchronized(initLock) {
         if (modelReady) return true
         val path = mocPath
@@ -73,13 +37,10 @@ class Live2DRenderer(
             return false
         }
         if (!libraryLoaded) {
-            // so 未打进 APK / ABI 不匹配：companion init 已失败，不再尝试 native 调用
             lastError = libraryError ?: "liblive2d_jni.so 加载失败"
             return false
         }
         if (initAttempted) {
-            // 已经尝试过一次（无论成败）就不重试：每次重试都要重新分配 384KB + 模型内存，
-            // 失败通常是确定性的（模型文件缺失/损坏），重试只会拖慢首帧
             return modelReady
         }
         initAttempted = true
@@ -99,26 +60,13 @@ class Live2DRenderer(
         return modelReady
     }
 
-    /**
-     * 调用 native 加载模型（不改变任何状态，只返回错误串）。
-     *
-     * 只接受设备本地绝对路径：模型一律由用户导入到 filesDir 下。
-     */
     private fun loadNative(path: String): String? = try {
         nativeLoadModelFromPath(path)
     } catch (t: Throwable) {
         "加载模型异常: ${t.javaClass.simpleName}: ${t.message}"
     }
 
-    /**
-     * 加载/切换到指定的模型（用户导入的本地文件）。
-     *
-     * 与 [init] 的区别：这里**允许重复调用**，且会清掉参数绑定缓存与 init 重试
-     * 标记 —— 新模型的参数表与旧模型不同，必须重新解析。
-     *
-     * @param path `.moc3` 的绝对路径
-     * @return true = 新模型已加载（GL 侧由 native 在下一帧重建）
-     */
+    /** 切换模型，允许重复调用；参数下标缓存必须失效 */
     fun loadModel(path: String): Boolean = synchronized(initLock) {
         if (!libraryLoaded) {
             lastError = libraryError ?: "liblive2d_jni.so 加载失败"
@@ -127,7 +75,6 @@ class Live2DRenderer(
 
         val error = loadNative(path)
 
-        // 无论成败，参数缓存都必须失效：旧下标对新模型没有意义
         parameterIndices.clear()
         parametersBound = false
         initAttempted = true
@@ -139,7 +86,6 @@ class Live2DRenderer(
             InAppLog.i(TAG, "模型切换成功: $path")
             InAppLog.i(TAG, "native 统计: ${runCatching { nativeStats() }.getOrDefault("n/a")}")
         } else {
-            // 加载失败时旧模型已被 native 侧清空，只能标记不可用
             modelReady = false
             lastError = error
             InAppLog.e(TAG, "模型切换失败: $error ($path)")
@@ -147,10 +93,8 @@ class Live2DRenderer(
         return modelReady
     }
 
-    // ---------------- GLSurfaceView.Renderer ----------------
-
     override fun onSurfaceCreated(gl: GL10?, config: EGLConfig?) {
-        // 首帧可能早于宿主调用 init：这里补一次（幂等，失败不重试）
+        // 首帧可能早于宿主 init，GL 线程补一次幂等加载
         if (!modelReady && !initAttempted) init()
         nativeSurfaceCreated()
         InAppLog.i(TAG, "onSurfaceCreated: ready=$modelReady")
@@ -161,12 +105,11 @@ class Live2DRenderer(
     }
 
     override fun onDrawFrame(gl: GL10?) {
-        // 模型没就绪时 C++ 侧只会清屏（g_indices 为空），无需在此短路——
-        // 保持每帧一次调用，避免 GLSurfaceView 认为渲染线程空闲
+        // 未就绪时 C++ 只清屏，仍保持每帧一次调用
         nativeDrawFrame()
     }
 
-    /** 释放原生资源（GL 线程由 GLSurfaceView 保证，或宿主直接调用）。 */
+    /** GLSurfaceView 销毁不回调 nativeRelease，须由宿主显式调用 */
     fun release() {
         runCatching { nativeRelease() }
         modelReady = false
@@ -176,26 +119,13 @@ class Live2DRenderer(
         parametersBound = false
     }
 
-    // ---------------- P3：参数驱动 ----------------
-
-    /**
-     * 参数名 → Purism Core 参数下标缓存。
-     *
-     * 值为 -1 表示模型里没有该参数（例如这张模型没有 `ParamMouthForm`）。
-     * 缓存一次，推流循环里只做 HashMap 读取，不做 JNI 字符串查找。
-     * 全部为不可变的原始类型，跨线程读安全；写入只在 [bindParameters] 里发生。
-     */
+    /** 参数名 → 下标，-1 = 模型无此参数；原始类型只读，跨线程安全 */
     private val parameterIndices = HashMap<String, Int>()
 
     @Volatile
     private var parametersBound = false
 
-    /**
-     * 把一批 Cubism 参数名解析成下标并缓存。幂等：绑定成功后再调用直接返回。
-     *
-     * @param names Cubism 4 参数名（如 `ParamEyeLOpen`）
-     * @return true = 至少有一个参数存在于模型中
-     */
+    /** 解析参数名到下标并缓存，幂等 */
     fun bindParameters(names: Collection<String>): Boolean {
         if (!modelReady || names.isEmpty()) return false
         if (parametersBound) return parameterIndices.values.any { it >= 0 }
@@ -229,26 +159,10 @@ class Live2DRenderer(
         return hit > 0
     }
 
-    /**
-     * 推送一帧参数。
-     *
-     * @param params `[id, value, id, value, ...]` 扁平数组；调用方负责把
-     *               `-1`（模型不存在的参数）剔除。
-     * @return 实际写入的参数个数（-1 = 模型未就绪）
-     *
-     * 线程：任意线程可调用。C++ 侧只改 CPU 顶点并置脏标记，真正的 VBO
-     * 重传发生在 GL 线程的 onDrawFrame 里（见 live2d_jni.cpp 的 P3 说明）。
-     */
+    /** 任意线程可调用，VBO 重传在 GL 线程的 onDrawFrame 内完成 */
     fun updateParams(params: FloatArray): Int {
         if (!modelReady || params.isEmpty()) return -1
-        // P7 面捕防抽风：先把非有限值挡在 JNI 之前。
-        //
-        // NaN 是**有意义**的哨兵（人脸丢失 = 本帧该参数交给动作/表情），必须
-        // 原样保留；±Infinity 则是坏值，一旦进入 csmUpdateModel 会通过插值扩散
-        // 到相邻顶点，整张脸/整只手瞬间炸成碎片。这里把它降级成 NaN（语义：
-        // 本帧没有该参数的输入），C++ 侧还有第二道同样的防线。
-        //
-        // 注意跳过偶数位（id 位）：下标本身是整数，只有 value 位需要检查。
+        // ±Infinity 降级为 NaN（本帧无输入）；NaN 是有意义哨兵须原样保留，只查 value 位
         var i = 1
         while (i < params.size) {
             val v = params[i]
@@ -263,24 +177,15 @@ class Live2DRenderer(
         }
     }
 
-    /** 已绑定的参数名到下标；未绑定时为空表。 */
     fun parameterIndexMap(): Map<String, Int> = parameterIndices
 
-    // ---------------- P4：动作 / 表情 ----------------
-
-    /** 一个可播放的动作组（model3.json Motions 的一个键）。 */
+    /** model3.json Motions 的一个键 */
     data class MotionGroup(val index: Int, val name: String, val motionCount: Int)
 
-    /** 一份表情（model3.json Expressions 的一项）。 */
+    /** model3.json Expressions 的一项 */
     data class ExpressionInfo(val index: Int, val name: String)
 
-    /**
-     * 读取动作组与表情清单。只在模型就绪后调用；失败返回空表而不是抛异常。
-     *
-     * native 返回的是逐行文本（`motion\t<下标>\t<名字>\t<数量>` /
-     * `expression\t<下标>\t<名字>`）。这里用最朴素的分割解析：清单只有十几行，
-     * 引 JSON 解析器不值得。
-     */
+    /** native 逐行返回 motion\t下标\t名字\t数量 / expression\t下标\t名字 */
     fun listActions(): Pair<List<MotionGroup>, List<ExpressionInfo>> {
         if (!modelReady) return emptyList<MotionGroup>() to emptyList()
         val raw = try {
@@ -313,13 +218,7 @@ class Live2DRenderer(
         return motions to expressions
     }
 
-    /**
-     * 播放动作。
-     *
-     * @param group 动作组下标（[MotionGroup.index]）
-     * @param index 组内动作下标；-1 = 该组第 0 个（推荐，避免越界）
-     * @return 实际播放的动作下标，负数 = 失败
-     */
+    /** index -1 = 该组第 0 个，避免越界 */
     fun playMotion(group: Int, index: Int = -1): Int {
         if (!modelReady) return -1
         return try {
@@ -330,11 +229,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 设置表情；[index] < 0 取消当前表情。
-     *
-     * @return 当前生效的表情下标（-1 = 无）
-     */
+    /** index < 0 取消当前表情 */
     fun setExpression(index: Int): Int {
         if (!modelReady) return -1
         return try {
@@ -345,11 +240,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 读取渲染帧率（native 侧每 0.5s 更新一次）。
-     *
-     * 读失败或还没统计出窗口时返回 0，调用方据此显示「--」。
-     */
+    /** native 每 0.5s 更新一次，未统计出窗口返回 0 */
     fun fps(): Float {
         if (!modelReady) return 0f
         return try {
@@ -359,18 +250,7 @@ class Live2DRenderer(
         }
     }
 
-    // ---------------- P8：物理调试开关 ----------------
-
-    /**
-     * 开关物理求解器（真机二分定位抖动来源）。
-     *
-     * 关闭后 native 侧不再模拟物理链，所有输出参数（ParamHair* / ParamScarf）
-     * 每帧写回模型默认值 —— 参数完全静止：
-     *  - 关闭后仍抖：抖动来自动作/面捕参数推流或渲染链路，与物理无关；
-     *  - 关闭后不抖：抖动来自物理（输入增益 / 阻尼 / 阈值还需继续调）。
-     *
-     * 状态由 native 侧持有，这里不缓存即可避免两处状态漂移。
-     */
+    /** 关闭后 ParamHair* / ParamScarf 每帧写回模型默认值，状态由 native 持有 */
     fun setPhysicsEnabled(enabled: Boolean) {
         if (!modelReady) return
         try {
@@ -380,7 +260,6 @@ class Live2DRenderer(
         }
     }
 
-    /** 物理求解器当前是否启用（-1 视为未就绪时返回 false）。 */
     fun isPhysicsEnabled(): Boolean {
         if (!modelReady) return false
         return try {
@@ -390,15 +269,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * A/B 兜底互斥开关（P9）。
-     *
-     * 缺 pose3.json 的模型（如 hiyori_vts）会把两套互斥的手臂部件都导出成
-     * 默认不透明度 1.0，native 侧按「同名 + A/B 后缀」推断互斥组后只保留一套。
-     * 关闭此开关会立刻移除兜底组、恢复原始行为，用于同一段录屏做开/关对比。
-     *
-     * 从 pose3.json 读到的组不受影响：兜底只在模型完全没有 pose3 时生效。
-     */
+    /** 缺 pose3.json 时按同名 A/B 后缀推断互斥组，只保留一套 */
     fun setPoseFallback(enabled: Boolean) {
         if (!modelReady) return
         try {
@@ -408,13 +279,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 物理参考模式（与CubismPhysics 对照时的因果验证开关）。
-     *
-     * 打开后旁路 P8 加入的全部抑制项（输入增益/低通、输出死区/低通），
-     * 求解器按标准语义运行。用于判断自研物理与标准实现的差异来自抑制项，
-     * 还是来自积分数学本身。默认关闭，发布行为不变。
-     */
+    /** 旁路输入增益/低通与输出死区/低通，按标准语义求解 */
     fun setPhysicsReferenceMode(enabled: Boolean) {
         if (!modelReady) return
         try {
@@ -424,13 +289,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 物理逐帧曲线追踪开关（与标准参考实现对照用）。
-     *
-     * 打开后 native 每帧输出一行 `trace: frame time dt ParamHairFront`，
-     * 字段与 host/ref/refphysics 的 CSV 对齐，可逐帧比对自研求解器与标准
-     * CubismNativeFramework 的偏差。默认关闭。
-     */
+    /** 每帧输出一行 trace: frame time dt ParamHairFront */
     fun setPhysicsTrace(enabled: Boolean) {
         if (!modelReady) return
         try {
@@ -440,13 +299,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 取一次物理抖动度量（滑动窗口，读完即清零）。
-     *
-     * 数据在物理链内部按渲染帧采样，因此能反映 60Hz 级别的微抖 —— 截图/录屏
-     * 的采样率（本机 screencap 约 5fps）根本看不到这种高频抖动。
-     * 返回 null 表示 native 未就绪。
-     */
+    /** 按渲染帧采样的滑动窗口，读完即清零 */
     fun physicsJitter(): String? {
         if (!modelReady) return null
         return try {
@@ -457,16 +310,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 合成面捕开关（真机/模拟器无摄像头时的物理复现工具）。
-     *
-     * 开启后 native 每帧按 1Hz 正弦写 `ParamAngleX/Y/Z`，并有 0.5Hz 半波的
-     * `ParamMouthOpenY`。没有摄像头时 [com.exarry.arvtubelink.ar.FaceRenderer]
-     * 推的是 NaN（语义 = 本帧交给动作/表情），物理链输入恒为 0，抖动根本不会
-     * 发生；打开这个开关才能拿到与真实摇头一致的周期激励。
-     *
-     * 仅用于调试，默认关闭；关闭时被注入的参数会复位成 NaN。
-     */
+    /** 每帧 1Hz 正弦写 ParamAngleX/Y/Z，0.5Hz 半波写 ParamMouthOpenY */
     fun setSyntheticFace(enabled: Boolean) {
         if (!modelReady) return
         try {
@@ -476,19 +320,7 @@ class Live2DRenderer(
         }
     }
 
-    // ---------------- P5：手势变换 ----------------
-
-    /**
-     * 推送手势变换（拖拽 + 缩放）。
-     *
-     * @param dx    水平偏移，单位 = 屏幕半宽（±1 = 贴到屏幕左右边缘）
-     * @param dy    垂直偏移，单位 = 屏幕半高（向上为正）
-     * @param scale 缩放倍数
-     *
-     * 边界由 C++ 侧统一钳制：缩放 0.5~3.0，平移按**模型包围盒**算
-     * （只要还有 80px 可见就允许拖，见 [panLimits]）。这里不做二次判断，
-     * 避免两处常量漂移。线程：任意线程可调用。
-     */
+    /** dx/dy 单位 = 屏幕半宽/半高，向上为正；缩放 0.5~3.0 与 80px 边界由 C++ 钳制 */
     fun setTransform(dx: Float, dy: Float, scale: Float) {
         if (!modelReady) return
         try {
@@ -498,12 +330,7 @@ class Live2DRenderer(
         }
     }
 
-    /**
-     * 查询指定缩放下的平移可行区间 `[minX, maxX, minY, maxY]`。
-     *
-     * 边界值由 native 按包围盒计算（单一事实来源）。模型未就绪或 native
-     * 返回异常时给一个保守的对称区间，调用方按普通数值处理即可。
-     */
+    /** 返回 [minX, maxX, minY, maxY]，边界按模型包围盒算 */
     fun panLimits(scale: Float): FloatArray {
         if (!modelReady) return FALLBACK_PAN_LIMITS.copyOf()
         return try {
@@ -514,7 +341,6 @@ class Live2DRenderer(
         }
     }
 
-    /** 重置手势变换（1x、居中）。 */
     fun resetTransform() {
         if (!modelReady) return
         try {
@@ -548,17 +374,9 @@ class Live2DRenderer(
     private external fun nativePanLimits(scale: Float): FloatArray?
 
     companion object {
-        /** native 不可用时的平移兜底区间（对称、够用即可）。 */
         private val FALLBACK_PAN_LIMITS = floatArrayOf(-2f, 2f, -2f, 2f)
 
-        /**
-         * so 是否加载成功。
-         *
-         * ⚠️ 不能在 init 块里直接 `System.loadLibrary` 然后让异常冒出去：
-         * 那样异常发生在**类初始化**阶段，会被包成 ExceptionInInitializerError，
-         * 之后任何对该类成员的访问都会抛 NoClassDefFoundError，连错误文案都读不到。
-         * 这里吞掉异常并记下原因，由 [init] 转成可展示的字符串。
-         */
+        /** 不让 loadLibrary 异常在类初始化阶段外抛，否则后续访问全是 NoClassDefFoundError */
         private val libraryLoaded: Boolean
         private val libraryError: String?
 
@@ -569,7 +387,6 @@ class Live2DRenderer(
                 System.loadLibrary("live2d_jni")
                 loaded = true
             } catch (t: Throwable) {
-                // UnsatisfiedLinkError：so 未打进 APK、ABI 不匹配、或设备不支持的架构
                 error = "liblive2d_jni.so 加载失败: ${t.javaClass.simpleName}: ${t.message}"
             }
             libraryLoaded = loaded

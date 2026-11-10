@@ -55,7 +55,7 @@
     <string name="push_gauge_unit">Hz measured</string>
     <!-- %1$d = sampling window in seconds (TELEMETRY_WINDOW) -->
     <string name="push_chart_caption">Last %1$d s · frame-rate jitter</string>
-    <!-- %1$d = configured rate, %2$.1f = measured rate -->
+    <!-- %1$d = configured rate, %2$.1f = actual rate -->
     <string name="push_card_summary">Target %1$dHz · measured %2$.1fHz</string>
     <!-- %1$d = configured rate (before the first sample arrives) -->
     <string name="push_card_waiting">Target %1$dHz · waiting for first sample…</string>
@@ -66,7 +66,6 @@
     <string name="push_chip_vts_on">Connected</string>
     <string name="push_chip_vts_off">Offline</string>
 
-    <!-- Live2D model import (WorkManager foreground job) -->
     <string name="live2d_import_notif_title">Importing Live2D model</string>
     <string name="live2d_import_channel_name">Model import</string>
     <string name="live2d_import_channel_desc">Shows progress while importing a Live2D model. You can switch away or lock the screen; the import keeps running.</string>
@@ -75,7 +74,6 @@
     <string name="live2d_import_stage_validating">Verifying model…</string>
     <string name="live2d_import_background_hint">Import continues in the background. You can switch away or lock the screen.</string>
 
-    <!-- Live2D empty state: the app ships no model, shown on first visit -->
     <string name="live2d_empty_title">No model loaded yet</string>
     <string name="live2d_empty_hint">Tap the button on the right to import a .zip model package</string>
 

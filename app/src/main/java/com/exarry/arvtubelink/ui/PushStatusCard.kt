@@ -282,7 +282,7 @@ private fun HzGauge(
     }
 }
 
-/** 实时折线：30 点，y 上界 max(参考×1.25, 实测×1.1, 1) */
+/** 实时折线：30 点，y 上界 max(参考×1.25, 实际×1.1, 1) */
 @Composable
 private fun SparkLine(
     samples: FloatArray,

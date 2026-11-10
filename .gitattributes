@@ -1,7 +1,7 @@
-# tools/ 为开发期探针脚本，不计入语言统计
+# tools/ 开发期探针脚本，不计入语言统计
 tools/** linguist-vendored
 
-# 第三方单文件库：随源码入库但不算本项目语言构成
+# 第三方单文件库，不计入本项目语言构成
 app/src/main/cpp/PurismCoreBundle.h linguist-vendored
 app/src/main/cpp/stb_image.h linguist-vendored
 app/src/main/cpp/CMakeLists.txt linguist-vendored

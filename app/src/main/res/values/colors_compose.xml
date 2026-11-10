@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Light/Dark 显式后缀，Theme.kt 按 isDark 二选一；values-night 只服务 XML 层 -->
+    <!-- Light/Dark 显式后缀，Theme.kt 按 isDark 二选一 -->
     <color name="colorPrimaryLight">#245CB2</color>
     <color name="colorPrimaryDark">#B6C4FF</color>
     <color name="colorOnPrimaryLight">#FFFFFF</color>

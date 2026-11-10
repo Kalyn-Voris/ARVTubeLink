@@ -55,7 +55,7 @@
     <string name="push_gauge_unit">Hz 实测</string>
     <!-- %1$d = 采样窗口秒数（TELEMETRY_WINDOW） -->
     <string name="push_chart_caption">最近 %1$d 秒 · 帧率波动</string>
-    <!-- %1$d = 配置频率，%2$.1f = 实测值 -->
+    <!-- %1$d = 配置频率，%2$.1f = 实际值 -->
     <string name="push_card_summary">配置 %1$dHz · 实测 %2$.1fHz</string>
     <!-- %1$d = 配置频率（尚无采样点时） -->
     <string name="push_card_waiting">配置 %1$dHz · 等待首个采样点…</string>
@@ -124,7 +124,7 @@
     <string name="log_clear">清空</string>
     <string name="toast_copied_logs">已复制 %1$d 条日志</string>
 
-    <!-- 法律文本须与 res/raw/agreement.txt、license.txt 一致；translatable="false" 豁免 MissingTranslation -->
+    <!-- translatable="false" 豁免 MissingTranslation；法律文本须与 res/raw 一致 -->
     <string name="agreement_title" translatable="false">欢迎使用 ARVTubeLink</string>
     <string name="agreement_summary" translatable="false">相机权限仅用于本地人脸追踪，画面不上云\n本应用不设账号系统，开发者不运营服务器，不主动收集您的个人数据\n第三方 AR Engine 由华为提供，可能联网校验授权并按其隐私政策处理设备信息\n您可以个人非商业使用本应用（含个人 VTuber 直播、视频创作者 所得收益）\n商业用途需授权\n如果您为使用本软件支付了任何费用，说明您遭遇了诈骗，请立即要求退款并维护自身合法权益\n\n使用即同意用户协议与隐私声明全部条款。</string>
     <string name="agreement_view_full" translatable="false">查看完整条款</string>
@@ -137,7 +137,7 @@
 
     <string name="ar_status_not_detected">未检测</string>
     <string name="ar_status_checking">检测中…</string>
-    <!-- %1$s = AR Engine 状态文案，%2$s = 相机权限文案；整串成型避免 aapt 裁掉首尾空格 -->
+    <!-- %1$s = AR Engine 状态文案，%2$s = 相机权限文案 -->
     <string name="ar_status_format">AR Engine：%1$s\n相机权限：%2$s</string>
     <string name="ar_engine_available">Available（已就绪）</string>
     <string name="ar_engine_not_installed">NotInstalled（未安装/过旧）</string>
@@ -211,7 +211,6 @@
     <string name="onboard_action_discover">自动发现</string>
     <string name="onboard_done_badge">已完成</string>
 
-    <!-- Live2D 模型导入（WorkManager 前台任务） -->
     <string name="live2d_import_notif_title">正在导入 Live2D 模型</string>
     <string name="live2d_import_channel_name">模型导入</string>
     <string name="live2d_import_channel_desc">导入 Live2D 模型时显示进度。可切到后台，导入会继续完成</string>
@@ -220,7 +219,6 @@
     <string name="live2d_import_stage_validating">正在校验模型…</string>
     <string name="live2d_import_background_hint">已转到后台导入：可切走或锁屏，导入会继续完成</string>
 
-    <!-- Live2D 空状态（尚未导入模型，首次进入时展示） -->
     <string name="live2d_empty_title">尚未加载模型</string>
     <string name="live2d_empty_hint">请点击右侧按钮导入 .zip 模型包</string>
 

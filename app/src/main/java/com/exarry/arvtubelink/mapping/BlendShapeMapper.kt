@@ -473,7 +473,7 @@ class BlendShapeMapper(
             "Animoji_Mouth_Pucker" to "MouthPucker"
         )
 
-        /** Smile 实测峰 0.893/0.780（均值 0.84）、Pucker 0.824，均取 0.85 */
+        /** Smile 峰值 0.893/0.780（均值 0.84）、Pucker 0.824，均取 0.85 */
         private const val SMILE_DEVICE_MAX = 0.85f
         private const val PUCKER_DEVICE_MAX = 0.85f
 
@@ -488,7 +488,7 @@ class BlendShapeMapper(
         private const val AR_MOUTH_RIGHT = "Animoji_Mouth_Right"
         private const val AR_MOUTH_LEFT = "Animoji_Mouth_Left"
 
-        /** 无实测峰值取恒等 1.0；眉毛仅 BrowOuterUpLeft 实测峰 0.46 */
+        /** 无峰值数据取恒等 1.0；眉毛仅 BrowOuterUpLeft 峰值 0.46 */
         private const val MOUTH_X_DEVICE_MAX = 1.0f
         private const val BROW_DEVICE_MAX = 1.0f
 
@@ -527,7 +527,7 @@ class BlendShapeMapper(
             "EyeOpenRight" to ("Animoji_Eye_Wide_Right" to "EyeWideRight")
         )
 
-        /** Wide 实测峰 0.973/1.000 取 1.0；死区 0.10 只作用于叠加项 */
+        /** Wide 峰值 0.973/1.000 取 1.0；死区 0.10 只作用于叠加项 */
         private const val WIDE_BOOST_DEVICE_MAX = 1.0f
         private val WIDE_BOOST_SHAPE = ExpressionConfig(deadZone = 0.10f)
 

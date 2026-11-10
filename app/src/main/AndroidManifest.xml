@@ -7,19 +7,17 @@
     <!-- MulticastLock 需要；部分 OEM 驱动按组播路径过滤 UDP 广播包 -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- 模型导入走 WorkManager 前台任务（dataSync），切后台/锁屏也不会被系统回收。
-         work-runtime 的 AAR 已带入 FOREGROUND_SERVICE；API 34+ 起还需按类型单独申请，
-         否则 startForeground 直接抛 SecurityException（本项目 targetSdk = 37）。 -->
+    <!-- work-runtime AAR 已带入 FOREGROUND_SERVICE；API 34+ 起 dataSync 类型须单独申请，否则 startForeground 抛 SecurityException -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
 
-    <!-- arenginesdk 硬编码带入，本 App 无外部存储读写；tools:node="remove" 让合并结果真正删除 -->
+    <!-- arenginesdk 硬编码带入；tools:node="remove" 让合并结果真正删除 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
         tools:node="remove" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         tools:node="remove" />
-    <!-- 防御 arenginesdk 升级或换分发源后重新注入；当前依赖组合未声明该权限 -->
+    <!-- 防 arenginesdk 升级或换分发源后重新注入；当前依赖未声明该权限 -->
     <uses-permission
         android:name="android.permission.SYSTEM_ALERT_WINDOW"
         tools:node="remove" />
@@ -55,11 +53,7 @@
             </intent-filter>
         </activity>
 
-        <!-- WorkManager 把它自己的 SystemForegroundService 声明在 AAR 里，但没有
-             foregroundServiceType——API 34+ 要在 manifest 上显式声明类型，否则
-             startForeground 抛 MissingForegroundServiceTypeException。
-             这里用 tools:node="merge" 叠加类型：直接整体替换会丢掉 AAR 里的其他属性。
-             dataSync 对应「本地文件导入/解压」，与 getForegroundInfo 传的类型一致。 -->
+        <!-- WorkManager 的 SystemForegroundService 在 AAR 中无 foregroundServiceType；tools:node="merge" 叠加类型，整体替换会丢 AAR 其他属性 -->
         <service
             android:name="androidx.work.impl.foreground.SystemForegroundService"
             android:foregroundServiceType="dataSync"

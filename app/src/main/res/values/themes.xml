@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- 首帧经 values/values-night 跟随系统；splash 在 App 代码前解析，固定深色 -->
+    <!-- splash 在 App 代码前解析，固定深色 -->
     <style name="AppTheme" parent="Theme.Material3.DayNight.NoActionBar">
         <item name="android:colorBackground">@color/colorBackground</item>
         <item name="android:statusBarColor">@color/colorTopBar</item>
         <item name="android:navigationBarColor">@color/colorSurfaceContainer</item>
         <item name="android:windowBackground">@color/colorBackground</item>
-        <!-- 指向去底前景图，回落 adaptive icon 会在 Logo 外多一圈底板 -->
+        <!-- 指向去底前景图，回落 adaptive icon 会多一圈底板 -->
         <item name="android:windowSplashScreenBackground">@color/colorSplashBackground</item>
         <item name="android:windowSplashScreenAnimatedIcon">@mipmap/ic_launcher_foreground</item>
         <item name="android:windowSplashScreenIconBackgroundColor">@android:color/transparent</item>
     </style>
 
-    <!-- 强制深色，引用 colors_compose 的 *Dark 条目，不随 night 漂移 -->
+    <!-- 强制深色，引用 colors_compose 的 *Dark 条目 -->
     <style name="ThemeOverlay.ARVTubeLink.ForceDark" parent="">
         <item name="android:windowBackground">@color/colorBackgroundDark</item>
         <item name="android:statusBarColor">@color/colorSurfaceContainerHighDark</item>

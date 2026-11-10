@@ -1,11 +1,9 @@
-# 构建产物
 .gradle/
 .kotlin/
 build/
 /captures
 .externalNativeBuild
 .cxx
-# AGP 打包产物目录（含 app-release.apk 与 output-metadata.json）
 app/release/
 *.apk
 *.aab
@@ -13,32 +11,26 @@ app/release/
 *.dex
 *.class
 
-# 本地配置
 local.properties
 local_debug/
 
-# IDE
 .idea/
 *.iml
 *.hprof
 *.log
 
-# 操作系统
 .DS_Store
 Thumbs.db
 ehthumbs.db
 Desktop.ini
 
-# VTS 插件 Token
 vts_token.txt
 .arvtubelink_probe_token
-# 设备日志 / 原始探针数据
 *.logcat
 *_logcat.txt
 raw_probe.txt
 smile_probe.txt
 
-# 签名密钥
 *.jks
 *.keystore
 *.p12
@@ -46,45 +38,39 @@ smile_probe.txt
 *.pem
 *.key
 
-# Python
 __pycache__/
 *.py[cod]
 *.egg-info/
 .venv/
 venv/
 
-# tools/ 下划线前缀为开发期脚本，只保留 README.md 与两个正式探针脚本
+# tools/ 下划线前缀为开发期脚本
 tools/_*
 
-# 构建 / 打包
 *.aar
 captures/
 *.stackdump
 hs_err_pid*
 replay_pid*
 
-# 签名与密钥
 signing.properties
 keystore.properties
 *.p7b
 *.cer
 *.crt
 
-# 构建计数
 .build-counter
 
-# 系统垃圾
 ._*
 .Spotlight-V100
 .Trashes
 *.swp
 *~
 
-# 编辑器
 .vscode/
 *.sublime-*
 *.suo
 *.user
 *.userosscache
 
-# 本仓库 Markdown 与 LICENSE 必须入库，勿加 *.md / README* / docs/ / !*.md 规则
+# Markdown 与 LICENSE 须入库，勿加 *.md / README* / docs/ 规则

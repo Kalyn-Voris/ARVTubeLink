@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- XML 层专用，服务 themes.xml 首帧/splash/状态栏；须与 values-night 同名成对 -->
+    <!-- 须与 values-night 同名成对 -->
     <color name="colorBackground">#F8F9FF</color>
     <color name="colorTopBar">#E7E8EE</color>
     <color name="colorSurfaceContainer">#EDEDF3</color>
     <!-- scrim 用，无 values-night 覆盖 -->
     <color name="black">#FF000000</color>
-    <!-- 占位值，生效值在 values-v31；只写 v31 会让 AAPT2 链接失败 -->
+    <!-- 占位值，生效值在 values-v31；只在 v31 写会 AAPT2 链接失败 -->
     <color name="colorSplashBackground">#121317</color>
 </resources>

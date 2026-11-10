@@ -4,35 +4,7 @@ import java.io.File
 import java.io.IOException
 import java.io.RandomAccessFile
 
-/**
- * ZIP 中央目录审计器：解压**之前**先把整个包的结构读一遍，只信「中央目录 + 本地头」里可验证的字段。
- *
- * ## 为什么需要这一层（借鉴 7-Zip 的防御思路）
- * `java.util.zip.ZipFile` 只负责「把字节解开」，它**不告诉我们条目是什么文件类型**：
- * `ZipEntry` 没有暴露 external attributes / unix mode。而 zip 条目的真实类型（普通文件、
- * 目录、符号链接、设备文件、FIFO、socket）恰恰写在这两个字段里：
- *
- *  - `version made by` 高 8 位 = 打包平台（3 = Unix，19 = macOS）；
- *  - `external file attributes` 高 16 位 = `st_mode`（`S_IFMT` 掩码取类型位）。
- *
- * 7-Zip 的 ZIP handler 在解压前就会读这两处，非 `S_IFREG` / `S_IFDIR` 的条目直接拒绝。
- * 移动端虽然普通 `File` API 建不出符号链接，但「骗过解压器把它当普通文件写出去」本身
- * 就是路径穿越 / 后续攻击的一环（写出一个内容为 `/data/data/...` 的文件，再被别的组件当
- * 链接解释），所以这里按 7-Zip 的口径一律拒绝。
- *
- * ## 为什么不用 commons-compress
- * 它确实直接暴露 `getUnixMode()` / `isUnixSymlink()`，但为了一个属性检查引入一个
- * ~1 MB 的运行时依赖（连带 commons-io）不划算；中央目录格式是稳定且有限的，
- * 这里自解析 46 字节的固定头即可，还能顺便做「本地头 vs 中央目录」的一致性校验，
- * 这正好也是 7-Zip 防「解析差异攻击」的做法。
- *
- * ## 解析差异防御（本类的第二个职责）
- * 同一个 zip 里，中央目录记录和本地头各有一份文件名/大小/算法。攻击者可以让两份记录
- * 不一致：解压器按中央目录建目录、按本地头写文件，或反过来。这里对每个条目**按字节**
- * 比对两处文件名，并比对算法与（无数据描述符时）长度；不一致即整包拒绝。
- *
- * @throws ZipFormatException 结构非法 / 解析差异 / 不支持的变体（ZIP64、分卷、加密）
- */
+/** ZIP 中央目录审计器：解压前读中央目录与本地头；ZipEntry 不暴露 external attributes/unix mode，类型须自解析 */
 internal object Live2DZipAuditor {
 
     private const val SIG_EOCD = 0x06054b50L
@@ -45,7 +17,7 @@ internal object Live2DZipAuditor {
     private const val CENTRAL_HEADER_SIZE = 46
     private const val LOCAL_HEADER_SIZE = 30
 
-    /** 中央目录本身的上限：4096 个条目 × 最长名字也远小于此，超出即视为畸形包。 */
+    /** 中央目录上限 16 MB，4096 条目远小于此 */
     private const val MAX_CENTRAL_DIR_SIZE = 16L * 1024 * 1024
 
     private const val FLAG_ENCRYPTED = 0x0001
@@ -65,18 +37,13 @@ internal object Live2DZipAuditor {
 
     private const val ZIP64_SENTINEL = 0xFFFF_FFFFL
 
-    /** DOS external attributes 里的目录位。 */
+    /** DOS external attributes 的目录位 */
     private const val DOS_ATTRIBUTE_DIRECTORY = 0x10L
 
-    /** 条目类型。只有 [DIRECTORY] 与 [REGULAR] 允许落盘。 */
+    /** 条目类型，只有 DIRECTORY 与 REGULAR 允许落盘 */
     enum class Kind { DIRECTORY, REGULAR, SYMLINK, DEVICE, OTHER }
 
-    /**
-     * 一个条目的审计结果。
-     *
-     * @param rawName 中央目录里的原始文件名字节（用于和本地头按字节比对，避免编码差异）
-     * @param name 仅供日志展示的 UTF-8 解码结果；真正的路径以解压器给出的名字为准
-     */
+    /** 审计结果；rawName 为中央目录原始文件名字节，name 仅供日志 */
     data class Entry(
         val name: String,
         val rawName: ByteArray,
@@ -95,12 +62,7 @@ internal object Live2DZipAuditor {
         val usesDataDescriptor: Boolean get() = flags and FLAG_DATA_DESCRIPTOR != 0
     }
 
-    /**
-     * 读取 [file] 的中央目录并逐个校验本地头，返回按中央目录顺序排列的条目。
-     *
-     * 顺序即 `ZipFile.entries()` 的顺序，上层按**下标**与解压器结果配对，
-     * 这样即使文件名编码解码方式不同也不会错位（两处读的是同一份中央目录）。
-     */
+    /** 读中央目录并逐个校验本地头；顺序即 ZipFile.entries() 顺序，按下标配对 */
     fun audit(file: File): List<Entry> {
         RandomAccessFile(file, "r").use { raf ->
             val fileLength = raf.length()
@@ -108,12 +70,12 @@ internal object Live2DZipAuditor {
                 throw ZipFormatException("文件过小，不是有效的 zip 压缩包")
             }
 
-            // EOCD 固定 22 字节 + 最长 64 KiB 注释；从尾部倒着找签名
+            // EOCD 固定 22 字节 + 最长 64 KiB 注释，从尾部倒找签名
             val tailLength = minOf(fileLength, (EOCD_MIN_SIZE + EOCD_MAX_COMMENT).toLong()).toInt()
             val tail = readAt(raf, fileLength - tailLength, tailLength)
             val eocd = findEocd(tail) ?: throw ZipFormatException("找不到中央目录结尾记录（EOCD）")
 
-            // ZIP64 用 EOCD64 locator 紧贴在 EOCD 之前标记；Live2D 模型不可能到 4 GB，直接拒绝
+            // ZIP64 locator 紧贴 EOCD 之前；模型不可能到 4 GB，直接拒绝
             if (eocd >= 20 && u32(tail, eocd - 20) == SIG_EOCD64_LOCATOR) {
                 throw ZipFormatException("不支持 ZIP64 压缩包")
             }
@@ -177,6 +139,7 @@ internal object Live2DZipAuditor {
                     pos + CENTRAL_HEADER_SIZE,
                     pos + CENTRAL_HEADER_SIZE + nameLength,
                 )
+                // version made by 高 8 位 = 打包平台；external attributes 高 16 位 = st_mode
                 val platform = madeBy ushr 8
                 val unixMode = if (platform == PLATFORM_UNIX || platform == PLATFORM_OSX) {
                     ((externalAttributes ushr 16) and 0xFFFF).toInt()
@@ -205,13 +168,7 @@ internal object Live2DZipAuditor {
         }
     }
 
-    /**
-     * 判断条目类型。
-     *
-     * Unix（含 macOS）包按 `st_mode` 的类型位判断；FAT/NTFS 包没有 unix mode，
-     * 退回「名字以 '/' 结尾」或 DOS 目录属性位——两者都不满足即普通文件。
-     * 注意 `S_IFMT` 为空（0）也是合法状态（部分打包工具不写类型位），按名字兜底。
-     */
+    /** 类型判定：Unix/macOS 按 st_mode 类型位，FAT/NTFS 退回名字 '/' 结尾或 DOS 目录位，S_IFMT 为 0 也合法 */
     private fun classify(platform: Int, unixMode: Int, externalAttributes: Long, rawName: ByteArray): Kind {
         val endsWithSeparator = rawName.isNotEmpty() &&
             (rawName[rawName.size - 1] == '/'.code.toByte() || rawName[rawName.size - 1] == '\\'.code.toByte())
@@ -230,12 +187,7 @@ internal object Live2DZipAuditor {
         return if (endsWithSeparator || dosDirectory) Kind.DIRECTORY else Kind.REGULAR
     }
 
-    /**
-     * 校验本地头与中央目录一致。
-     *
-     * 文件名按字节比较（不解码，绕开编码差异）；算法与加密位必须一致；
-     * 未使用数据描述符（bit 3）时，两处长度也必须一致。
-     */
+    /** 本地头与中央目录一致性：文件名按字节比，算法/加密位一致，无数据描述符时长度一致 */
     private fun validateLocalHeader(raf: RandomAccessFile, fileLength: Long, entry: Entry) {
         val offset = entry.localHeaderOffset
         if (offset < 0 || offset + LOCAL_HEADER_SIZE > fileLength) {
@@ -277,10 +229,7 @@ internal object Live2DZipAuditor {
         }
     }
 
-    /**
-     * 从尾部倒着找 EOCD，并校验注释长度确实一直延伸到文件末尾
-     * （否则文件数据里偶然出现的同签名会被误判成目录结尾）。
-     */
+    /** 从尾部倒找 EOCD，注释长度须正好延伸到文件末尾，否则是数据里的同签名 */
     private fun findEocd(tail: ByteArray): Int {
         var index = tail.size - EOCD_MIN_SIZE
         while (index >= 0) {
@@ -310,5 +259,5 @@ internal object Live2DZipAuditor {
             ((bytes[offset + 3].toLong() and 0xFF) shl 24)
 }
 
-/** zip 结构非法 / 解析差异 / 不支持的变体。 */
+/** zip 结构非法 / 解析差异 / 不支持的变体 */
 internal class ZipFormatException(message: String) : IOException(message)

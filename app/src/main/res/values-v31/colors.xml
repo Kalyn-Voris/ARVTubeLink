@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- splash 由系统静态解析，ForceDark overlay 覆盖不到，固定深色 -->
+    <!-- splash 由系统静态解析，ForceDark overlay 覆盖不到 -->
     <color name="colorSplashBackground">#121317</color>
 </resources>
