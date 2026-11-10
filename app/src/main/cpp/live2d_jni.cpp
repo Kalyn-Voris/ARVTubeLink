@@ -117,10 +117,49 @@
 //     偏移与缩放都在 C++ 侧钳制。平移边界按**模型包围盒**计算：只要还有
 //     80px 可见就允许拖（nativePanLimits 供 Kotlin 同步），因此放大后可以把
 //     头部拖到屏幕中心；旧版「中心点必须在屏幕内」是放大拖不动的根因。
-//   - **物理**：自研质点-弹簧-阻尼链（见 PhysicsChain）。只借鉴「输入→分段→输出」
-//     的数据约定，求解器完全独立实现：每节质点的目标是「父节点实际位置 + 旋转后的
-//     静息向量」，受力 = 胡克回复力 - 阻尼力 + 重力，半隐式欧拉积分 + 定长约束。
-//     输出取链尾相对刚性姿态的偏角，写回 ParamHair* / ParamScarf。
+//   - **物理**：XPBD 求解器（见 PhysicsChain / xpbd::step）。只借鉴「输入→
+//     分段→输出」的数据约定，求解器按 Macklin「Small Steps in Physics Simulation」
+//     方案独立实现：固定子步长 + 每子步一次约束迭代，距离（刚性杆）+ 目标方向
+//     （输入驱动，柔度=Delay/Acceleration）+ 弯曲（单边防对折）三类约束，
+//     速度由位移回推并加指数阻尼。输出取链尾相对姿态偏角，写回 ParamHair*。
+//
+//  P7 增补（v1.3.0 首发回归修复）：
+//   - **特定模型手部缺失**：旧实现把「有掩码声明但所有掩码下标都是 -1」的
+//     drawable 整块丢弃。Live2D 里 -1 表示「该掩码 drawable 当前不可见」，
+//     标准语义是**退回不裁剪**而不是把被裁剪的内容也删掉 —— 手部常被袖子/
+//     衣物遮挡，掩码一旦隐藏，整只手就跟着消失。现在改为按无掩码绘制。
+//   - **pose3 互斥判定改成「最大不透明度获胜」**：旧实现取「第一个高于阈值」
+//     的部件，默认值全为 1 时永远选中第一个候选，动作把另一只手抬起来也无效。
+//     标准 Pose 后处理 取组内最大值（并列取靠前者）；全组都不亮时**保持隐藏**，
+//     不再强行点亮第一个（那会把本来不该出现的部件按 0 透明度复活）。
+//   - pose3 的 Link 联动部件现在会跟随所属部件一起归零（Sample 未用到，但
+//     自定义模型常用）。
+//   - **切页黑块 / 面捕抽风**：surfaceCreated 无条件置 g_glModelDirty 并重建
+//     全部 GL 资源（program / 纹理 / VBO / IBO）；drawFrame 入口连 stencil
+//     一起清，避免旧模板污染；±Inf 参数降级为「本帧无输入」，物理链在上下文
+//     重建后复位，顶点抄写拒绝非有限值。
+//
+//  P8 增补（v1.4.0 真机回归修复：丢手 / 四只手 / 头发抽风）：
+//   - **Link 下标错位（四只手 / 丢手）**：旧 applyPoseLocked 把「获胜部件的
+//     csm 下标」当成「组内候选序号」去索引 Link 表（links[winner]），两者是
+//     不同下标空间，只要组内候选序号与部件下标不相等就会取到错误候选的联动
+//     列表（越界时直接跳过）。现在显式区分 winnerOrdinal / winnerPart。
+//   - **pose3 名字匹配大小写不敏感**：自定义模型的 pose3.json 与 moc3 部件名
+//     常大小写不一致。旧实现严格匹配，解析后组内只剩 1 个成员，而单项组
+//     被当作「强制该部件可见」，于是两套手臂同时被点亮 ——「四只手」的另一半
+//     成因。现在回退到小写表匹配，且**解析后不足 2 个成员的组直接丢弃**（宁可
+//     少一条互斥规则，也不凭空点亮一只手臂）。
+//   - **获胜者强制 1.0、全组为 0 时退化为恰好一个可见**：严格对齐标准
+//     PoseManager。旧实现让获胜者保留输入值（可能是 0.3，仍然看不见），并且
+//     全组为 0 时保持整组隐藏 —— 后者会让「默认 visible=0、只靠 pose 点亮」
+//     的部件永久消失，即真机「模型 A 没手」。互斥组只会切换、不会整组消失。
+//   - **物理防抖（P8）**：①输入增益 0.25（阈值任务要求的 0.1~0.3）；
+//     ②输入低通 + 速度钳制，消除 30Hz 面捕推流造成的逐帧交替冲击（抽风的
+//     真正来源：两帧里一帧速度 0、一帧速度尖峰）；③速度低于 1e-3 强制归零
+//     （Movement Threshold）；④基础阻尼比 0.08 → 0.22 并封顶 0.95；
+//     ⑤终端速度（空气阻力）兜底；⑥输出死区 + 输出低通，滤掉链尾残余抖动；
+//     ⑦全局开关 g_physicsEnabled（JNI nativeSetPhysicsEnabled），关闭时输出
+//     参数写回默认值，用于真机二分定位「是不是物理在抖」。
 //
 //  Purism Core 的使用约束（API 规范）：
 //   - MOC 缓冲区必须 64 字节对齐（csmAlignofMoc），且必须活得比 model 久；
@@ -144,6 +183,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dirent.h>
+#include <unistd.h>
 #include <limits>
 #include <mutex>
 #include <string>
@@ -160,6 +201,7 @@
 // 极简只读 JSON：解析 model3.json / motion3.json / exp3.json / pose3.json。
 // 自带实现而不是引 nlohmann/json —— 后者会给 .so 增加几百 KB。
 #include "mini_json.h"
+#include "xpbd_solver.h"
 
 // stb_image：单文件 PNG/JPEG 解码器。同样只允许一个翻译单元定义实现。
 // STBI_ONLY_PNG / STBI_NO_STDIO：本工程只解 assets 里的 PNG，且走内存接口
@@ -275,6 +317,25 @@ std::vector<VertexSpan> g_vertexSpans;
 bool g_verticesDirty = false;
 
 /**
+ * 本次改脏的顶点区间 [first, last]（含端点；first > last = 无变化）。
+ *
+ * P14：参数更新与物理只影响「跟着这条参数链动」的少数 drawable（头发、裙摆、
+ * 眼睛…），整块 glBufferSubData 会把几万顶点的显存流量摊到每一帧。
+ * [refreshVertexPositionsLocked] 在抄顶点时顺手比较新旧坐标，只记下真正变了的
+ * 连续区间，drawFrame 按它做区间上传。比较成本（一次 float 相等）远小于一次
+ * 全量 DMA，且判据来自数据本身，不会漏传。
+ */
+int g_dirtyVertexFirst = -1;
+int g_dirtyVertexLast = -1;
+
+/** 清掉顶点脏标记与脏区间（上传完成 / 模型复位 / VBO 重建后调用）。 */
+inline void clearVertexDirty() {
+    g_verticesDirty = false;
+    g_dirtyVertexFirst = -1;
+    g_dirtyVertexLast = -1;
+}
+
+/**
  * VBO 当前分配的顶点数（GL 线程写）。
  *
  * 用于 glBufferSubData 前的尺寸校验：若 nativeInit 在上传之后又跑过（模型换了），
@@ -302,9 +363,54 @@ bool g_glModelDirty = false;
 std::unordered_map<std::string, int> g_paramIndexById;
 int g_paramCount = 0;
 
+/**
+ * 参数名「归一化」表（P14）：同一参数在不同模型里的写法不统一时兜底命中。
+ *
+ * 实证（Big_fat_fish）：model3.json 的 EyeBlink 组写的是 `EyeLOpen` / `EyeROpen`，
+ * 没有 `Param` 前缀；而 App 的推流表固定用 Cubism 标准名 `ParamEyeLOpen`。
+ * 精确查表必然 miss → 参数绑定失败 → 面捕/眨眼数据整条链路写不进去。
+ *
+ * 归一化规则：小写、丢弃非字母数字、去前导 "param"。于是
+ *   ParamEyeLOpen / EyeLOpen / eyE_l_open → "eyelopen"
+ *   ParamEyeBallX / EyeBallX            → "eyeballx"
+ * 只在精确匹配失败时兜底，且一参多写时保留 moc3 里先出现的那个（确定性）。
+ */
+std::unordered_map<std::string, int> g_paramIndexByNorm;
+
+/** 参数名归一化键（别名兜底用）。 */
+std::string normalizeParamName(const std::string &name) {
+    std::string out;
+    out.reserve(name.size());
+    for (char c : name) {
+        if (c >= 'A' && c <= 'Z') {
+            out.push_back(static_cast<char>(c - 'A' + 'a'));
+        } else if ((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')) {
+            out.push_back(c);
+        }
+    }
+    if (out.size() > 5 && out.compare(0, 5, "param") == 0) out.erase(0, 5);
+    return out;
+}
+
+/**
+ * 参数名 → 下标（精确优先，归一化兜底）。找不到返回 -1。
+ *
+ * 所有「按名字取参数」的路径（物理输入/输出、表情、眨眼组、Kotlin 绑定）都必须
+ * 走这里，否则同一份数据在不同命名风格的模型上会出现「有的模型生效、有的不生效」。
+ */
+int resolveParamIndex(const std::string &name) {
+    const auto exact = g_paramIndexById.find(name);
+    if (exact != g_paramIndexById.end()) return exact->second;
+    const auto alias = g_paramIndexByNorm.find(normalizeParamName(name));
+    if (alias != g_paramIndexByNorm.end()) return alias->second;
+    return -1;
+}
+
 /** 缓存命中计数，用于诊断「Kotlin 传的 id 是否在模型里」（仅累计，不打日志）。 */
 long g_paramWritesTotal = 0;
 long g_paramUnknownTotal = 0;
+/** 被降级的非有限值计数（P7：±Inf → NaN 的「本帧无输入」）。 */
+long g_paramSanitizedTotal = 0;
 
 // ---------------------------------------------------------------------------
 //  动作 / 表情 / 姿势（P4）
@@ -365,11 +471,113 @@ std::vector<Expression> g_expressions;
 /** 姿势组：每组内互斥，只保留一个可见部件（csm 部件下标）。 */
 std::vector<std::vector<int>> g_poseGroups;
 
+/**
+ * 姿势组的 Link 联动部件（P7）。
+ *
+ * 下标与 [g_poseGroups] 对齐：g_poseGroupLinks[组][候选序] = 跟随该候选
+ * 一起切换的部件下标列表。pose3.json 里每个候选部件的 "Link" 字段表示
+ * 「选中我时，这些部件也一起显示」。Sample 未用到，但自定义模型（尤其是
+ * 多套服装/手臂换装）常用，漏掉会让联动部件残留成第二只手。
+ *
+ * ⚠️ P8：候选序（ordinal）与 csm 部件下标是**两个不同的下标空间**。
+ * 旧 applyPoseLocked 直接拿部件下标去索引本表（links[winner]），越界时静默
+ * 跳过、不越界时取到**别的候选**的联动列表 —— 这是自定义模型「四只手 /
+ * 丢手」的直接成因之一。现在两者显式区分。
+ */
+std::vector<std::vector<std::vector<int>>> g_poseGroupLinks;
+
+/**
+ * 无 pose3.json 时的 A/B 成对部件兜底互斥（P9）。
+ *
+ * 背景见 local_debug/repro/FINDINGS.md §2.1：hiyori_vts 这类模型既没有
+ * pose3.json，也没有 Motions 段，moc3 里却把两套互斥的手臂部件
+ * （PartArmA / PartArmB）的默认不透明度都导出成 1.0。applyPoseLocked()
+ * 在 g_poseGroups 为空时直接 return，于是两套手臂同时绘制 —— 真机上的「四只手」。
+ *
+ * 兜底规则刻意保守，避免误伤正常模型：
+ *  1) 只有 **完全没有 pose3 组** 时才启用（有 pose3 一律以作者意图为准）；
+ *  2) 只在检测到「同名 + 后缀 A/B 成对」的部件时才建组
+ *     （PartArmA/PartArmB、PartSleeveA/PartSleeveB …），单独一个 A 或 B 不建组；
+ *  3) 两端都必须是「默认可显示」（默认不透明度 > 阈值）—— 真正会叠画的才算；
+ *     默认就隐藏的一端说明作者已经用不透明度表达过意图，兜底不介入；
+ *  4) 两端都必须至少归属一个 drawable（否则归零也画不掉任何东西，纯属噪音）；
+ *  5) 由 prefs `pose_fallback_ab`（nativeSetPoseFallback）随时可关，关闭后
+ *     立即恢复成「不互斥」的原始行为，方便真机 A/B 对比。
+ *
+ * 组内顺序固定为 [A, B]，获胜者因此在默认值相同时落到 A（applyPoseLocked
+ * 按「最大不透明度、同值取靠前候选」选择）。若动作曲线显式驱动了其中一个，
+ * 动作值会通过同一条获胜者规则生效。
+ */
+std::atomic<bool> g_poseFallbackEnabled{true};
+
+/**
+ * 物理逐帧曲线追踪（P9 与标准参考实现对照用）。
+ *
+ * 打开后每帧打一行 `trace:` 到 logcat，内容是该帧的时间、dt 与
+ * ParamHairFront 的物理输出值。格式与 host 参考实现（标准
+ * CubismPhysics.cpp）的 CSV 一致，因此可以把两边曲线逐帧对齐比数值，
+ * 而不是靠肉眼或单一统计量判断「物理是不是抽风」。
+ *
+ * 由 prefs `physics_trace` 驱动（nativeSetPhysicsTrace），默认关闭 ——
+ * 每帧一行日志开销不小，只在取证时需要。
+ */
+std::atomic<bool> g_physicsTrace{false};
+
+/** 追踪用的帧序号（drawFrame 递增）。 */
+long g_traceFrame = 0;
+
+/**
+ * 参考模式开关（P9 与标准实现对照用）—— **P12 起退役**。
+ *
+ * 标准粒子模型成为唯一路径后，「旁路抑制项」失去了对象：P8 加入的全部抑制项
+ * （输入增益/低通、输出死区/低通、速度死区、静止吸附）已随旧伺服模型删除。
+ * 保留这个 atomic 只为 nativeSetPhysicsReferenceMode 的 JNI ABI 不变
+ * （Kotlin 侧仍会按旧 prefs 调用），写入它不再产生任何行为差异。
+ */
+std::atomic<bool> g_physicsReferenceMode{false};
+
+/** 本次加载是否真的读到了 pose3 组（true = 兜底必须让位）。 */
+bool g_poseFromFile = false;
+
+/** 前 g_poseFileGroupCount 组来自 pose3.json，其后是兜底推断组（运行时开关回滚用）。 */
+size_t g_poseFileGroupCount = 0;
+
+/** 兜底推断出的互斥组数（诊断/日志用）。 */
+int g_poseFallbackPairs = 0;
+
 /** 部件 id -> csm 部件下标（初始化时建立，构造姿势组用）。 */
 std::unordered_map<std::string, int> g_partIndexById;
 
+/**
+ * 部件 id（小写）-> csm 部件下标（P8）。
+ *
+ * 自定义模型的 pose3.json 与 moc3 里的部件名大小写经常不一致（导出工具
+ * 版本差异）。标准 Pose 后处理 用**字符串全等**匹配，但标准模型两边必然
+ * 一致；导入模型不能指望这一点：严格匹配失败会让组内成员骤减，剩下单项组
+ * 被当作「强制该部件可见」，于是两套手臂同时点亮 —— 另一种「四只手」。
+ * 这里加一层小写回退，仍然以精确匹配优先。
+ */
+std::unordered_map<std::string, int> g_partIndexByLower;
+
 /** 部件默认不透明度快照（init 后立刻拷贝，逐帧复位用）。 */
 std::vector<float> g_partDefaults;
+
+/** 每个部件归属的 drawable 数量（兜底互斥判定「是否真的会画出来」用）。 */
+std::vector<int> g_partDrawableCounts;
+
+/**
+ * 本帧被**动作 PartOpacity 曲线显式驱动**的部件标记（P8）。
+ *
+ * 语义：动画自己对某个部件的不透明度有明确意图时，pose 后处理不该跟它抢。
+ * 这正对应任务里的「PartOpacity 写入优先级低于动画参数」：
+ *  - 组内成员：pose3 的互斥语义优先（这是「四只手」的唯一治法，动画若把
+ *    两套手臂都拉到 1.0，必须由 pose 压掉落选者）；
+ *  - 组外被动画驱动的部件：一律不动；
+ *  - 被动画驱动的 **Link 联动部件**：不归零、不跟随获胜者改值。
+ *
+ * 每帧在 resetParametersLocked 里清零，applyMotionLocked 里置位。
+ */
+std::vector<uint8_t> g_partAnimDriven;
 
 /** 参数默认值快照（逐帧复位用）。 */
 std::vector<float> g_paramDefaults;
@@ -379,92 +587,157 @@ std::vector<float> g_paramMin;
 std::vector<float> g_paramMax;
 
 // ---------------------------------------------------------------------------
-//  自研物理引擎（P5）
+//  物理引擎（XPBD 重写）：位置动力学约束求解器（法律安全的独立实现）
 // ---------------------------------------------------------------------------
 //
-//  目标：头发 / 裙摆 / 围巾跟随 ParamAngleX/Y/Z 产生带阻尼的延迟摆动。
+//  目标：头发 / 裙摆 / 围巾跟随 ParamAngleX/Y/Z 产生**惯性拖尾**摆动。
 //
-//  **实现独立于CubismPhysics**：只沿用 physics3.json 的「输入 → 分段质点链
-//  → 输出」这一数据约定，求解器是自己写的质点-弹簧-阻尼模型：
+//  前两代实现：P5 弹簧伺服（稳态输入产生恒定 DC 响应，动态被低通化，靠一串
+//  抑制项压制发散与残差）→ P12 独立实现 CubismPhysics 方向跟踪粒子模型
+//  （高通、稳定，但一阶方向跟踪没有真正的惯性过冲，且严格对齐带来法律风险）。
+//  本代按 Macklin 等「Small Steps in Physics Simulation」（SCR'19）的 XPBD
+//  方案从零实现：
 //
-//    · 每节质点 i 有一个「静息位置」rest[i]（来自 json 的 Vertices），
-//      根节点 rest[0] 固定在输入锚点上；
-//    · 每帧把父节点的实际位置 + 旋转后的静息向量当作该质点的目标位置；
-//    · 受力 = 胡克回复力 k·(target - pos) + 阻尼力 -c·v + 重力 + 输入速度拖曳力；
-//    · 半隐式欧拉积分（先更新速度再更新位置），并按 1/120s 定步长子步进，
-//      避免掉帧时大步长把弹簧积分发散；
-//    · 输出取「链尾实际方向」与「刚性姿态方向」的夹角，归一化后写回参数。
+//    每渲染帧 → 累加时钟 → 固定子步（xpbd::tuning().substepDt = 1/120s，与渲染帧率
+//    解耦）→ 每个子步：预测（阻尼 + 前推）→ **一次**约束求解（Gauss-Seidel
+//    顺序投影）→ 速度回推。「多子步 × 单次迭代」替代「大步长 + 多次迭代」，
+//    求解误差与阻尼误差都随子步数下降（Macklin 论文核心结论）。
 //
-//  与标准实现的差别（有意为之）：
-//   - 不实现 AngleLimits / 空气阻力 / 归一化矩阵等完整特性，只保留效果所需的最小集；
-//   - 输出角度直接由几何夹角得到，不做标准的角度累积与偏移补偿；
-//   - 输入速度显式作为拖曳力注入（标准靠锚点位移隐式产生）。
+//  三类约束（算法层面参考 Blender 4.x 细杆 XPBD 的「以距离代角度」弯曲处理
+//  与 UE5 Chaos Groom 的 Advance → Solve → Update 流程组织，未复制任何实现
+//  代码）：
+//    1) 距离约束（等式，柔度 0）：相邻粒子钳回 Radius —— 刚性杆；
+//    2) 目标方向约束（等式，柔度 α = 基值 × Delay / Acceleration）：把粒子
+//       拉向「父粒子 + 输入目标方向 × Radius」。Angle 类输入映射目标方向，
+//       X/Y 类输入通过根粒子平移注入动量。稳态时链与目标方向平行、输出 0
+//       —— 与标准模型相同的高通结构，但动态是二阶惯性系统（过冲 + 回摆），
+//       不是一阶方向跟踪的纯迟滞；
+//    3) 弯曲约束（单边不等式）：|x_{i+1} − x_{i−1}| ≥ ratio × (r_i + r_{i+1})，
+//       防止大幅甩动时链对折。
+//
+//  求解器主体与稳定性兜底的完整说明见 xpbd_solver.h 与 applyPhysicsLocked。
 
-/** 一条物理输入：参数 → 归一化后的 X/Y 位移或角度。 */
-struct PhysicsInput {
-    int paramIndex = -1;
-    float weight = 1.0f;   // 已除以 100
-    int type = 0;          // 0=X, 1=Y, 2=Angle
-    bool reflect = false;
-};
-
-/** 一条物理输出：链尾偏角 → 参数。 */
-struct PhysicsOutput {
-    int paramIndex = -1;
-    int vertexIndex = 0;
-    float scale = 1.0f;
-    float weight = 1.0f;   // 已除以 100
-    int type = 0;          // 0=X, 1=Y, 2=Angle
-    bool reflect = false;
-};
-
-/** 一节质点（json 的 Vertices 项）。 */
-struct PhysicsVertex {
-    float restX = 0.0f;        // 静息位置（物理坐标系）
-    float restY = 0.0f;
-    float mobility = 1.0f;     // 继承父节点位移的比例（本实现用于锚点跟随强度）
-    float delay = 1.0f;        // 越大越「拖」，映射为阻尼比
-    float acceleration = 1.0f; // 越大越硬，映射为刚度
-    float radius = 0.0f;
-};
-
-/** 一条完整的物理链（physics3.json 的一个 PhysicsSetting）。 */
-struct PhysicsChain {
-    std::string id;
-    std::vector<PhysicsInput> inputs;
-    std::vector<PhysicsOutput> outputs;
-    std::vector<PhysicsVertex> vertices;
-
-    // 归一化区间（json 的 Normalization；缺省 -10/0/10）
-    float posMin = -10.0f, posDef = 0.0f, posMax = 10.0f;
-    float angMin = -10.0f, angDef = 0.0f, angMax = 10.0f;
-
-    float gravityX = 0.0f, gravityY = -1.0f;
-
-    // ---- 运行时状态（绝对位置，根节点 = 输入锚点）----
-    std::vector<float> px, py;   // 质点位置
-    std::vector<float> vx, vy;   // 质点速度
-    bool initialized = false;
-
-    /**
-     * 各节点静止时的杆方向角（弧度），下标 = 子节点下标（下标 0 不用）。
-     *
-     * 输出按 json 的 VertexIndex 取「该节杆」的偏角，因此参考基准必须是
-     * **逐节**的，不能只记链尾一个角度（审计 P1：旧实现忽略 VertexIndex）。
-     */
-    std::vector<float> settledAngles;
-
-    // 上一帧的归一化输入（±1 量纲），用于求「输入速度」→ 惯性拖曳力
-    float prevInputX = 0.0f;
-    float prevInputY = 0.0f;
-    float prevInputRot = 0.0f;
-    bool prevValid = false;
-};
+// 求解器本体在 xpbd_solver.h（header-only）：同一份代码既进 NDK 构建，也能被
+// local_debug/repro/host/xpbd_host.exe 在桌面端回放调参。这里只做类型别名，
+// 让本文件的历史命名（PhysicsChain 等）继续可用。
+using PhysicsInput = xpbd::Input;
+using PhysicsOutput = xpbd::Output;
+using PhysicsVertex = xpbd::Vertex;
+using PhysicsChain = xpbd::Chain;
 
 std::vector<PhysicsChain> g_physicsChains;
 
-/** 物理模拟的时间步（drawFrame 每帧写入，applyModelStateLocked 读取）。 */
+// ---------------------------------------------------------------------------
+//  XPBD 物理常量与 rig 级状态
+// ---------------------------------------------------------------------------
+
+/** 输入/输出 Weight 的满值（json 语义，解析侧使用）。 */
+constexpr float kPhysicsMaxWeight = 100.0f;
+/** 累加时钟上限（超过即丢弃；正常渲染帧永远碰不到）。 */
+constexpr float kPhysicsMaxDeltaTime = 5.0f;
+
+// 求解器常量（子步长、柔度、阻尼、弯曲阈值…）全部在 xpbd_solver.h 的
+// xpbd::tuning() 里，App 侧只读默认值；宿主回放台可覆盖同一份结构体。
+
+/** 物理累加时钟（整个 rig 共用一个）。 */
+float g_physicsRemainTime = 0.0f;
+
+/**
+ * physics3.json 的 Meta.Fps（0 = 缺失或不可信）。
+ *
+ * XPBD 起不再驱动步长（子步长固定 xpbd::tuning().substepDt，与渲染帧率/json 都解耦），
+ * 仅保留解析用于加载日志与模型诊断。
+ */
+float g_physicsFps = 0.0f;
+
+/**
+ * 标准 _parameterCaches / _parameterInputCaches（尺寸 = 参数总数）。
+ *
+ * caches 承担两个职责：步进时刻的输入时间对齐载体 + 组间传播通道
+ * （前一条链的输出写进 caches，后一条链的输入就能读到，标准如此）。
+ */
+std::vector<float> g_paramCaches;
+std::vector<float> g_paramInputCaches;
+
+/** 物理累加时钟的帧进水量（drawFrame 每帧写入，applyPhysicsLocked 读取）。 */
 float g_physicsDt = 0.0f;
+
+/**
+ * 上一帧真正喂给 csmUpdateModel 的参数快照（P14 渲染门控）。
+ *
+ * 为什么用「整份快照比较」而不是各阶段的脏标记：物理/眨眼写回的最终值与
+ * 「复位后的默认值」相比几乎每帧都不同（复位把参数打回默认，物理又写回输出），
+ * 那种比较恒为 true，门控就失效了。只有比较「本帧最终参数 vs 上一帧最终参数」
+ * 才能回答真正的问题：模型的输入状态有没有变。263 个 float 的逐项比较在
+ * 微秒量级，远小于一次 csmUpdateModel（整模型插值）与全顶点遍历。
+ */
+std::vector<float> g_lastAppliedParams;
+
+/**
+ * 物理总开关（P8 调试闸）。
+ *
+ * false 时 applyPhysicsLocked 直接把所有输出参数写回**默认值**并跳过模拟：
+ * 参数完全静止，用来在真机上二分定位「抖动到底来自物理求解器，还是来自
+ * 面捕/动作参数推流本身」。默认开启，由 JNI nativeSetPhysicsEnabled 切换
+ * （Kotlin 侧未接 UI 时保持 true，不影响发布行为）。
+ */
+std::atomic<bool> g_physicsEnabled{true};
+
+/**
+ * 物理抖动度量（P8 真机验证用）。
+ *
+ * 「头发抽风」是高频量，截图/录屏采样率都不够（这台设备的 screenrecord 被
+ * 厂商移除、screencap 单次 200ms ≈ 5fps），根本抓不到 60Hz 的逐帧抖动。
+ * 唯一可靠的做法是在**求解器内部**直接统计：
+ *
+ *  - inputJitter：相邻两帧物理输入（归一化后）的变化量；
+ *  - outputJitter：相邻两帧写回参数的变化量（这是屏幕上真正看到的量）；
+ *  - residualSpeed：所有质点速度的均值（抖动 = 静止时速度不为 0）；
+ *  - restFrames：判定为静止的帧数占比。
+ *
+ * 每 5 秒由 nativeStats 汇总输出一次，真机上抓 logcat 即可量化。
+ * 注意：这些只在**物理启用**时更新，关闭物理时清空（避免误导）。
+ */
+struct PhysicsJitterStats {
+    double outputAbsDeltaSum = 0.0;   // Σ|本帧输出 - 上帧输出|（每输出参数）
+    long outputDeltaCount = 0;        // 参与统计的样本数
+    double outputAbsMax = 0.0;        // 单帧最大变化
+    long outputFlipCount = 0;         // 方向反转次数（= 抖动/颤的直接证据）
+
+    /**
+     * 每个**具体输出参数**上一次的符号（-1/0/+1）。
+     *
+     * ⚠️ 为什么不能用一个全局 lastSign：输出是按「链 → 输出序」固定顺序遍历的，
+     * 相邻两个不同参数的符号天然可能相反。用全局变量跨参数比较，会把
+     * 「正常的多参数运动」全部计成方向反转 —— 实测就是这样得到了
+     * flipsPerFrame≈0.78 的假象（满幅 1Hz 正弦本来毫无抖动）。
+     * 只有跟踪同一个参数在相邻两帧之间是否反向，才是抖动的真实度量。
+     */
+    std::vector<int> lastSignByOutput;
+
+    double residualSpeedSum = 0.0;    // （P12 退役：恒 0，保留字段仅为日志格式兼容）
+    long residualSpeedCount = 0;
+
+    long frames = 0;
+    long restFrames = 0;              // （P12 退役：resting 判定已随伺服模型删除）
+
+    void reset() { *this = PhysicsJitterStats(); }
+
+    double meanOutputDelta() const {
+        return outputDeltaCount ? outputAbsDeltaSum / outputDeltaCount : 0.0;
+    }
+    double meanResidualSpeed() const {
+        return residualSpeedCount ? residualSpeedSum / residualSpeedCount : 0.0;
+    }
+    double restRatio() const {
+        return frames ? static_cast<double>(restFrames) / static_cast<double>(frames) : 0.0;
+    }
+    double flipsPerFrame() const {
+        return frames ? static_cast<double>(outputFlipCount) / static_cast<double>(frames) : 0.0;
+    }
+};
+
+PhysicsJitterStats g_physicsJitter;
 
 /** 当前激活的动作 / 表情（-1 = 无）。 */
 int g_activeGroup = -1;
@@ -485,6 +758,273 @@ float g_modelOpacity = 1.0f;
 std::vector<float> g_faceValues;
 bool g_faceDirty = false;
 
+// ---------------------------------------------------------------------------
+//  自动眨眼（P14）
+// ---------------------------------------------------------------------------
+//
+//  背景：本渲染器一直没有自动眨眼，睁眼只能靠面捕推 ParamEyeLOpen/ROpen。
+//  没有摄像头时 Kotlin 推的是 NaN（语义 = 本帧交给动作/表情），眼睛于是恒停在
+//  模型默认值上 —— 用户看到的就是「这个模型不会眨眼」。
+//
+//  Big_fat_fish 更特殊：它的 model3.json 用 EyeBlink 组声明自己需要眨眼，
+//  而且眼皮/眼球位移是通过 physics3.json（PhysicsSetting19/20/22/23，
+//  输入 EyeLOpen/EyeROpen）驱动的。也就是说眨眼必须写在**物理之前**，
+//  否则物理读到的永远是上一帧的眼睛状态，眼皮不动。
+//
+//  优先级：真实面捕 > 自动眨眼 > 动作/表情。判据是 g_faceValues 是否有限。
+//  P16 起「让位」是**渐变交接**（g_blinkYield，0.12s）：旧实现看到有限值就当场
+//  返回，若自动眨眼正处闭眼保持（closed=1）而面捕给的是睁眼值，眼皮会一帧内
+//  从 0 跳到满睁 —— 这正是用户反馈的「眼皮闪跳」。交接期间把两者线性混合。
+
+/** model3.json EyeBlink 组解析出的参数下标（空 = 该模型不眨眼）。 */
+std::vector<int> g_eyeBlinkParams;
+
+/** 眨眼时序状态（GL 线程独占）。 */
+struct BlinkState {
+    double nextAtSec = 0.0;   // 下一次眨眼开始的时刻；<=0 = 尚未排期
+    double startedAtSec = 0.0;
+    bool active = false;
+    /** 眨眼曲线各段时长（秒）：闭合 / 保持 / 张开。 */
+    double closeSec = 0.09;
+    double holdSec = 0.04;
+    double openSec = 0.14;
+    long totalBlinks = 0;
+};
+BlinkState g_blink;
+
+/**
+ * 自动眨眼 → 真实面捕的交接权重（0 = 完全交给真实数据，1 = 自动眨眼全权）。
+ *
+ * 为什么需要它（P16）：旧逻辑是「只要看到任一眼睛参数有限就立刻 return」。
+ * 若此刻自动眨眼正处于闭眼保持（hold，closed=1），真实面捕推来的却是睁眼值，
+ * 眼皮会在一帧内从 0 跳到满睁 —— 正是用户反馈的「眼皮闪跳」。
+ * 现在改为按固定斜率淡出：交接期间把「真实值」与「自动眨眼值」线性混合，
+ * 约 kBlinkHandoverSec 内平滑过渡，两个来源不再在帧间硬切。
+ */
+float g_blinkYield = 0.0f;
+
+/** 上一次更新交接权重的时间（秒）；0 = 尚无历史。 */
+double g_blinkYieldSec = 0.0;
+
+/** 交接淡出/淡入的完整时长（秒）：≈0.12s，比一次眨眼快、又足够盖住一帧硬切。 */
+constexpr double kBlinkHandoverSec = 0.12;
+
+/** P14 诊断：最近一次眨眼写进眼睛参数的值，以及写入次数（物理侧据此确认读到的是新值）。 */
+float g_blinkEyeWritten = -1.0f;
+long g_blinkEyeWrittenSerial = 0;
+
+/** 闭眼程度 0（睁开）~1（完全闭合）随时间的变化（三次缓动，手感接近标准）。 */
+float blinkClosedness(const BlinkState &b, double nowSec) {
+    const double t = nowSec - b.startedAtSec;
+    if (t < 0.0) return 0.0f;
+    const auto ease = [](double x) -> float {
+        const double c = std::max(0.0, std::min(1.0, x));
+        return static_cast<float>(c * c * (3.0 - 2.0 * c));   // smoothstep
+    };
+    if (t < b.closeSec) return ease(t / b.closeSec);
+    if (t < b.closeSec + b.holdSec) return 1.0f;
+    if (t < b.closeSec + b.holdSec + b.openSec) {
+        return 1.0f - ease((t - b.closeSec - b.holdSec) / b.openSec);
+    }
+    return 0.0f;
+}
+
+/**
+ * 眨眼诊断日志开关（`/data/local/tmp/arvt_blink_log` 存在 = 开）。
+ *
+ * 为什么不是只读一次的 static const bool：调试时希望在 App 已经跑起来之后
+ * `adb shell touch` 就能立刻看到日志，不必重装重启。这里 0.5s 才 stat 一次，
+ * 相对每帧而言成本可忽略，又足够即时。
+ */
+bool blinkLogEnabled(double nowSec) {
+    static bool s_enabled = false;
+    static double s_nextCheckSec = 0.0;
+    if (nowSec >= s_nextCheckSec) {
+        s_nextCheckSec = nowSec + 0.5;
+        s_enabled = access("/data/local/tmp/arvt_blink_log", F_OK) == 0;
+    }
+    return s_enabled;
+}
+
+/** 解析 model3.json 的 Groups 里 EyeBlink 组（Target=Parameter）。
+ *  实现放在资源读取工具之后（依赖 ResourceSource），此处先声明。 */
+struct ResourceSource;
+void loadEyeBlinkGroup(const ResourceSource &src, const std::string &jsonPath);
+
+/**
+ * 自动眨眼：在面捕没有提供眼睛值的时间段里生成周期性眨眼。
+ *
+ * 调用约束：持 g_mutex、在 applyFaceValuesLocked 之后、applyPhysicsLocked 之前。
+ * 顺序是硬要求 —— Big_fat_fish 的眼皮由 EyeLOpen 经物理驱动（PhysicsSetting19/
+ * 20/22/23 的输入就是 EyeLOpen/EyeROpen），晚于物理写就等于让物理看到上一帧的
+ * 眼睛，眼皮不会跟着闭。
+ */
+void applyAutoBlinkLocked(double nowSec) {
+    if (g_eyeBlinkParams.empty() || !g_model) return;
+
+    // ---- 面捕在场判定 + 交接权重渐变更（P16）----
+    //
+    // 旧实现「看到有限值就当场 return」会在眨眼保持阶段造成一帧闪跳。现在把
+    // 「让位」做成有时间常数的渐变：权重从 1 平滑降到 0，交接期间把自动眨眼值
+    // 与真实值混合，眼皮就不会硬切。
+    bool facePresent = false;
+    for (int pi : g_eyeBlinkParams) {
+        if (pi < 0 || pi >= static_cast<int>(g_faceValues.size())) continue;
+        if (std::isfinite(g_faceValues[static_cast<size_t>(pi)])) {
+            facePresent = true;
+            break;
+        }
+    }
+    {
+        const float target = facePresent ? 0.0f : 1.0f;
+        double dt = (g_blinkYieldSec > 0.0) ? (nowSec - g_blinkYieldSec) : 0.0;
+        if (g_blinkYieldSec <= 0.0) {
+            // 首帧/复位后：直接取目标值。若从 0 起渐变，无摄像头时自动眨眼会被
+            // 「淡入」卡在 0.1 权重以下好几帧，进页面后头 0.12s 眼睛状态是错的。
+            g_blinkYield = target;
+        } else {
+            if (dt < 0.0) dt = 0.0;
+            if (dt > 0.25) dt = 0.25;   // 掉帧/后台回来时不要一步跳完
+            if (dt > 0.0) {
+                // 线性斜率：权重变化率固定，交接时长与帧率无关（90fps 约 11 帧）
+                const float step = static_cast<float>(dt / kBlinkHandoverSec);
+                if (g_blinkYield < target) {
+                    g_blinkYield = std::min(target, g_blinkYield + step);
+                } else if (g_blinkYield > target) {
+                    g_blinkYield = std::max(target, g_blinkYield - step);
+                }
+            }
+        }
+        g_blinkYieldSec = nowSec;
+    }
+
+    // 权重已完全交给真实数据：撤销待触发的眨眼排期，等面捕消失后重新排期。
+    // 注意必须等权重真正到 0 才清 —— 交接途中还要靠 g_blink 的 closed 曲线做混合。
+    if (g_blinkYield <= 0.0f) {
+        g_blink.active = false;
+        g_blink.nextAtSec = 0.0;
+        return;
+    }
+
+    // 排期：0.8s 启动延迟（避免进入页面立刻闭眼），之后 3~6s 随机一次
+    if (g_blink.nextAtSec <= 0.0) {
+        g_blink.nextAtSec = nowSec + 0.8;
+    }
+    if (!g_blink.active && nowSec >= g_blink.nextAtSec) {
+        g_blink.active = true;
+        g_blink.startedAtSec = nowSec;
+        ++g_blink.totalBlinks;
+        // 间隔用确定性伪随机（避免引入 <random> 的状态与体积）
+        const double jitter = 3.0 + static_cast<double>((g_blink.totalBlinks * 2654435761u) % 3000) / 1000.0;
+        g_blink.nextAtSec = nowSec + jitter;
+    }
+
+    float closed = 0.0f;
+    if (g_blink.active) {
+        closed = blinkClosedness(g_blink, nowSec);
+        if (closed <= 0.0f &&
+            nowSec - g_blink.startedAtSec >
+                    g_blink.closeSec + g_blink.holdSec + g_blink.openSec + 0.02) {
+            g_blink.active = false;
+        }
+    }
+    // 睁眼阶段、或权重已完全让位给真实数据 → 不写参数：
+    // 保留动作/表情/面捕的眼睛值（权重为 0 时写进去只是无意义的自赋值）。
+    if (closed <= 0.0f || g_blinkYield <= 0.0f) return;
+
+    float *values = csmGetParameterValues(g_model);
+    if (!values) return;
+    const float w = g_blinkYield;
+    for (int pi : g_eyeBlinkParams) {
+        if (pi < 0 || pi >= g_paramCount) continue;
+        const float base = g_paramDefaults[static_cast<size_t>(pi)];
+        const float open = (base > 0.0f) ? base : 1.0f;   // 默认 0 的模型按 1 处理
+        const float autoValue = open * (1.0f - closed);
+        // 交接混合：w=1 用自动眨眼，w=0 保留真实数据（此分支已被上面 return 挡住）
+        values[pi] = values[pi] * (1.0f - w) + autoValue * w;
+    }
+
+    // P14 诊断（限频）：只在真正写眼睛参数的帧打一行，用来证实眨眼时序真的在跑。
+    // 50ms 节流 ≈ 每次眨眼 5~6 行，足以看出 closed 的升/降形状。
+    if (!blinkLogEnabled(nowSec)) return;
+    g_blinkEyeWritten = values[g_eyeBlinkParams.front()];
+    ++g_blinkEyeWrittenSerial;
+    static double s_lastBlinkLogSec = 0.0;
+    if (nowSec - s_lastBlinkLogSec >= 0.05) {
+        s_lastBlinkLogSec = nowSec;
+        LOGI("blink: closed=%.2f n=%ld eye=%.3f t=%.3f",
+             static_cast<double>(closed), g_blink.totalBlinks,
+             static_cast<double>(g_blinkEyeWritten),
+             static_cast<double>(nowSec - g_blink.startedAtSec));
+    }
+}
+
+/** 参数 id（下标 = 参数下标），仅用于诊断日志。 */
+std::vector<std::string> g_paramNames;
+
+/**
+ * 合成面捕注入（真机无摄像头时复现物理抽风）。
+ *
+ * 为什么必须在 native 层注入：Kotlin 侧推流协程在「人脸丢失」时推的是 NaN
+ * （语义 = 本帧交给动作/表情），没有摄像头就永远是 NaN，物理链输入恒为 0，
+ * 抖动根本不会发生（实测 rest=100%）。这里按 1Hz 正弦直接写
+ * ParamAngleY（摇头）与 ParamMouthOpenY（张嘴），并把 g_faceValues 的对应项
+ * 覆盖成有限值，物理输入就变成真实的周期激励。
+ *
+ * 由 JNI nativeSetSyntheticFace 开关，默认关闭（发布行为不变）。
+ */
+std::atomic<bool> g_syntheticFace{false};
+double g_syntheticStartSec = 0.0;
+
+/** 帧时间戳（drawFrame 每帧写，供合成面捕/诊断使用）。 */
+double g_frameNowSec = 0.0;
+
+/**
+ * 物理 dt 统计（真机诊断「dt 是否算错」）。
+ *
+ * 面捕 30Hz、渲染 60/90Hz 时，若把「面捕帧间隔」当成物理步长，或把累计时间
+ * 一次性灌进积分器，就会出现幅度随帧率变化的抖动。这里逐帧记录实际喂给
+ * 物理累加时钟的 dt，抓 logcat 即可看到它是否稳定在 1/渲染帧率。
+ */
+/**
+ * 单帧最大时间步（秒）。**动作时钟与物理时钟共用这一个值（P9）**。
+ *
+ * 必须唯一：两条时间轴各钳各的就会脱钩（旧实现动作钳 0.25s、物理钳 0.05s，
+ * 掉帧时物理被限速而动作照跑，头发慢半拍）。
+ *
+ * 取 0.05s 的理由：
+ *  - 半隐式欧拉在 k≈200 的刚性链上，h 超过 ~0.05s 开始失稳；
+ *  - 20fps 以上的掉帧完全落在范围内，头发不会为了补帧而瞬移；
+ *  - 更长的间隔（切后台、卡顿数秒）本就该丢弃，不该一次性灌进积分器。
+ *
+ * 定义在物理统计结构体之前，因为 drawFrame（动作时钟）与
+ * applyPhysicsLocked 都要引用它。
+ */
+constexpr float kPhysicsMaxDt = 0.05f;
+
+struct PhysicsDtStats {
+    double minDt = 1e9;
+    double maxDt = 0.0;
+    double sumDt = 0.0;
+    long frames = 0;
+    /** dt<=0 的帧数（P9：这些帧不步进物理，见 simulateChain 的注释）。 */
+    long zeroDtFrames = 0;
+    /** dt 撞上 kMaxFrameDt 钳制的帧数（诊断时间轴是否被限速）。 */
+    long clampedFrames = 0;
+    void reset() { *this = PhysicsDtStats(); }
+    void add(double dt) {
+        if (dt < minDt) minDt = dt;
+        if (dt > maxDt) maxDt = dt;
+        sumDt += dt;
+        ++frames;
+        if (!(dt > 0.0)) ++zeroDtFrames;
+        if (dt >= static_cast<double>(kPhysicsMaxDt) - 1e-9) ++clampedFrames;
+    }
+    double meanDt() const { return frames ? sumDt / static_cast<double>(frames) : 0.0; }
+};
+
+PhysicsDtStats g_physicsDtStats;
+
 /** 模型状态需要重算（参数/动作/表情/姿势任一变化）。 */
 bool g_modelDirty = true;
 
@@ -492,6 +1032,21 @@ bool g_modelDirty = true;
 // 而这两个函数的实现放在它后面（依赖运动数据结构 + 顶点刷新）。
 void applyModelStateLocked();
 void refreshVertexPositionsLocked();
+void reportJitterPeriodicallyLocked(double nowSec);
+/**
+ * trace 追踪的目标输出参数下标（-2 = 未解析，-1 = 该模型没有可追踪的物理输出）。
+ *
+ * 为什么是文件级变量而不是函数内 static：它在**模型切换时必须复位**。
+ * loadPhysics 会清空并重建链，旧的参数下标在新模型里指向完全不同的参数，
+ * 继续复用会追踪到一条与物理无关的列（P13 实测：miku 的 ParamHairFront 恒 1.0）。
+ */
+int g_traceOutParam = -2;
+
+/** 模型切换时复位 trace 绑定（下一次 trace 会重新解析）。 */
+void resetPhysicsTraceBinding() { g_traceOutParam = -2; }
+
+/** 物理链初始化（实现紧跟在求解器一节，loadPhysics 复位时也要用）。 */
+inline void initializeChain(PhysicsChain &chain) { xpbd::initialize(chain); }
 
 /**
  * 最近一次统计的渲染帧率（GL 线程写，任意线程读）。
@@ -513,6 +1068,9 @@ std::atomic<float> g_fps{0.0f};
 struct Batch {
     int firstIndex = 0;     // 在 g_indices 中的起始位置
     int indexCount = 0;     // 索引个数
+    /** 本批次在 g_vertices 里占据的连续区间（P15：scissor 清除要按顶点求包围盒）。 */
+    int firstVertex = 0;
+    int vertexCount = 0;
     int textureIndex = 0;   // 对应 g_textures 的下标
     int drawableIndex = -1; // csm 的 drawable 下标（逐帧查可见性 / render order / opacity）
 
@@ -538,7 +1096,27 @@ std::vector<Batch> g_batches;
 struct MaskBatch {
     int firstIndex = 0;
     int indexCount = 0;
+    /** 本遮罩在 g_vertices 里占据的连续区间（P15：scissor 清除要按顶点求包围盒）。 */
+    int firstVertex = 0;
+    int vertexCount = 0;
     int textureIndex = 0;
+    /** 遮罩自身的 drawable 下标（诊断用）。 */
+    int drawableIndex = -1;
+    /**
+     * 遮罩所属的部件下标（P7）。
+     *
+     * 逐帧判定「这个遮罩此刻还该不该生效」的唯一正确依据。
+     * 为什么不用 drawable 的可见性/不透明度：Live2D 里有一类「只当遮罩、
+     * 自身永不显示」的图层（眼睛的 D_PSD_35/36 就是 vis=0 op=0），
+     * 按可见性跳过它们会把被裁剪的 8 个眼睛零件整片裁没。
+     *
+     * 而**部件**不透明度是另一回事：pose3 把某个互斥部件压成 0 时，
+     * 该部件下的所有图层（包括遮罩）都应当整体失效。典型场景是袖子遮挡手部：
+     * 动作把「抬起的袖子」部件隐藏后，袖子不再显示，但旧实现仍按它的形状
+     * 去裁剪手 —— 手就被一块看不见的袖子切掉了。这正是「特定模型手部
+     * 渲染不出来」的成因。按部件不透明度判定可以同时满足眼睛与袖子两种情形。
+     */
+    int partIndex = -1;
 };
 
 std::vector<MaskBatch> g_maskBatches;
@@ -1039,9 +1617,9 @@ bool parseMotionFile(const ResourceSource &src, const std::string &path, MotionD
             continue;
         }
         if (targetName == "Parameter") {
-            const auto it = g_paramIndexById.find(idName);
-            if (it == g_paramIndexById.end()) continue;
-            appendCurve(*segments, it->second, -1, false, out);
+            const int paramIndex = resolveParamIndex(idName);
+            if (paramIndex < 0) continue;
+            appendCurve(*segments, paramIndex, -1, false, out);
             continue;
         }
         if (targetName == "PartOpacity") {
@@ -1102,6 +1680,88 @@ void loadMotions(const ResourceSource &src, const std::string &jsonPath,
     LOGI("动作加载完成: %d 个文件 / %zu 组", loaded, g_motionGroups.size());
 }
 
+/**
+ * P12：VTS 约定的 idle 兜底加载（model3.json 没有 Motions 段时调用）。
+ *
+ * 动机（P12 实证）：hiyori_vts 这类 VTS 打包模型没有 pose3.json，model3.json
+ * 也不带 Motions 段，但它的互斥（PartArmA=1 / PartArmB=0 的 PartOpacity 常量
+ * 曲线）写在 VTS 约定的 idle 动作里——vtube.json 的
+ * FileReferences.IdleAnimation 指向 animations/ 下的 motion3.json。VTube
+ * Studio 会自动循环播放该动作，所以显示一对手；我们此前不播，PartArmB 停在
+ * moc3 默认 op=1.0，于是渲染出两对手。标准 Core 对同一 moc3 的求值与
+ * Purism 逐位一致（P12_official_core/DIFF.md），「四只手」不是渲染器或
+ * Core 的分歧，缺的是这条 VTS 约定的播放链。
+ *
+ * 查找顺序：
+ *   1) 模型目录下任一 .vtube.json 的 FileReferences.IdleAnimation（相对目录）；
+ *   2) 兜底：animations/ 子目录里字典序第一个 .motion3.json 文件。
+ * 加载成功则 push 一个 "VTS Idle" 组，随后的「默认播第一组第 0 个」逻辑
+ * 会自动循环它，无需任何 Kotlin 改动。
+ */
+void loadVtsIdleMotion(const ResourceSource &src, const std::string &dir) {
+    std::string vtubePath, idleFile;
+    {
+        DIR *d = opendir(dir.c_str());
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) != nullptr) {
+                const size_t len = strlen(e->d_name);
+                if (len > 11 && strcmp(e->d_name + len - 11, ".vtube.json") == 0) {
+                    vtubePath = dir + e->d_name;
+                    break;
+                }
+            }
+            closedir(d);
+        }
+    }
+    if (!vtubePath.empty()) {
+        std::string text;
+        if (readResourceText(src, vtubePath, &text)) {
+            mjson::Value root;
+            if (mjson::parse(text, &root)) {
+                const mjson::Value *fr = root.find("FileReferences");
+                const mjson::Value *idle = fr ? fr->find("IdleAnimation") : nullptr;
+                if (idle) idleFile = idle->stringOrEmpty();
+            }
+        }
+    }
+    if (idleFile.empty()) {
+        // 兜底：vtube.json 缺失或没写 IdleAnimation 时，取 animations/ 的第一个
+        const std::string animDir = dir + "animations";
+        DIR *d = opendir(animDir.c_str());
+        if (d) {
+            struct dirent *e;
+            std::string best;
+            while ((e = readdir(d)) != nullptr) {
+                const size_t len = strlen(e->d_name);
+                if (len > 13 && strcmp(e->d_name + len - 13, ".motion3.json") == 0) {
+                    if (best.empty() || strcmp(e->d_name, best.c_str()) < 0) best = e->d_name;
+                }
+            }
+            closedir(d);
+            if (!best.empty()) idleFile = "animations/" + best;
+        }
+    }
+    if (idleFile.empty()) {
+        LOGI("VTS idle 兜底: 目录里没有 vtube.json/animations，动作保持为空");
+        return;
+    }
+    // VTS 写入的 IdleAnimation 值是相对 animations/ 目录的文件名（真机实测
+    // "hiyori_m02.motion3.json" 实际位于 <模型目录>/animations/ 下），但也兼容
+    // 直接写了相对路径的写法：先按模型根目录试，失败再按 animations/ 试。
+    MotionData motion;
+    if (!parseMotionFile(src, dir + idleFile, &motion) &&
+        !parseMotionFile(src, dir + "animations/" + idleFile, &motion)) {
+        LOGW("VTS idle 兜底: %s 解析失败", idleFile.c_str());
+        return;
+    }
+    MotionGroup group;
+    group.name = "VTS Idle (待机)";
+    group.motions.push_back(std::move(motion));
+    g_motionGroups.push_back(std::move(group));
+    LOGI("VTS idle 兜底: 已加载 %s 作为自动循环 idle", idleFile.c_str());
+}
+
 /** 解析一条 exp3.json 的参数表。 */
 bool parseExpressionFile(const ResourceSource &src, const std::string &path,
                          const std::string &name, Expression *out) {
@@ -1126,11 +1786,11 @@ bool parseExpressionFile(const ResourceSource &src, const std::string &path,
         const mjson::Value *value = p.find("Value");
         if (!id || !value) continue;
 
-        const auto it = g_paramIndexById.find(id->stringOrEmpty());
-        if (it == g_paramIndexById.end()) continue;
+        const int paramIndex = resolveParamIndex(id->stringOrEmpty());
+        if (paramIndex < 0) continue;
 
         ExpressionParam ep;
-        ep.paramIndex = it->second;
+        ep.paramIndex = paramIndex;
         ep.value = static_cast<float>(value->numberOr(0.0));
 
         const mjson::Value *blend = p.find("Blend");
@@ -1175,13 +1835,171 @@ void loadExpressions(const ResourceSource &src, const std::string &jsonPath,
 }
 
 /**
+ * P14：从 vtube.json 的 Hotkeys 兜底加载表情（VTS 打包模型的唯一来源）。
+ *
+ * 实证背景（Big_fat_fish / 樱花miku）：两个模型的 model3.json 里**都没有
+ * Expressions 段**，几乎所有 .exp3.json 只被 vtube.json 的
+ * `Hotkeys[].Action == "ToggleExpression"` 引用。旧实现只读 model3.json，
+ * 于是表情列表恒为空 —— 界面上根本没有按钮可点，表现为「表情切换失效」。
+ * 而 exp3 的参数（biaoqing8/9、Param125…）与物理输出集合无关，也不存在
+ * 「被 csmUpdateModel 前覆盖」的问题；真正断掉的就是这份清单。
+ *
+ * 读取顺序：Hotkeys 里 File 非空的项（保持作者顺序）→ 去重 →
+ * 目录里剩余未被引用的 *.exp3.json 追加在后（用户可能自己往目录里丢表情）。
+ *
+ * 只在 g_expressions 为空时调用（model3.json 的 Expressions 优先），
+ * 保证标准标准模型的行为完全不变。
+ */
+void loadVtsHotkeyExpressions(const ResourceSource &src, const std::string &dir) {
+    if (!g_expressions.empty()) return;
+
+    std::vector<std::string> files;     // 相对模型目录的文件名
+    std::vector<std::string> names;     // 显示名（Hotkey Name，缺失时用文件名）
+
+    // 1) vtube.json 的 Hotkeys（作者意图：顺序 + 名字）
+    std::string vtubePath;
+    {
+        DIR *d = opendir(dir.c_str());
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) != nullptr) {
+                const size_t len = strlen(e->d_name);
+                if (len > 11 && strcmp(e->d_name + len - 11, ".vtube.json") == 0) {
+                    vtubePath = dir + e->d_name;
+                    break;
+                }
+            }
+            closedir(d);
+        }
+    }
+    if (!vtubePath.empty()) {
+        std::string text;
+        if (readResourceText(src, vtubePath, &text)) {
+            mjson::Value root;
+            if (mjson::parse(text, &root)) {
+                const mjson::Value *hotkeys = root.find("Hotkeys");
+                if (hotkeys && hotkeys->isArray()) {
+                    for (const mjson::Value &h : hotkeys->items) {
+                        const mjson::Value *action = h.find("Action");
+                        const mjson::Value *file = h.find("File");
+                        if (!action || !file) continue;
+                        if (action->stringOrEmpty() != "ToggleExpression") continue;
+                        const std::string fileName = file->stringOrEmpty();
+                        if (fileName.empty()) continue;
+
+                        // 去重：同一表情文件被多个热键引用时只保留第一次
+                        bool duplicate = false;
+                        for (const std::string &existing : files) {
+                            if (existing == fileName) { duplicate = true; break; }
+                        }
+                        if (duplicate) continue;
+
+                        const mjson::Value *name = h.find("Name");
+                        files.push_back(fileName);
+                        names.push_back(name ? name->stringOrEmpty() : std::string());
+                    }
+                }
+            }
+        }
+    }
+
+    // 2) 目录里未被引用的 .exp3.json（作者没建热键、或用户自己加的）
+    //    .vtube.json 里可能带 Folder 子目录，这里只扫模型根目录 —— 够用且无递归风险。
+    {
+        DIR *d = opendir(dir.c_str());
+        if (d) {
+            struct dirent *e;
+            while ((e = readdir(d)) != nullptr) {
+                const size_t len = strlen(e->d_name);
+                if (len <= 11 || strcmp(e->d_name + len - 11, ".exp3.json") != 0) continue;
+                const std::string fileName(e->d_name);
+                bool known = false;
+                for (const std::string &existing : files) {
+                    if (existing == fileName) { known = true; break; }
+                }
+                if (known) continue;
+                files.push_back(fileName);
+                names.emplace_back();   // 空名字 → 用文件名（去掉 .exp3.json）
+            }
+            closedir(d);
+        }
+    }
+
+    for (size_t i = 0; i < files.size(); ++i) {
+        std::string display = names[i];
+        if (display.empty()) {
+            display = files[i];
+            const size_t suffix = display.size() > 11 ? display.size() - 11 : 0;
+            if (suffix > 0) display.erase(suffix);   // 去掉 ".exp3.json"
+        }
+        // VTS 的 Folder 字段可能是子目录：先按根目录试，失败再按 Folder/skel 组合试
+        Expression exp;
+        if (parseExpressionFile(src, dir + files[i], display, &exp)) {
+            g_expressions.push_back(std::move(exp));
+        }
+    }
+    LOGI("表情加载完成（vtube 热键兜底）: %zu 个", g_expressions.size());
+}
+
+/** 解析 model3.json 的 Groups 里 EyeBlink 组（Target=Parameter）。 */
+void loadEyeBlinkGroup(const ResourceSource &src, const std::string &jsonPath) {
+    g_eyeBlinkParams.clear();
+    std::string text;
+    if (!readResourceText(src, jsonPath, &text)) return;
+
+    mjson::Value root;
+    if (!mjson::parse(text, &root)) return;
+
+    const mjson::Value *groups = root.find("Groups");
+    if (groups && groups->isArray()) {
+        for (const mjson::Value &g : groups->items) {
+            const mjson::Value *target = g.find("Target");
+            const mjson::Value *name = g.find("Name");
+            if (!target || !name) continue;
+            if (target->stringOrEmpty() != "Parameter") continue;
+            if (name->stringOrEmpty() != "EyeBlink") continue;
+
+            const mjson::Value *ids = g.find("Ids");
+            if (!ids || !ids->isArray()) continue;
+            for (const mjson::Value &id : ids->items) {
+                const int paramIndex = resolveParamIndex(id.stringOrEmpty());
+                if (paramIndex >= 0) g_eyeBlinkParams.push_back(paramIndex);
+            }
+        }
+    }
+
+    // 兜底：Groups 缺失（VTS 打包件偶尔如此）但参数表里有标准名时仍然眨眼。
+    // 别名解析已经把 Big_fat_fish 的 EyeLOpen 映射到同一参数，因此用标准名
+    // 取到的就是模型自己的眼睛参数。
+    if (g_eyeBlinkParams.empty()) {
+        for (const char *name : {"ParamEyeLOpen", "ParamEyeROpen"}) {
+            const int index = resolveParamIndex(name);
+            if (index >= 0) g_eyeBlinkParams.push_back(index);
+        }
+    }
+
+    if (!g_eyeBlinkParams.empty()) {
+        const int first = g_eyeBlinkParams.front();
+        LOGI("自动眨眼就绪: %zu 个参数（首个=%s）", g_eyeBlinkParams.size(),
+             (first >= 0 && first < static_cast<int>(g_paramNames.size()))
+                     ? g_paramNames[static_cast<size_t>(first)].c_str()
+                     : "?");
+    }
+}
+
+/**
  * 解析 pose3.json 的 Groups。
  *
- * 结构：{ "Groups": [ [ { "Id": "Part01ArmRA001", "Link": [] }, ... ], ... ] }
- * 每组是互斥的部件候选；Link 里列出的组会跟随本组一起切换（Sample 未使用）。
+ * 结构：{ "Groups": [ [ { "Id": "Part01ArmRA001", "Link": ["PartXxx"] }, ... ], ... ] }
+ * 每组是互斥的部件候选；Link 里列出的部件跟随本组当前选中的候选一起切换。
  *
- * 这里把每个 Id 解析成 csm 部件下标；查不到就跳过该项，整组不足 2 项时
- * 也不丢弃（单项组等价于「强制该部件可见」）。
+ * P8 三处修正：
+ *  1) 部件名匹配失败时回退到小写表（自定义模型大小写不一致）；
+ *  2) **解析后不足 2 个成员的组直接丢弃**。单项组不是「强制可见」：标准
+ *     PoseManager 对单成员组的行为是「它永远获胜」，等于恒点亮 —— 一旦
+ *     精确匹配失败把双成员组削成单项，就会凭空多出一只手。丢弃只是少一条
+ *     互斥规则，剩余成员回到「跟着动作/默认值走」，比硬点亮安全。
+ *  3) 解析失败的组打 WARN 并带上原始成员数，便于真机定位是哪个模型没生效。
  */
 void loadPose(const ResourceSource &src, const std::string &jsonPath) {
     std::string text;
@@ -1199,18 +2017,131 @@ void loadPose(const ResourceSource &src, const std::string &jsonPath) {
     const mjson::Value *groups = root.find("Groups");
     if (!groups || !groups->isArray()) return;
 
+    // 部件名查下标：精确匹配优先，失败再走小写回退。
+    const auto lookupPart = [](const std::string &name) -> int {
+        const auto exact = g_partIndexById.find(name);
+        if (exact != g_partIndexById.end()) return exact->second;
+        std::string lower = name;
+        for (char &c : lower) {
+            if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+        }
+        const auto loose = g_partIndexByLower.find(lower);
+        return loose != g_partIndexByLower.end() ? loose->second : -1;
+    };
+
+    int linkCount = 0;
+    int droppedGroups = 0;
+    int relaxedLinks = 0;
     for (const mjson::Value &group : groups->items) {
         if (!group.isArray()) continue;
+        const size_t declared = group.items.size();
         std::vector<int> parts;
+        std::vector<std::vector<int>> links;
         for (const mjson::Value &item : group.items) {
             const mjson::Value *id = item.find("Id");
             if (!id) continue;
-            const auto it = g_partIndexById.find(id->stringOrEmpty());
-            if (it != g_partIndexById.end()) parts.push_back(it->second);
+            const int partIndex = lookupPart(id->stringOrEmpty());
+            if (partIndex < 0) {
+                LOGW("pose3 部件名在 moc3 里查不到，跳过: %s", id->stringOrEmpty().c_str());
+                continue;
+            }
+            // 同一组内重复登记同一部件没有意义，反而会干扰获胜者判定
+            if (std::find(parts.begin(), parts.end(), partIndex) != parts.end()) continue;
+            parts.push_back(partIndex);
+
+            // Link 可以是单个部件名（旧格式）或名字数组（P7 支持的两种写法）。
+            // 解析失败/查不到一律当空，不影响互斥本身。
+            std::vector<int> partLinks;
+            const mjson::Value *link = item.find("Link");
+            if (link && link->isArray()) {
+                for (const mjson::Value &name : link->items) {
+                    const int linkPart = lookupPart(name.stringOrEmpty());
+                    if (linkPart >= 0) partLinks.push_back(linkPart);
+                }
+            } else if (link && link->type == mjson::Type::String) {
+                const int linkPart = lookupPart(link->stringOrEmpty());
+                if (linkPart >= 0) partLinks.push_back(linkPart);
+            }
+            linkCount += static_cast<int>(partLinks.size());
+            links.push_back(std::move(partLinks));
         }
-        if (!parts.empty()) g_poseGroups.push_back(std::move(parts));
+
+        if (parts.size() < 2) {
+            // 见上面第 2 条：单项组会被当成「恒获胜 = 恒点亮」，宁可丢弃
+            ++droppedGroups;
+            LOGW("pose3 组被丢弃（声明 %zu 项，仅解析出 %zu 项）",
+                 declared, parts.size());
+            continue;
+        }
+        if (parts.size() != declared) ++relaxedLinks;
+        g_poseGroups.push_back(std::move(parts));
+        g_poseGroupLinks.push_back(std::move(links));
     }
-    LOGI("姿势组加载完成: %zu 组", g_poseGroups.size());
+    LOGI("姿势组加载完成: %zu 组（联动部件 %d 个，丢弃 %d 组，降级 %d 组）",
+         g_poseGroups.size(), linkCount, droppedGroups, relaxedLinks);
+    g_poseFromFile = !g_poseGroups.empty();
+}
+
+/**
+ * 兜底互斥：无 pose3 时按「同名 + A/B 后缀」推断互斥部件对（P9）。
+ *
+ * 详见 g_poseFallbackEnabled 的注释。这里只**追加**组，不修改已从 pose3
+ * 读到的组；调用方负责保证「只在 g_poseGroups 为空时调用」。
+ *
+ * 匹配逻辑：部件名去掉末尾的 'A'/'B' 后必须完全相同，两端同时存在才成对。
+ * 大小写敏感（moc3 里的部件名是稳定的），但允许两端大小写一致的前缀差异，
+ * 因为去后缀后直接做字符串比较即可。
+ */
+void buildFallbackPoseGroupsLocked() {
+    g_poseFallbackPairs = 0;
+    if (!g_poseFallbackEnabled.load(std::memory_order_relaxed)) return;
+    if (!g_poseGroups.empty()) return;
+    const int partCount = static_cast<int>(g_partDefaults.size());
+    if (partCount <= 0) return;
+
+    // 只考虑「默认可显示 + 至少一个 drawable」的部件：否则归零没有画面收益
+    constexpr float kVisibleThreshold = 0.001f;
+    std::vector<const std::string *> namesByPart(static_cast<size_t>(partCount), nullptr);
+    for (const auto &entry : g_partIndexById) {
+        if (entry.second >= 0 && entry.second < partCount) {
+            namesByPart[static_cast<size_t>(entry.second)] = &entry.first;
+        }
+    }
+    std::unordered_map<std::string, int> pendingA; // 基名 -> 部件下标（...A）
+    std::vector<std::vector<int>> pairs;
+    for (int i = 0; i < partCount; ++i) {
+        const float def = g_partDefaults[static_cast<size_t>(i)];
+        if (!std::isfinite(def) || def <= kVisibleThreshold) continue;
+        if (i < static_cast<int>(g_partDrawableCounts.size()) &&
+            g_partDrawableCounts[static_cast<size_t>(i)] <= 0) {
+            continue;
+        }
+        const std::string *name = namesByPart[static_cast<size_t>(i)];
+        if (!name || name->size() < 2) continue;
+        const char tail = name->back();
+        if (tail != 'A' && tail != 'B') continue;
+        const std::string base = name->substr(0, name->size() - 1);
+        if (tail == 'A') {
+            pendingA.emplace(base, i);
+        } else {
+            const auto it = pendingA.find(base);
+            if (it == pendingA.end()) continue;
+            pairs.push_back({it->second, i});
+            pendingA.erase(it);
+        }
+    }
+
+    if (pairs.empty()) return;
+    for (std::vector<int> &pair : pairs) {
+        g_poseGroups.push_back(std::move(pair));
+        // 无 Link 信息：兜底组的两端各自独立，联动列表留空（与 pose3 语义一致）
+        g_poseGroupLinks.push_back(
+                std::vector<std::vector<int>>(2, std::vector<int>()));
+    }
+    g_poseFallbackPairs = static_cast<int>(pairs.size());
+    LOGI("pose 兜底: 无 pose3，按 A/B 后缀推断出 %d 组互斥（开关=%s）",
+         g_poseFallbackPairs,
+         g_poseFallbackEnabled.load(std::memory_order_relaxed) ? "on" : "off");
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,6 +2198,14 @@ void readNormalization(const mjson::Value *norm, const char *key,
  */
 void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
     g_physicsChains.clear();
+    // 模型切换：累加时钟与参数缓存一并作废（尺寸与语义都跟参数表走）
+    g_physicsRemainTime = 0.0f;
+    g_paramCaches.clear();
+    g_paramInputCaches.clear();
+    g_physicsFps = 0.0f;
+    // trace 的目标输出参数绑定的是「上一个模型」的参数下标，换模型后必须重解析，
+    // 否则会追踪到新模型里语义完全不同的同名下标（P13 实测：miku 上追到的列恒 1.0）。
+    resetPhysicsTraceBinding();
 
     std::string text;
     if (!readResourceText(src, jsonPath, &text)) {
@@ -1285,6 +2224,10 @@ void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
         if (const mjson::Value *forces = meta->find("EffectiveForces")) {
             readVector2(forces->find("Gravity"), 0.0f, -1.0f, &gravityX, &gravityY);
         }
+        // Meta.Fps（可选）：仅解析备查（加载日志用）。XPBD 起子步长固定
+        // xpbd::tuning().substepDt，不再随 json Fps 变化；仍按 json 消毒惯例钳掉离谱值。
+        g_physicsFps = numberField(meta, "Fps", 0.0f);
+        if (!(g_physicsFps > 0.0f) || g_physicsFps > 240.0f) g_physicsFps = 0.0f;
     }
 
     const mjson::Value *settings = root.find("PhysicsSettings");
@@ -1310,12 +2253,12 @@ void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
                 const mjson::Value *source = item.find("Source");
                 const mjson::Value *id = source ? source->find("Id") : nullptr;
                 if (!id) continue;
-                const auto it = g_paramIndexById.find(id->stringOrEmpty());
-                if (it == g_paramIndexById.end()) continue;
+                const int paramIndex = resolveParamIndex(id->stringOrEmpty());
+                if (paramIndex < 0) continue;
 
                 PhysicsInput input;
-                input.paramIndex = it->second;
-                input.weight = numberField(&item, "Weight", 100.0f) / 100.0f;
+                input.paramIndex = paramIndex;
+                input.weight = numberField(&item, "Weight", 100.0f) / kPhysicsMaxWeight;
                 input.type = physicsTypeOf(&item);
                 input.reflect = item.find("Reflect") && item.find("Reflect")->boolOr(false);
                 chain.inputs.push_back(input);
@@ -1327,14 +2270,14 @@ void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
                 const mjson::Value *dest = item.find("Destination");
                 const mjson::Value *id = dest ? dest->find("Id") : nullptr;
                 if (!id) continue;
-                const auto it = g_paramIndexById.find(id->stringOrEmpty());
-                if (it == g_paramIndexById.end()) continue;
+                const int paramIndex = resolveParamIndex(id->stringOrEmpty());
+                if (paramIndex < 0) continue;
 
                 PhysicsOutput output;
-                output.paramIndex = it->second;
+                output.paramIndex = paramIndex;
                 output.vertexIndex = static_cast<int>(numberField(&item, "VertexIndex", 1.0f));
                 output.scale = numberField(&item, "Scale", 1.0f);
-                output.weight = numberField(&item, "Weight", 100.0f) / 100.0f;
+                output.weight = numberField(&item, "Weight", 100.0f) / kPhysicsMaxWeight;
                 output.type = physicsTypeOf(&item);
                 output.reflect = item.find("Reflect") && item.find("Reflect")->boolOr(false);
                 chain.outputs.push_back(output);
@@ -1353,10 +2296,29 @@ void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
             }
         }
 
+        // json 消毒（P1 审计保留）：Acceleration/Delay 钳到有限区间；
+        // Radius ≤0 或非有限时退回 json Position 差（标准会直接 NaN，这里兜底）。
+        for (size_t i = 0; i < chain.vertices.size(); ++i) {
+            PhysicsVertex &v = chain.vertices[i];
+            v.acceleration = std::max(0.0f, std::min(100.0f, v.acceleration));
+            v.delay = std::max(0.0f, std::min(20.0f, v.delay));
+            if (i == 0) continue;
+            const PhysicsVertex &p = chain.vertices[i - 1];
+            const float spanX = v.restX - p.restX;
+            const float spanY = v.restY - p.restY;
+            const float spanLen = std::sqrt(spanX * spanX + spanY * spanY);
+            if (!(v.radius > 1e-6f) || !std::isfinite(v.radius)) {
+                v.radius = (spanLen > 1e-6f) ? spanLen : 1e-3f;
+                LOGW("物理链 %s 第 %d 节 Radius 无效，退回 Position 差 %.4f",
+                     chain.id.c_str(), static_cast<int>(i), v.radius);
+            }
+        }
+
         if (chain.vertices.size() < 2 || chain.outputs.empty()) continue;
-        LOGI("物理链就绪: %s (in=%zu out=%zu verts=%zu)",
+        LOGI("物理链就绪: %s (in=%zu out=%zu verts=%zu fps=%.1f)",
              chain.id.c_str(), chain.inputs.size(), chain.outputs.size(),
-             chain.vertices.size());
+             chain.vertices.size(), g_physicsFps);
+        initializeChain(chain);
         g_physicsChains.push_back(std::move(chain));
     }
 
@@ -1466,6 +2428,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
     const csmFlags *constantFlags = csmGetDrawableConstantFlags(g_model);
     const int *renderOrders = csmGetRenderOrders(g_model);
     const int *textureIndices = csmGetDrawableTextureIndices(g_model);
+    const int *drawableParentParts = csmGetDrawableParentPartIndices(g_model);
 
     // ---- 按 render order 升序排列（先画的在后，后画的在前）----
     std::vector<int> order(static_cast<size_t>(drawableCount));
@@ -1480,7 +2443,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
     g_maskBatches.clear();
     g_maskRefs.clear();
     g_vertexSpans.clear();
-    g_verticesDirty = false;
+    clearVertexDirty();
     // Sample 实测 2794 顶点 / 12174 索引；Mask 会额外带进几百个顶点，一并预留
     g_vertices.reserve(8192);
     g_indices.reserve(32768);
@@ -1496,10 +2459,19 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         const char **paramIds = csmGetParameterIds(g_model);
         g_paramCount = csmGetParameterCount(g_model);
         g_paramIndexById.clear();
+        g_paramIndexByNorm.clear();
+        g_paramNames.assign(static_cast<size_t>(std::max(0, g_paramCount)), std::string());
         if (paramIds && g_paramCount > 0) {
             g_paramIndexById.reserve(static_cast<size_t>(g_paramCount) * 2);
+            g_paramIndexByNorm.reserve(static_cast<size_t>(g_paramCount) * 2);
             for (int i = 0; i < g_paramCount; ++i) {
-                if (paramIds[i]) g_paramIndexById.emplace(paramIds[i], i);
+                if (!paramIds[i]) continue;
+                g_paramIndexById.emplace(paramIds[i], i);
+                g_paramNames[static_cast<size_t>(i)] = paramIds[i];
+                // 归一化别名表（见 normalizeParamName 的注释）。同名归一化键
+                // 只保留先出现的参数，避免「Param X」与「X」两份都存在于 moc3 时
+                // 出现非确定的覆盖顺序。
+                g_paramIndexByNorm.emplace(normalizeParamName(paramIds[i]), i);
             }
             LOGI("参数表: count=%d（可写入）", g_paramCount);
         } else {
@@ -1533,11 +2505,25 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         const char **partIds = csmGetPartIds(g_model);
         const float *partOpacities = csmGetPartOpacities(g_model);
         g_partIndexById.clear();
+        g_partIndexByLower.clear();
         g_partDefaults.assign(static_cast<size_t>(std::max(0, partCount)), 1.0f);
         if (partIds && partCount > 0) {
             g_partIndexById.reserve(static_cast<size_t>(partCount) * 2);
+            g_partIndexByLower.reserve(static_cast<size_t>(partCount) * 2);
             for (int i = 0; i < partCount; ++i) {
-                if (partIds[i]) g_partIndexById.emplace(partIds[i], i);
+                if (!partIds[i]) continue;
+                const std::string name(partIds[i]);
+                g_partIndexById.emplace(name, i);
+                // P8：小写回退表。同一个部件的名字只有大小写差异时不会冲突
+                // （模型内的部件名是唯一的，只可能大小写不同后缀不同）。
+                if (g_partIndexByLower.find(name) == g_partIndexByLower.end()) {
+                    g_partIndexByLower.emplace(name, i);
+                }
+                std::string lower = name;
+                for (char &c : lower) {
+                    if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+                }
+                if (lower != name) g_partIndexByLower.emplace(lower, i);
             }
         }
         if (partOpacities) {
@@ -1545,7 +2531,45 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
                 g_partDefaults[static_cast<size_t>(i)] = partOpacities[i];
             }
         }
+        // 每个部件归属的 drawable 数（兜底互斥只在「归零能真的少画东西」时介入）
+        g_partDrawableCounts.assign(static_cast<size_t>(std::max(0, partCount)), 0);
+        if (drawableParentParts) {
+            for (int i = 0; i < drawableCount; ++i) {
+                const int pp = drawableParentParts[i];
+                if (pp >= 0 && pp < partCount) {
+                    ++g_partDrawableCounts[static_cast<size_t>(pp)];
+                }
+            }
+        }
         LOGI("部件表: count=%d（pose 用）", partCount);
+        // 诊断：把部件名与默认不透明度全量打出来。真机上「手不见了」必须能一眼
+        // 分清是「部件默认就 0」还是「被后续代码改成 0」，没有这份 dump 就只能猜。
+        if (partOpacities && partCount > 0) {
+            for (int i = 0; i < partCount; ++i) {
+                LOGI("part[%d] %s def=%.3f", i, partIds && partIds[i] ? partIds[i] : "?",
+                     partOpacities[i]);
+            }
+        }
+    }
+    // 诊断：把「手臂/手」相关 drawable 的静态归属打出来（pose 与遮罩都按部件走）。
+    if (drawableParentParts) {
+        const char **drawableIds = csmGetDrawableIds(g_model);
+        for (int i = 0; i < drawableCount; ++i) {
+            const char *id = drawableIds ? drawableIds[i] : nullptr;
+            if (!id) continue;
+            std::string lower(id);
+            for (char &c : lower) {
+                if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a');
+            }
+            if (lower.find("arm") == std::string::npos &&
+                lower.find("hand") == std::string::npos) {
+                continue;
+            }
+            const int pp = drawableParentParts[i];
+            LOGI("drawable[%d] %s parentPart=%d op=%.3f visFlags=0x%02x",
+                 i, id, pp, opacities ? opacities[i] : -1.0f,
+                 dynamicFlags ? dynamicFlags[i] : 0);
+        }
     }
 
     g_minX = g_minY = 1e30f;
@@ -1559,6 +2583,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
     int nestedMaskMasks = 0;
     int hiddenMaskRefs = 0;
     int maskAlsoDrawn = 0;
+    int masksUnavailable = 0;
 
     /**
      * 把一个 drawable 的几何追加进共享 VBO 数据，返回它在 g_indices 里的区间。
@@ -1570,7 +2595,8 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
      *                    会让「模型适配视口」的取景被一块看不见的网格带偏。
      */
     const auto appendGeometry = [&](int idx, bool trackBounds, int *firstIndex,
-                                    int *indexCount) -> bool {
+                                    int *indexCount, int *outFirstVertex,
+                                    int *outVertexCount) -> bool {
         const size_t di = static_cast<size_t>(idx);
         const int vcount = vertexCounts[di];
         const int icount = indexCounts[di];
@@ -1604,6 +2630,8 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
 
         *firstIndex = static_cast<int>(g_indices.size());
         *indexCount = icount;
+        if (outFirstVertex) *outFirstVertex = spanFirst;
+        if (outVertexCount) *outVertexCount = vcount;
         const unsigned short *src = indices[di];
         for (int t = 0; t < icount; ++t) {
             g_indices.push_back(static_cast<uint16_t>(base + src[t]));
@@ -1646,7 +2674,10 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         const int maskFirst = static_cast<int>(g_maskRefs.size());
         for (int k = 0; k < ownMaskCount; ++k) {
             const int maskIdx = masks[di][k];
-            // -1 = 该掩码当前不可见：Purism Core 明确用它表示「隐藏的掩码」
+            // -1 = 该掩码当前不可见：Purism Core 明确用它表示「隐藏的掩码」。
+            // P7 修正：这里**只是跳过这个掩码**，绝不因为「声明了掩码却全都
+            // 不可用」就把被裁剪的内容也丢掉。旧实现在下面 `usedMaskCount==0`
+            // 时直接 continue，于是被袖子/衣物遮住的手在袖子隐藏后整只消失。
             if (maskIdx < 0 || maskIdx >= drawableCount) { ++hiddenMaskRefs; continue; }
 
             const size_t mi = static_cast<size_t>(maskIdx);
@@ -1666,22 +2697,29 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
             if (maskBatchOf[mi] < 0) {
                 MaskBatch mb;
                 if (!appendGeometry(maskIdx, /*trackBounds=*/false, &mb.firstIndex,
-                                    &mb.indexCount)) continue;
+                                    &mb.indexCount, &mb.firstVertex, &mb.vertexCount)) {
+                    continue;
+                }
                 mb.textureIndex = textureIndices[mi];
+                mb.drawableIndex = maskIdx;
+                mb.partIndex = drawableParentParts ? drawableParentParts[mi] : -1;
                 maskBatchOf[mi] = static_cast<int>(g_maskBatches.size());
                 g_maskBatches.push_back(mb);
             }
             g_maskRefs.push_back(maskBatchOf[mi]);
         }
 
+        // P7：这里不再因为 usedMaskCount == 0 就丢弃内容。掩码全部隐藏
+        // （或全是 -1）时按「无遮罩」绘制 —— 标准渲染器的语义是掩码缺失
+        // 等于不裁剪，而不是把被裁剪的对象一起删掉。
         const int usedMaskCount = static_cast<int>(g_maskRefs.size()) - maskFirst;
         if (ownMaskCount > 0 && usedMaskCount == 0) {
-            // 有掩码声明但一个都不可用：Live2D 语义下这块内容应当完全不显示
-            continue;
+            ++masksUnavailable;
         }
 
         Batch batch;
-        if (!appendGeometry(idx, /*trackBounds=*/true, &batch.firstIndex, &batch.indexCount)) {
+        if (!appendGeometry(idx, /*trackBounds=*/true, &batch.firstIndex, &batch.indexCount,
+                            &batch.firstVertex, &batch.vertexCount)) {
             // 内容几何没进缓冲：刚才为它收集的掩码引用也一并丢弃，
             // 避免 maskRefs 里留下没有批次引用的孤儿区间
             g_maskRefs.resize(static_cast<size_t>(maskFirst));
@@ -1720,9 +2758,9 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
          drawableCount, drawn, g_batches.size(), skippedQuad, skippedHidden, texturesMissing,
          maskAlsoDrawn, g_vertices.size(), g_indices.size());
     LOGI("mask ready: maskedBatches=%d maskGeoms=%zu maskRefs=%zu inverted=%d "
-         "nested=%d hiddenRefs=%d",
+         "nested=%d hiddenRefs=%d masksUnavailable=%d",
          maskedBatches, g_maskBatches.size(), g_maskRefs.size(), invertedBatches,
-         nestedMaskMasks, hiddenMaskRefs);
+         nestedMaskMasks, hiddenMaskRefs, masksUnavailable);
     LOGI("bounds: x[%.3f,%.3f] y[%.3f,%.3f]", g_minX, g_maxX, g_minY, g_maxY);
 
     // ---- P4：动作 / 表情 / 姿势 ----
@@ -1733,9 +2771,23 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         g_motionGroups.clear();
         g_expressions.clear();
         g_poseGroups.clear();
+        g_poseGroupLinks.clear();
+        g_poseFromFile = false;
+        g_poseFallbackPairs = 0;
         if (!jsonPath.empty()) {
             loadMotions(src, jsonPath, dir);
+            // P12：model3.json 没有 Motions 段的模型（VTS 打包件常见），
+            // 补一条 VTS 约定 idle，否则带 PartOpacity 互斥曲线的 idle
+            // （hiyori 的 PartArmA=1/PartArmB=0）不会被播放。
+            if (g_motionGroups.empty()) loadVtsIdleMotion(src, dir);
             loadExpressions(src, jsonPath, dir);
+            // P14：VTS 打包模型（Big_fat_fish / 樱花miku）的 model3.json 没有
+            // Expressions 段，表情清单只存在于 vtube.json 的 Hotkeys 里。
+            // 没有这一步，界面上的表情条恒为空，表现为「表情切换完全失效」。
+            loadVtsHotkeyExpressions(src, dir);
+            // P14：眨眼组的参数下标要在解析完 model3.json 的 Groups 后建立，
+            // 且必须在 physics3 之前（Big_fat_fish 的眼皮由 EyeLOpen 物理驱动）。
+            loadEyeBlinkGroup(src, jsonPath);
             // pose3 / physics3 路径不像 Motions/Expressions 那样由我们自己解析：
             // 直接在 model3.json 的 FileReferences 里找 "Pose" / "Physics" 字段。
             std::string jsonText;
@@ -1751,6 +2803,11 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
             }
         }
 
+        // ---- P9：无 pose3 时的兜底互斥 ----
+        // 只在「没有任何 pose3 组」时介入，规则与开关见 buildFallbackPoseGroupsLocked。
+        g_poseFileGroupCount = g_poseGroups.size();
+        if (!g_poseFromFile) buildFallbackPoseGroupsLocked();
+
         // 默认播第一组动作的第 0 个（Sample 是 Idle），并立刻应用一次
         g_activeGroup = g_motionGroups.empty() ? -1 : 0;
         g_activeMotion = (g_activeGroup >= 0 && !g_motionGroups[0].motions.empty()) ? 0 : -1;
@@ -1759,14 +2816,11 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         g_lastTickSec = 0.0;
         g_activeExpression = -1;
         g_modelDirty = true;
-        // 物理：先无输入收敛 2 秒定出静止参考角，再进入正常逐帧模拟
+        // 物理：复位全部链的运行时状态（粒子姿态、速度、输出历史），
+        // 新模型从静息竖直姿态开始，不拖旧模型的任何历史
         g_physicsDt = 0.0f;
         for (PhysicsChain &chain : g_physicsChains) {
-            chain.initialized = false;
-            chain.px.clear();
-            chain.py.clear();
-            chain.vx.clear();
-            chain.vy.clear();
+            initializeChain(chain);
         }
 
         applyModelStateLocked();
@@ -1860,12 +2914,23 @@ float sampleCurve(const float *flat, int count, float t) {
 /**
  * 应用姿势（pose3）互斥语义到部件不透明度。
  *
- * 标准 Pose 后处理 的做法：每组按顺序检查候选部件，第一个「输入不透明度
- * 高于阈值」的部件视为当前姿态，其余候选归零。这样 m14/m05 这类手势动作
- * 把 Part01ArmRB001 设为 1 时，Part01ArmRA001 被压成 0，手臂就不会重叠。
+ * 对齐标准 Pose 后处理（CubismPose::updateParameters）的语义：
+ *  1) 每组用**本帧输入不透明度**选出唯一获胜者（最大者，并列取靠前者）；
+ *     判据用的是动作/面捕/默认值刚写进去、pose 尚未改动的值，所以本函数必须
+ *     在所有写部件不透明度的步骤之后、csmUpdateModel 之前调用。
+ *  2) 组内落选者归零，获胜者保留自己的值；获胜者的 Link 部件跟随获胜者，
+ *     落选者的 Link 部件一并归零。
+ *  3) 全组都不亮（最大值 ≤ 阈值）时按**默认不透明度**回退：挑默认值最大的候选。
+ *     这一步专治「模型 A 没手」：手部部件可能被上一帧动作压成 0，而它的 moc3
+ *     默认值是 1 —— 回退能把这只手放回来，同时不会误点亮默认值也是 0 的部件。
+ *  4) 默认值也全为 0（整组都是 visible=0、只能靠 pose 点亮的部件）时，退化为
+ *     「强制第一个候选按 1.0 显示」。互斥组的语义是**恰好一个可见**：整组消失
+ *     就是真机上的「没手」；标准 Pose 后处理 的淡入终点也是同样的强制可见。
  *
- * 可见的那个部件**保留自己的输入值**而不是硬写 1.0：动作可以给部件做
- * 淡入淡出（PartOpacity 曲线从 0 渐增），硬写 1 会让渐入变成瞬间弹出。
+ * ⚠️ P8 关键修复：候选序（ordinal）与 csm 部件下标是两个不同的下标空间。
+ * 旧实现拿部件下标去索引 g_poseGroupLinks[组]（形如 links[winner]），
+ * 越界时静默跳过、不越界时取到**别的候选**的联动列表：真机表现就是
+ * 联动部件（第二只手）没被清零 → 四只手；或获胜手被误零 → 没手。
  */
 void applyPoseLocked() {
     if (g_poseGroups.empty() || !g_model) return;
@@ -1874,28 +2939,163 @@ void applyPoseLocked() {
     if (!partOpacities) return;
 
     constexpr float kVisibleThreshold = 0.001f;
+    const int partCount = static_cast<int>(g_partDefaults.size());
+    const size_t groupCount = g_poseGroups.size();
 
-    for (const std::vector<int> &group : g_poseGroups) {
-        int visible = -1;
-        for (int partIndex : group) {
-            if (partIndex < 0 || partIndex >= static_cast<int>(g_partDefaults.size())) {
-                continue;
+    // ---- 1) 每组选出唯一获胜者：记录**候选序**与**部件下标** ----
+    std::vector<int> winnerOrdinal(groupCount, -1);
+    std::vector<int> winnerPart(groupCount, -1);
+    int forcedVisibleGroups = 0;
+    std::vector<uint8_t> isWinner(static_cast<size_t>(std::max(0, partCount)), 0);
+    for (size_t gi = 0; gi < groupCount; ++gi) {
+        const std::vector<int> &group = g_poseGroups[gi];
+        int bestOrdinal = -1;
+        int bestPart = -1;
+        float bestOpacity = kVisibleThreshold;
+        for (size_t oi = 0; oi < group.size(); ++oi) {
+            const int partIndex = group[oi];
+            if (partIndex < 0 || partIndex >= partCount) continue;
+            const float opacity = partOpacities[partIndex];
+            if (!std::isfinite(opacity)) continue;
+            if (opacity > bestOpacity) {
+                bestOpacity = opacity;
+                bestOrdinal = static_cast<int>(oi);
+                bestPart = partIndex;
             }
-            // 用「动作/默认」写进来的输入值判定，而不是被 pose 改过的输出值
-            if (partOpacities[partIndex] > kVisibleThreshold) {
-                visible = partIndex;
+        }
+
+        // 回退（见上面第 3 条）：按默认不透明度挑。
+        //
+        // 两次回退的用意不同：
+        //  - 先按 moc3 默认值挑：默认值非 0 的候选说明作者本意是「可显示」，
+        //    选它既能把手放回来，又不会点亮作者刻意隐藏的部件；
+        //  - 默认值全为 0（整组都是 visible=0 的部件，只能靠 pose 点亮）时，
+        //    强制选第一个候选并按 1.0 显示。互斥组的语义就是「必须恰好有
+        //    一个可见」，整组消失就是真机上的「模型没手」；宁可显示一组手臂
+        //    也不能让手凭空不见（这正是标准 Pose 后处理 的淡入终点）。
+        bool forcedVisible = false;
+        if (bestPart < 0) {
+            float bestDefault = kVisibleThreshold;
+            for (size_t oi = 0; oi < group.size(); ++oi) {
+                const int partIndex = group[oi];
+                if (partIndex < 0 || partIndex >= partCount) continue;
+                const float def = g_partDefaults[static_cast<size_t>(partIndex)];
+                if (!std::isfinite(def)) continue;
+                if (def > bestDefault) {
+                    bestDefault = def;
+                    bestOrdinal = static_cast<int>(oi);
+                    bestPart = partIndex;
+                }
+            }
+        }
+        if (bestPart < 0) {
+            for (size_t oi = 0; oi < group.size(); ++oi) {
+                const int partIndex = group[oi];
+                if (partIndex < 0 || partIndex >= partCount) continue;
+                bestOrdinal = static_cast<int>(oi);
+                bestPart = partIndex;
+                forcedVisible = true;
                 break;
             }
         }
-        // 一个都不亮时把第一个候选设为可见，避免整只手消失
-        if (visible < 0 && !group.empty()) visible = group.front();
+        // 回退选出的获胜者若自身不透明度仍为 0，就按 1.0 点亮：
+        // 否则「选出了获胜者」却保留 0 值，屏幕上依然没有这只手。
+        // 注意：正常（按最大不透明度）选出的获胜者**不**强制 1.0 —— 那会截断
+        // 动作对组内成员做的淡入淡出。
+        if (bestPart >= 0 && partOpacities[bestPart] <= kVisibleThreshold) {
+            partOpacities[bestPart] = 1.0f;
+            forcedVisible = true;
+        }
+
+        winnerOrdinal[gi] = bestOrdinal;
+        winnerPart[gi] = bestPart;
+        if (forcedVisible) ++forcedVisibleGroups;
+        if (bestPart >= 0) isWinner[static_cast<size_t>(bestPart)] = 1;
+    }
+
+    // ---- 2) 汇总「本帧必须保留」：各组获胜者 + 获胜者的联动部件 ----
+    //
+    // 必须先汇总再统一归零：同一个部件可能既是 A 组的获胜者、又是 B 组的落选者
+    // 或某个落选者的联动部件，边遍历边写会把前面的判定结果冲掉。
+    std::vector<uint8_t> keep = isWinner;
+    for (size_t gi = 0; gi < groupCount; ++gi) {
+        const int ordinal = winnerOrdinal[gi];
+        if (ordinal < 0 || gi >= g_poseGroupLinks.size()) continue;
+        const std::vector<std::vector<int>> &links = g_poseGroupLinks[gi];
+        if (ordinal >= static_cast<int>(links.size())) continue;
+        for (int linkPart : links[static_cast<size_t>(ordinal)]) {
+            if (linkPart >= 0 && linkPart < partCount) {
+                keep[static_cast<size_t>(linkPart)] = 1;
+            }
+        }
+    }
+
+    // ---- 3) 归零：组内落选者 + 落选者的联动部件 ----
+    //
+    // 组内成员无条件归零：pose3 的互斥语义是「只有一套手臂」，这是「四只手」
+    // 唯一可靠的治法 —— 动画若把两套手臂都拉到 1.0，必须由这里压回一套。
+    // 联动部件则尊重动画优先级（见 g_partAnimDriven）。
+    for (size_t gi = 0; gi < groupCount; ++gi) {
+        const std::vector<int> &group = g_poseGroups[gi];
+        const int winner = winnerPart[gi];
 
         for (int partIndex : group) {
-            if (partIndex < 0 || partIndex >= static_cast<int>(g_partDefaults.size())) {
+            if (partIndex < 0 || partIndex >= partCount) continue;
+            if (partIndex != winner && !keep[static_cast<size_t>(partIndex)]) {
+                partOpacities[partIndex] = 0.0f;
+            }
+        }
+
+        if (gi >= g_poseGroupLinks.size()) continue;
+        for (const std::vector<int> &partLinks : g_poseGroupLinks[gi]) {
+            for (int linkPart : partLinks) {
+                if (linkPart < 0 || linkPart >= partCount) continue;
+                if (keep[static_cast<size_t>(linkPart)]) continue;
+                // 动画显式驱动的联动部件不由 pose 改写（任务要求的优先级）
+                if (linkPart < static_cast<int>(g_partAnimDriven.size()) &&
+                    g_partAnimDriven[static_cast<size_t>(linkPart)]) {
+                    continue;
+                }
+                partOpacities[linkPart] = 0.0f;
+            }
+        }
+    }
+
+    // ---- 4) 获胜者的联动部件跟随其不透明度（支持动作淡入）----
+    for (size_t gi = 0; gi < groupCount; ++gi) {
+        const int ordinal = winnerOrdinal[gi];
+        const int winner = winnerPart[gi];
+        if (ordinal < 0 || winner < 0 || gi >= g_poseGroupLinks.size()) continue;
+        const std::vector<std::vector<int>> &links = g_poseGroupLinks[gi];
+        if (ordinal >= static_cast<int>(links.size())) continue;
+
+        const float opacity = partOpacities[winner];
+        for (int linkPart : links[static_cast<size_t>(ordinal)]) {
+            if (linkPart < 0 || linkPart >= partCount) continue;
+            // 联动部件自己若也是别组的获胜者，则以它自己的值为准
+            if (isWinner[static_cast<size_t>(linkPart)]) continue;
+            // P8：动画显式驱动的联动部件保留动画值（优先级高于 pose）
+            if (linkPart < static_cast<int>(g_partAnimDriven.size()) &&
+                g_partAnimDriven[static_cast<size_t>(linkPart)]) {
                 continue;
             }
-            // 可见者保留输入值（支持动作淡入），其余归零
-            if (partIndex != visible) partOpacities[partIndex] = 0.0f;
+            partOpacities[linkPart] = opacity;
+        }
+    }
+
+    // 诊断：每 5 秒最多一次，报告「本帧有几个组是被强制点亮的」。
+    // 真机上「四只手 / 没手」都表现为这里计数异常（恒为 0 = pose 没生效，
+    // 恒等于组数 = 每个组都在强制点亮，说明动作/默认值把整组压成了 0）。
+    if (forcedVisibleGroups > 0) {
+        static double lastReportSec = 0.0;
+        static int lastForced = -1;
+        const double nowSec = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (lastForced != forcedVisibleGroups || nowSec - lastReportSec > 5.0) {
+            LOGI("pose: 强制点亮 %d/%zu 组（其余组按本帧最大不透明度选择）",
+                 forcedVisibleGroups, groupCount);
+            lastReportSec = nowSec;
+            lastForced = forcedVisibleGroups;
         }
     }
 }
@@ -1911,6 +3111,12 @@ void resetParametersLocked() {
     float *partOpacities = csmGetPartOpacities(g_model);
     if (partOpacities) {
         for (size_t i = 0; i < g_partDefaults.size(); ++i) partOpacities[i] = g_partDefaults[i];
+    }
+    // P8：每帧重建「被动画显式驱动」的部件标记，保证 pose 读到的是本帧意图
+    if (g_partAnimDriven.size() != g_partDefaults.size()) {
+        g_partAnimDriven.assign(g_partDefaults.size(), 0);
+    } else {
+        std::fill(g_partAnimDriven.begin(), g_partAnimDriven.end(), 0);
     }
 }
 
@@ -1970,281 +3176,95 @@ void applyMotionLocked(float *modelOpacity) {
         } else if (curve.partIndex >= 0 && partOpacities &&
                    curve.partIndex < static_cast<int>(g_partDefaults.size())) {
             partOpacities[curve.partIndex] = v;
+            // P8：标记「动画对它有明确意图」，pose 后处理只覆盖组内成员
+            if (curve.partIndex < static_cast<int>(g_partAnimDriven.size())) {
+                g_partAnimDriven[static_cast<size_t>(curve.partIndex)] = 1;
+            }
         }
     }
 }
 
 // ---------------------------------------------------------------------------
-//  自研物理求解器（P5）
+//  物理求解器（XPBD）：固定子步 + 三类约束 + 速度回推
 // ---------------------------------------------------------------------------
 //
-//  数值方案：半隐式欧拉 + 定长子步 + 杆长投影。
-//  为什么不用显式欧拉大步长：弹簧系统的稳定条件是 k·h² < 1，掉帧时 h 变大
-//  会直接把质点甩到无穷远；把每帧切成 ≤1/120s 的子步后，k 可以取到 400 量级
-//  仍然稳定，而且不同帧率下的观感一致。
+//  前两代实现的教训：
+//   - P5 弹簧伺服有 DC 通路（稳态输入产生恒定输出）且动态被低通化，靠抑制项
+//     压制发散与残差，越压越迟滞；
+//   - P12 标准方向跟踪是高通（稳态输出 0）、结构上稳定，但每步只跟 1/5 的
+//     一阶跟踪没有真正的惯性 —— 大幅甩头时头发「贴着走」，过冲/回摆全靠
+//     velocity×delay 项凑，且独立实现代码有法律风险。
 //
-//  为什么加杆长投影：纯弹簧链会被拉长（刚度有限），头发越甩越长。投影只移动
-//  子节点、不移动父节点，等价于「不可伸长的绳子」，同时让摆动的周期由重力与
-//  杆长决定，而不是由刚度主导 —— 这正是头发该有的手感。
+//  本代按 XPBD（Extended Position-Based Dynamics）从零实现：
+//
+//    输入汇总（normalizeParameterValue + Type × Weight，与 json 数据约定
+//    一致）→ 目标方向 d / 根粒子平移 → 子步循环（预测 → 一次约束求解 →
+//    速度回推）→ 输出取相邻杆相对几何量 → ×Scale → 钳参数量程 → ×Weight
+//    混合 → 写参数。
+//
+//  约束与柔度映射（α = 柔度，子步内缩放为 α̃ = α/h²）：
+//   - 距离约束 α=0（刚性杆）；
+//   - 目标方向约束 α = xpbd::Tuning::poseCompliance × Delay / Acceleration —— Angle
+//     类输入的「目标方向」语义位，稳态平行 → 输出 0（高通结构不变），动态
+//     由二阶惯性系统产生（拖尾 + 过冲）；
+//   - 弯曲约束（单边）防对折。
+//
+//  稳定性兜底：
+//   - 固定子步长 1/120（与渲染帧率、json Fps 双解耦）；
+//   - 柔度语义 = 对刚度 1/α 的弹簧做隐式积分（无条件稳定），叠加速度指数
+//     阻尼 + 逐粒子速度硬钳；
+//   - json 消毒：Acceleration ≤ 100、Delay ≤ 20（解析侧钳制，P1 审计保留）；
+//   - 非有限值 → 整链复位静息姿态 + 限频日志。
 
-/** 物理子步长（秒）。120Hz 对 60Hz 渲染正好两子步，掉帧时也不会发散。 */
-constexpr float kPhysicsSubStep = 1.0f / 120.0f;
+// 求解器数学（directionToRadian / normalizeParameterValue / initialize /
+// step / evaluateOutput）全部由 xpbd_solver.h 提供，这里只保留 App 侧的
+// 参数表适配与写回逻辑 —— 保证「桌面回放调参」与「真机运行」是同一份代码。
 
-/** 基础刚度（1/s²）。实际刚度再乘 Acceleration 与 Mobility。
- *  取 200 对应链尾自然频率约 2.6Hz —— 头发该有的摆动速度；
- *  更高会变成「发条式抖动」，更低则软塌塌像果冻。 */
-constexpr float kPhysicsStiffness = 200.0f;
-
-/** 重力缩放：json 里的 Gravity 是单位向量，这里换算成物理单位下的加速度。 */
-constexpr float kPhysicsGravityScale = 40.0f;
-
-/** 输入归一化到 ±1 后，锚点最多旋转多少弧度（约 31°）。 */
-constexpr float kPhysicsMaxRotation = 0.55f;
-
-/**
- * 输入速度拖曳力的强度（单位：1/秒）。
- *
- * 量级推导：满量程输入在 60Hz 下变化对应速度约 posMax/dt = 10/0.0167 ≈ 600，
- * 而弹簧回复力的典型量级是 k·Δx = 200×10 = 2000；取 2.0 时拖曳力约 1200，
- * 与回复力同量级 —— 急转能明显甩开，慢速头动则几乎无感（速度小、力也小）。
- */
-constexpr float kPhysicsInertiaScale = 2.0f;
-
-/**
- * 不可信输入的钳制上限（审计 P1）。
- *
- * Sample 的 Acceleration 最大 10、Delay 最大 1.5；这里给 10 倍以上余量，
- * 既不改动正常模型手感，又能挡住自定义模型导入时写出的极端值。
- * 注意这些只是「第一道闸」——真正的稳定性由 simulateChain 里的
- * ω·h 与联合预算（ωh)²+2ch 硬约束保证（模型合法但帧率掉到 0.05s 时仍要稳定）。
- */
-constexpr float kPhysicsMaxAcceleration = 100.0f;
-constexpr float kPhysicsMaxDelay = 20.0f;
-
-/** 刚度项硬闸：ω·h ≤ 1.8（同上，防止 k·h² 越界导致发散）。 */
-constexpr float kPhysicsMaxOmegaH = 1.8f;
-
-/**
- * 刚度与阻尼的**联合**稳定预算（审计 P1 的最终闸门）。
- *
- * 半隐式欧拉求解「弹簧-阻尼」系统的特征多项式为
- *   λ² - T·λ + D = 0,  T = 2 - (ωh)² - ch,  D = 1 - ch
- * 实特征值分支的稳定条件化简为：
- *   (ωh)² + 2·ch < 4
- *
- * 为什么单看 c·h < 2 不够：`ch=1.8` 配 `ωh=1.16` 时左边 = 4.96 > 4，
- * 速度每步被反向放大 0.8 倍并与刚性回复力共振，实测静止后仍有 800+ 的
- * 残余速度（表现为持续高频抖动）。取 3.6 留 10% 余量。
- */
-constexpr float kPhysicsStabilityBudget = 3.6f;
-
-/** 把参数值按模型量程归一化到 [-1, 1]（默认值两侧分别用各自的分母）。 */
-float normalizeParamValue(int index, float value) {
-    if (index < 0 || index >= g_paramCount ||
-        index >= static_cast<int>(g_paramDefaults.size())) {
-        return 0.0f;
-    }
-    const size_t i = static_cast<size_t>(index);
-    const float def = g_paramDefaults[i];
-    const float minV = g_paramMin[i];
-    const float maxV = g_paramMax[i];
-
-    if (value >= def) {
-        const float span = maxV - def;
-        if (span <= 1e-6f) return 0.0f;
-        return std::max(-1.0f, std::min(1.0f, (value - def) / span));
-    }
-    const float span = def - minV;
-    if (span <= 1e-6f) return 0.0f;
-    return std::max(-1.0f, std::min(1.0f, (value - def) / span));
+/** 参数表快照（求解器只读；每次调用重建，模型切换自动生效）。 */
+xpbd::ParamTable makeParamTable() {
+    xpbd::ParamTable table;
+    table.count = g_paramCount;
+    table.min = g_paramMin.data();
+    table.max = g_paramMax.data();
+    table.def = g_paramDefaults.data();
+    return table;
 }
 
 /**
- * 推进一条物理链。
+ * 标准 updateOutputParameterValue：输出写回单个参数槽。
  *
- * @param chain     链（读写其 px/py/vx/vy 运行时状态）
- * @param values    当前参数值数组；nullptr = 零输入（初始化收敛用）
- * @param totalTime 本次要模拟的时长（秒）
+ * value = outputValue × Scale，钳到目标参数 [min, max]，再按 Weight 与参数
+ * 当前值混合（Weight ≥ 100 直接覆盖）。与旧实现的差异：不做 default 居中的
+ * 半程量程映射 —— 标准就是「满量程钳制 + 线性混合」。
  */
-void simulateChain(PhysicsChain &chain, const float *values, float totalTime) {
-    const size_t count = chain.vertices.size();
-    if (count < 2) return;
-
-    if (chain.px.size() != count) {
-        chain.px.assign(count, 0.0f);
-        chain.py.assign(count, 0.0f);
-        chain.vx.assign(count, 0.0f);
-        chain.vy.assign(count, 0.0f);
-        for (size_t i = 0; i < count; ++i) {
-            chain.px[i] = chain.vertices[i].restX;
-            chain.py[i] = chain.vertices[i].restY;
-        }
+void physicsWriteOutputLocked(float *paramValue, float paramMin, float paramMax,
+                              float outputValue, const PhysicsOutput &output) {
+    float value = outputValue * output.scale;
+    if (value < paramMin) {
+        value = paramMin;
+    } else if (value > paramMax) {
+        value = paramMax;
     }
-
-    // ---- 1) 输入汇总：位移（X/Y）与锚点旋转（Angle）分开累计 ----
-    float tx = 0.0f;
-    float ty = 0.0f;
-    float rot = 0.0f;
-    if (values) {
-        for (const PhysicsInput &input : chain.inputs) {
-            if (input.paramIndex < 0 || input.paramIndex >= g_paramCount) continue;
-            float unit = normalizeParamValue(input.paramIndex,
-                                             values[input.paramIndex]);
-            if (input.reflect) unit = -unit;
-            if (input.type == 2) {
-                rot += unit * input.weight;
-            } else if (input.type == 1) {
-                ty += unit * input.weight;
-            } else {
-                tx += unit * input.weight;
-            }
-        }
-    }
-    // 换算到物理坐标（质点位置的量纲），速度也在同一量纲上求，
-    // 否则拖曳力会差一个 posMax 的倍率（24 与 240 的区别，手感天差地别）。
-    tx *= chain.posMax;
-    ty *= chain.posMax;
-    rot *= kPhysicsMaxRotation;
-
-    // 输入速度（物理坐标/秒）：任务要求「以 ParamAngleX 的速度作为输入力」。
-    // 单靠锚点位移只能产生「被拖动」的滞后，表现不出「甩」的惯性；
-    // 把它作为显式拖曳力叠加，急转时才有明显的甩尾。
-    float velX = 0.0f;
-    float velY = 0.0f;
-    float velRot = 0.0f;
-    // 只在「真实帧间隔」上求速度：状态重建（切后台恢复、换动作）时 totalTime 传 0，
-    // 此时输入相对上一帧可能跳变很大，按子步长求速度会得到几千量级的假冲量，
-    // 一帧就能把头发甩飞。直接跳过速度项即可。
-    if (totalTime > 1e-4f && chain.prevValid) {
-        velX = (tx - chain.prevInputX) / totalTime;
-        velY = (ty - chain.prevInputY) / totalTime;
-        velRot = (rot - chain.prevInputRot) / totalTime;
-    }
-    chain.prevInputX = tx;
-    chain.prevInputY = ty;
-    chain.prevInputRot = rot;
-    chain.prevValid = true;
-
-    // ---- 2) 根节点钉在输入锚点上（它没有自由度，是驱动的来源）----
-    chain.px[0] = chain.vertices[0].restX + tx;
-    chain.py[0] = chain.vertices[0].restY + ty;
-    chain.vx[0] = 0.0f;
-    chain.vy[0] = 0.0f;
-
-    // ---- 3) 定长子步积分 ----
-    if (totalTime <= 0.0f) totalTime = kPhysicsSubStep;
-    int steps = static_cast<int>(std::ceil(totalTime / kPhysicsSubStep));
-    steps = std::max(1, std::min(steps, 24));
-    const float h = totalTime / static_cast<float>(steps);
-
-    const float cosRot = std::cos(rot);
-    const float sinRot = std::sin(rot);
-
-    for (int s = 0; s < steps; ++s) {
-        for (size_t i = 1; i < count; ++i) {
-            const PhysicsVertex &v = chain.vertices[i];
-            const PhysicsVertex &parent = chain.vertices[i - 1];
-            // 静息向量（父 → 本节点）按锚点旋转后，作为「目标方向」
-            const float rx = v.restX - parent.restX;
-            const float ry = v.restY - parent.restY;
-            const float targetX = chain.px[i - 1] + rx * cosRot - ry * sinRot;
-            const float targetY = chain.py[i - 1] + rx * sinRot + ry * cosRot;
-
-            // 刚度：Acceleration 越大越硬；Mobility 越大越「软」（跟随多、抵抗少）。
-            //
-            // 审计 P1（数值爆炸）：json 是不可信输入，自定义模型可能写
-            // Acceleration=1e6 / Delay=1e3。旧实现只对 acceleration 取下限 0.1，
-            // 没有上限，于是 k = 200×1e6 使 ω·h ≫ 2，半隐式欧拉一步就把质点
-            // 甩到 1e9 量级（表现为模型炸成碎片/NaN 污染参数）。
-            // 三重防护，缺一不可：
-            //   1) Acceleration / Delay 钳到有限区间（挡住绝大多数异常值）；
-            //   2) 刚度再按 ω·h ≤ 1.8 钳一次 —— 即使 Acceleration 合法但 h 变大
-            //      （掉帧到 0.05s）也不会越界，这是真正的稳定性保证；
-            //   3) 阻尼按「联合稳定预算」钳一次 —— 刚度吃掉预算后自动退让，
-            //      防止 Delay 很大时阻尼项把速度反向放大（见 kPhysicsStabilityBudget）。
-            const float mobility = std::max(0.0f, std::min(1.0f, v.mobility));
-            const float accel = std::max(0.1f, std::min(kPhysicsMaxAcceleration,
-                                                        v.acceleration));
-            float stiffness = kPhysicsStiffness * accel * (0.55f + 0.45f * mobility);
-            const float maxOmega = kPhysicsMaxOmegaH / h;
-            if (stiffness > maxOmega * maxOmega) stiffness = maxOmega * maxOmega;
-
-            const float omega = std::sqrt(stiffness);
-            // 阻尼：Delay 越大越拖，映射到阻尼比 0.08~0.63（始终欠阻尼，有回弹）
-            const float delay = std::max(0.0f, std::min(kPhysicsMaxDelay, v.delay));
-            const float zeta = 0.08f + 0.55f * delay;
-
-            // 联合稳定预算：(ωh)² + 2·ch ≤ 3.6（推导见 kPhysicsStabilityBudget）。
-            // 先按此式算出本步还能给阻尼的额度，再和物理阻尼取小 —— 这样
-            // 「刚度已经吃掉大部分预算」的极端模型会自动退化成近乎无阻尼的
-            // 刚性链，而不是发散成碎片。
-            const float omegaH = omega * h;
-            const float dampingBudgetH =
-                std::max(0.0f, kPhysicsStabilityBudget - omegaH * omegaH) * 0.5f;
-            const float damping = std::min(2.0f * zeta * omega, dampingBudgetH / h);
-
-            // 胡克回复力 F = -k·x + 阻尼力 F = -c·v + 重力 + 输入速度拖曳力。
-            // 拖曳力与「越靠链尾越轻」成正比（1 - mobility），
-            // 这样发根几乎不动、发梢甩得最开，符合真实头发的质量分布。
-            const float inertia = (1.0f - mobility) * kPhysicsInertiaScale;
-            const float fx = stiffness * (targetX - chain.px[i]) -
-                             damping * chain.vx[i] +
-                             chain.gravityX * kPhysicsGravityScale +
-                             (-velRot * ry + velX) * inertia;
-            const float fy = stiffness * (targetY - chain.py[i]) -
-                             damping * chain.vy[i] +
-                             chain.gravityY * kPhysicsGravityScale +
-                             (velRot * rx + velY) * inertia;
-
-            // 半隐式欧拉：先更新速度，再用新速度更新位置
-            chain.vx[i] += fx * h;
-            chain.vy[i] += fy * h;
-            chain.px[i] += chain.vx[i] * h;
-            chain.py[i] += chain.vy[i] * h;
-        }
-
-        // 杆长投影：把每节拉回静息长度，只移动子节点。
-        //
-        // 审计 P2（静止微抖）：位置被投影后速度没有同步修正，法向分量仍在
-        // 「继续把节点往外推」，下一子步又被拉回来 —— 每帧都在投影/弹回之间
-        // 反复，静止时表现为高频微抖。这里在投影后把速度的**径向分量**扣掉，
-        // 只保留切向分量（沿杆方向的摆动），投影不再引入虚假能量。
-        for (size_t i = 1; i < count; ++i) {
-            const float restDx = chain.vertices[i].restX - chain.vertices[i - 1].restX;
-            const float restDy = chain.vertices[i].restY - chain.vertices[i - 1].restY;
-            const float restLen = std::sqrt(restDx * restDx + restDy * restDy);
-            if (restLen <= 1e-4f) continue;
-
-            float dx = chain.px[i] - chain.px[i - 1];
-            float dy = chain.py[i] - chain.py[i - 1];
-            const float len = std::sqrt(dx * dx + dy * dy);
-            if (len <= 1e-4f) {
-                dx = 0.0f;
-                dy = -restLen;
-            } else {
-                dx = dx / len * restLen;
-                dy = dy / len * restLen;
-            }
-            chain.px[i] = chain.px[i - 1] + dx;
-            chain.py[i] = chain.py[i - 1] + dy;
-
-            // 速度同步：v -= (v·n̂)n̂，n̂ = 投影后的杆方向单位向量
-            const float invLen = 1.0f / restLen;
-            const float nx = dx * invLen;
-            const float ny = dy * invLen;
-            const float radial = chain.vx[i] * nx + chain.vy[i] * ny;
-            chain.vx[i] -= radial * nx;
-            chain.vy[i] -= radial * ny;
-        }
+    if (output.weight >= 1.0f) {
+        *paramValue = value;
+    } else {
+        *paramValue = *paramValue * (1.0f - output.weight) + value * output.weight;
     }
 }
 
 /**
- * 物理输出写回参数。
+ * 物理输出写回参数：rig 级调度（累加时钟 + 固定子步 + 帧间插值）。
  *
- * 输出取「链尾实际方向」相对「静止参考方向」的偏角：
- *  - 用偏角而不是绝对角，静止时输出恒为 0（重力造成的静态下垂被抵消掉）；
- *  - 偏角按 json 的 Angle 归一化区间压到 ±1，再乘 Scale/Weight 映射到参数量程。
+ * 本帧流程：
+ *  1) 累加时钟 += dt（超过 MaxDeltaTime 直接清零 —— 丢时间不补步）；
+ *  2) while (remain >= xpbd::tuning().substepDt) 逐子步：current→previous 输出槽轮转、
+ *     输入时间对齐（线性外插到子步时刻，不是低通）、逐链 xpbd::step、
+ *     输出写 curOut 与参数缓存（后者是组间传播通道：后一条链的输入能读到
+ *     前一条链的输出）；
+ *  3) 帧末 interpolate：参数 = prevOut×(1-α) + curOut×α，α = remain/h。
+ *     一阶保持：90fps 渲染 + 120Hz 子步时靠它保证输出连续，只增加 ≤1 个
+ *     子步的延迟，不衰减任何频段。即使本帧一步都没跑（remain < h），
+ *     也照常执行 —— 输出仍随 α 平滑推进。
  *
  * 调用约束：**必须持 g_mutex**，且在动作/表情/面捕之后、pose 之前执行
  * （物理读的是本帧最终的头/身体角度）。
@@ -2254,81 +3274,234 @@ void applyPhysicsLocked() {
     float *values = csmGetParameterValues(g_model);
     if (!values) return;
 
-    const float dt = std::max(0.0f, std::min(0.05f, g_physicsDt));
+    // P14 诊断（顺序证明）：眨眼写入之后物理才能读到闭眼值。若这里读到的
+    // eye 值 == 眨眼刚写进去的值，就证明 applyAutoBlinkLocked 确实排在物理之前，
+    // 眼皮链（PhysicsSetting19/20/22/23 输入 EyeLOpen/EyeROpen）本帧就是闭着的。
+    // 同样只在 /data/local/tmp/arvt_blink_log 存在时开启。
+    if (g_blinkEyeWrittenSerial != 0 && !g_eyeBlinkParams.empty() &&
+        blinkLogEnabled(g_frameNowSec)) {
+        static long s_lastSeenSerial = 0;
+        if (g_blinkEyeWrittenSerial != s_lastSeenSerial) {
+            s_lastSeenSerial = g_blinkEyeWrittenSerial;
+            const int pi = g_eyeBlinkParams.front();
+            if (pi >= 0 && pi < g_paramCount) {
+                LOGI("blink->physics: eye=%.3f (written=%.3f, %s)",
+                     static_cast<double>(values[pi]),
+                     static_cast<double>(g_blinkEyeWritten),
+                     values[pi] == g_blinkEyeWritten ? "same-value" : "MISMATCH");
+            }
+        }
+    }
 
+    // P12 实验开关（flag 文件，`adb shell touch ...` 即可控制，零 Kotlin 改动）：
+    //   /data/local/tmp/arvt_physics_off → 全部输出写回默认值并跳过模拟。
+    //   （arvt_physics_fixed_dt 已退役：固定步长兜底成为唯一路径。）
+    const bool flagOff = access("/data/local/tmp/arvt_physics_off", F_OK) == 0;
+    {
+        static bool s_lastOff = false;
+        if (flagOff != s_lastOff) {
+            LOGI("物理实验开关: off=%d", flagOff ? 1 : 0);
+            s_lastOff = flagOff;
+        }
+    }
+    const bool enabled = g_physicsEnabled.load(std::memory_order_relaxed) && !flagOff;
+
+    // P9：唯一的物理 dt 钳制点，与 drawFrame 里的 kMaxFrameDt 完全一致。
+    // dt 是「累加时钟的进水量」；物理子步长 h 固定为 xpbd::tuning().substepDt，两者独立。
+    const float dt = std::max(0.0f, std::min(kPhysicsMaxDt, g_physicsDt));
+    if (enabled) g_physicsDtStats.add(dt);
+
+    if (!enabled) {
+        // 调试开关关闭：输出参数写回默认值（动作/表情可能已写过这些参数，
+        // 不覆盖就分不清抖的是物理还是动作），并复位全部运行时状态。
+        for (PhysicsChain &chain : g_physicsChains) {
+            for (const PhysicsOutput &output : chain.outputs) {
+                const int pi = output.paramIndex;
+                if (pi < 0 || pi >= g_paramCount) continue;
+                values[pi] = g_paramDefaults[static_cast<size_t>(pi)];
+            }
+            initializeChain(chain);
+        }
+        g_physicsRemainTime = 0.0f;
+        g_paramCaches.clear();
+        g_paramInputCaches.clear();
+        return;
+    }
+
+    if (!(dt > 0.0f)) return;   // 无时间流逝（dt<=0）不做任何演化
+
+    // ---- 1) 累加时钟 ----
+    g_physicsRemainTime += dt;
+    if (g_physicsRemainTime > kPhysicsMaxDeltaTime) g_physicsRemainTime = 0.0f;
+
+    // 参数缓存按需重建（模型切换 / 首帧；参数缓存判据）。
+    if (g_paramCaches.size() < static_cast<size_t>(g_paramCount)) {
+        g_paramCaches.assign(static_cast<size_t>(g_paramCount), 0.0f);
+        g_paramInputCaches.assign(static_cast<size_t>(g_paramCount), 0.0f);
+        for (int i = 0; i < g_paramCount; ++i) {
+            g_paramInputCaches[static_cast<size_t>(i)] = values[i];
+        }
+    }
+
+    const float h = xpbd::tuning().substepDt;   // 固定子步长：与渲染帧率、json Meta.Fps 双解耦
+
+    // ---- 2) 固定子步补步（每子步一次 XPBD 约束求解，Macklin small steps）----
+    int steps = 0;
+    while (g_physicsRemainTime >= h) {
+        // 本步开始前，把上一轮输出整体挪到「前一次」槽（输出槽位）。
+        for (PhysicsChain &chain : g_physicsChains) {
+            chain.prevOut = chain.curOut;
+        }
+
+        // 输入时间对齐：cache = inputCache×(1-w) + 当前值×w，w = h/remain
+        // （输入时间对齐）。w 可能 >1（外插），标准如此，语义对齐。
+        const float w = h / g_physicsRemainTime;
+        for (int j = 0; j < g_paramCount; ++j) {
+            const size_t uj = static_cast<size_t>(j);
+            g_paramCaches[uj] = g_paramInputCaches[uj] * (1.0f - w) + values[uj] * w;
+            g_paramInputCaches[uj] = g_paramCaches[uj];
+        }
+
+        for (PhysicsChain &chain : g_physicsChains) {
+            if (!chain.initialized) initializeChain(chain);
+            if (!xpbd::step(chain, makeParamTable(), g_paramCaches.data(), h)) {
+                // 求解器检出非有限值并已复位该链：限频记日志（1s 一次，防刷屏）
+                static double s_lastWarnSec = 0.0;
+                if (g_frameNowSec - s_lastWarnSec > 1.0) {
+                    LOGW("物理链 %s 数值异常（XPBD），已复位到静息姿态", chain.id.c_str());
+                    s_lastWarnSec = g_frameNowSec;
+                }
+            }
+
+            for (size_t oi = 0; oi < chain.outputs.size(); ++oi) {
+                const PhysicsOutput &output = chain.outputs[oi];
+                // 越界 vertexIndex / 参数下标：整条输出跳过（与标准一致）；
+                // 几何取法在 xpbd::evaluateOutput 里，与桌面回放台同一份代码。
+                if (output.paramIndex < 0 || output.paramIndex >= g_paramCount) continue;
+                float outputValue = 0.0f;
+                if (!xpbd::evaluateOutput(chain, output, &outputValue)) continue;
+
+                chain.curOut[oi] = outputValue;
+                const size_t pui = static_cast<size_t>(output.paramIndex);
+                physicsWriteOutputLocked(&g_paramCaches[pui], g_paramMin[pui],
+                                         g_paramMax[pui], outputValue, output);
+            }
+        }
+
+        g_physicsRemainTime -= h;
+        // 防御时钟跳变（正常 60fps ≤ 2 子步、掉帧到 0.05s 钳制 ≤ 6 子步）。
+        if (++steps > xpbd::tuning().maxSubstepsPerFrame) {
+            g_physicsRemainTime = 0.0f;
+            break;
+        }
+    }
+
+    // ---- 3) 帧间插值：真正写参数的只有这一处（标准 interpolate）----
+    const float alpha = g_physicsRemainTime / h;
     for (PhysicsChain &chain : g_physicsChains) {
-        // 首次使用：无输入收敛，记录静止参考角。
-        //
-        // 必须拆成 120 次 1/60s 的小步调用，不能一次传 2.0s：
-        // simulateChain 内部把子步数钳在 24 步，传 2.0s 会得到 h=0.083s，
-        // 而稳定性要求 k·h² < 1（200×0.083² ≈ 1.39），一步就把质点甩飞，
-        // 记下来的静止参考角会是错的，之后所有输出都偏。
-        if (!chain.initialized) {
-            for (int i = 0; i < 120; ++i) {
-                simulateChain(chain, nullptr, 1.0f / 60.0f);
-            }
-            const size_t count = chain.vertices.size();
-            chain.settledAngles.assign(count, 0.0f);
-            for (size_t i = 1; i < count; ++i) {
-                chain.settledAngles[i] = std::atan2(chain.py[i] - chain.py[i - 1],
-                                                    chain.px[i] - chain.px[i - 1]);
-            }
-            chain.initialized = true;
-        }
-        simulateChain(chain, values, dt);
-
-        // 归一化量程 = 2×锚点最大旋转角（约 63°）。
-        //
-        // 为什么不直接用 json 的 Angle 区间（Sample 是 ±10）：那个区间描述的是
-        // 物理链自身坐标系的量程，而 delta 是**几何夹角（度）**，两者不同量纲，
-        // 直接相除会把摆幅放大约 3 倍、任何轻微头动都顶到参数上限。
-        //
-        // 为什么是 2.4 倍：实测（独立数值验证）满转时链尾几何偏角约 36°，
-        // 除以 75.6° 得 u≈0.48，乘 json 的 Scale 后落在：
-        //   前发 0.87 / 侧发 0.80 / 后发 0.93 / 围巾 0.45
-        // 稳态都不到满幅，只有过冲的瞬间才接近上限 —— 这是「自然」的关键：
-        // 若稳态就顶到 1.0，头一直歪着时头发会像被钉住一样不动。
-        const float span = 2.4f * kPhysicsMaxRotation * 57.2957795f;
+        ++g_physicsJitter.frames;
         const size_t count = chain.vertices.size();
-        if (count < 2 || chain.settledAngles.size() != count) continue;
+        for (size_t oi = 0; oi < chain.outputs.size(); ++oi) {
+            const PhysicsOutput &output = chain.outputs[oi];
+            const int pi = output.paramIndex;
+            if (pi < 0 || pi >= g_paramCount) continue;
+            if (output.vertexIndex < 1 || output.vertexIndex >= static_cast<int>(count)) {
+                continue;
+            }
+            const size_t pui = static_cast<size_t>(pi);
+            const float blended = chain.prevOut[oi] * (1.0f - alpha) +
+                                  chain.curOut[oi] * alpha;
+            const float before = values[pui];
+            physicsWriteOutputLocked(&values[pui], g_paramMin[pui], g_paramMax[pui],
+                                     blended, output);
 
-        for (const PhysicsOutput &output : chain.outputs) {
-            if (output.paramIndex < 0 || output.paramIndex >= g_paramCount) continue;
-
-            // 审计 P1（Output.VertexIndex 被忽略）：输出可以指定任意一节杆，
-            // 不一定在链尾。旧实现恒取 last，非末端输出（例如分段发束的中段）
-            // 全部退化成链尾角度，多个输出互相打架、只剩最后一个生效。
-            // 这里按 json 的 VertexIndex 取对应杆；越界时钳到 [1, count-1]。
-            int vi = output.vertexIndex;
-            if (vi < 1) vi = 1;
-            if (vi >= static_cast<int>(count)) vi = static_cast<int>(count) - 1;
-            const size_t idx = static_cast<size_t>(vi);
-
-            const float angle = std::atan2(chain.py[idx] - chain.py[idx - 1],
-                                           chain.px[idx] - chain.px[idx - 1]);
-            float delta = angle - chain.settledAngles[idx];
-            // 角度差归一化到 (-π, π]，避免绕圈时输出突跳
-            while (delta > 3.14159265f) delta -= 6.28318531f;
-            while (delta < -3.14159265f) delta += 6.28318531f;
-
-            const float deltaDeg = delta * 57.2957795f;
-            const float unit = std::max(-1.0f, std::min(1.0f, deltaDeg / span));
-
-            const size_t pi = static_cast<size_t>(output.paramIndex);
-            const float u = output.reflect ? -unit : unit;
-
-            const float def = g_paramDefaults[pi];
-            const float minV = g_paramMin[pi];
-            const float maxV = g_paramMax[pi];
-            // scale 作用在归一化单位上并钳到 ±1：保证「偏角再大也不会越界写参数」，
-            // 同时让 scale>1 的链（前发/后发）更快达到满幅。
-            float amount = u * output.scale * output.weight;
-            amount = std::max(-1.0f, std::min(1.0f, amount));
-            // 朝正/负方向分别用各自半程量程，保证两侧摆幅观感一致
-            const float half = (amount >= 0.0f) ? (maxV - def) : (def - minV);
-            const float value = def + amount * half;
-            values[pi] = std::max(minV, std::min(maxV, value));
+            // 抖动度量：本帧写入相对上一帧参数值的变化量（屏幕上真正看到的量）。
+            // 「高频抽风」在数值上就等于「这个差值持续不为 0 且符号反复翻转」。
+            {
+                const double d = static_cast<double>(values[pui]) -
+                                 static_cast<double>(before);
+                const double ad = std::fabs(d);
+                g_physicsJitter.outputAbsDeltaSum += ad;
+                ++g_physicsJitter.outputDeltaCount;
+                if (ad > g_physicsJitter.outputAbsMax) g_physicsJitter.outputAbsMax = ad;
+                // 方向反转按**参数下标**分别跟踪：相邻两个不同参数的符号天然
+                // 可能相反，跨参数比较会把正常的多参数运动计成反转（假阳性）。
+                if (static_cast<int>(g_physicsJitter.lastSignByOutput.size()) < g_paramCount) {
+                    g_physicsJitter.lastSignByOutput.resize(
+                            static_cast<size_t>(std::max(0, g_paramCount)), 0);
+                }
+                if (pi < static_cast<int>(g_physicsJitter.lastSignByOutput.size())) {
+                    const int sign = (d > 1e-9) ? 1 : ((d < -1e-9) ? -1 : 0);
+                    int &lastSign = g_physicsJitter.lastSignByOutput[static_cast<size_t>(pi)];
+                    if (sign != 0) {
+                        if (lastSign != 0 && sign != lastSign) {
+                            ++g_physicsJitter.outputFlipCount;
+                        }
+                        lastSign = sign;
+                    }
+                }
+            }
         }
+    }
+
+    // ---- P14：静止时跳过 ref 统计与逐帧追踪的前置（见 drawFrame 门控）----
+    // 注意：这里不再做「本帧参数是否变化」的判定 —— 那个判定放在 drawFrame 里
+    // 用「上一帧最终参数快照」做整份比较（见 g_lastAppliedParams 注释），
+    // 在这里与复位后的默认值比会恒为真。
+
+    // ---- 逐帧曲线追踪（与标准参考实现逐帧对照）----
+    // 每帧一行，字段与 host/ref/refphysics 的输入/输出一一对应：
+    //   trace: <frame> <timeSec> <dt> <inX> <inZ> <inBodyX> <inBodyZ> <out>
+    // 记录**真实输入**而不是让参考实现自己重算正弦：合成面捕的相位起点与
+    // 追踪起点不同，若两边各自生成输入，比出来的相位差会混进物理本身。
+    //
+    // <out> 选哪条物理输出：优先 ParamHairFront（hiyori 等有命名头发的模型），
+    // 否则退回**第一条物理链的第一个输出参数**。樱花miku 的 83 条输出全叫
+    // Param25/Param27… 这类无名参数，写死 ParamHairFront 会追踪到一个与其
+    // 物理无关的常量列（P13 实测：该列恒 1.0，会误导分析）。
+    if (g_physicsTrace.load(std::memory_order_relaxed)) {
+        static double traceStartSec = 0.0;
+        if (g_traceOutParam == -2) {
+            // 只在**物理链的输出**里选，不能只看参数是否存在：樱花miku 有
+            // ParamHairFront 参数，但它的 83 条输出全是 Param25/Param27… 这类
+            // 无名参数，ParamHairFront 恒 1.0（P13 实测，会追到一条死列）。
+            // 优先「链输出里叫 ParamHairFront 的」，没有就取第一条链的第一个输出。
+            const int hairFront = resolveParamIndex("ParamHairFront");
+            g_traceOutParam = -1;
+            bool preferred = false;
+            for (const PhysicsChain &chain : g_physicsChains) {
+                for (const PhysicsOutput &output : chain.outputs) {
+                    const int pi = output.paramIndex;
+                    if (pi < 0 || pi >= g_paramCount) continue;
+                    if (g_traceOutParam < 0) g_traceOutParam = pi;
+                    if (pi == hairFront) {
+                        g_traceOutParam = pi;
+                        preferred = true;
+                        break;
+                    }
+                }
+                if (preferred) break;
+            }
+        }
+        const double nowSec = g_frameNowSec;
+        if (traceStartSec <= 0.0) traceStartSec = nowSec;
+        const auto readParam = [&values](const char *name) -> float {
+            const int index = resolveParamIndex(name);
+            if (index < 0 || index >= g_paramCount) {
+                return std::numeric_limits<float>::quiet_NaN();
+            }
+            return values[index];
+        };
+        const float traced = (g_traceOutParam >= 0 && g_traceOutParam < g_paramCount)
+                                     ? values[g_traceOutParam]
+                                     : std::numeric_limits<float>::quiet_NaN();
+        LOGI("trace: %ld %.5f %.5f %.5f %.5f %.5f %.5f %.5f",
+             g_traceFrame, nowSec - traceStartSec, static_cast<double>(dt),
+             static_cast<double>(readParam("ParamAngleX")),
+             static_cast<double>(readParam("ParamAngleZ")),
+             static_cast<double>(readParam("ParamBodyAngleX")),
+             static_cast<double>(readParam("ParamBodyAngleZ")),
+             static_cast<double>(traced));
     }
 }
 
@@ -2340,8 +3513,141 @@ void applyFaceValuesLocked() {
 
     for (size_t i = 0; i < g_faceValues.size(); ++i) {
         const float v = g_faceValues[i];
-        if (std::isnan(v)) continue; // 该参数本帧无输入
-        values[i] = v;
+        // NaN = 该参数本帧无输入（含被降级的 ±Inf），保留动作/表情的结果。
+        if (!std::isfinite(v)) continue;
+        // 防御：面捕值即使有限也可能远超参数量程（映射表改错、VTS 端异常），
+        // 直接写进去会让插值把顶点甩出画布。按模型量程钳一次。
+        const float minV = i < g_paramMin.size() ? g_paramMin[i] : -1.0f;
+        const float maxV = i < g_paramMax.size() ? g_paramMax[i] : 1.0f;
+        values[i] = (minV <= maxV) ? std::max(minV, std::min(maxV, v)) : v;
+    }
+}
+
+/**
+ * 合成面捕（诊断用，见 g_syntheticFace）。
+ *
+ * 每次调用写一帧「1Hz 正弦 + 半波张嘴」到 g_faceValues：
+ *  - ParamAngleX / ParamAngleY / ParamAngleZ 按 1Hz 正弦扫 ±30°（三轴错相，
+ *    避免整张脸只在一个平面里来回、掩盖其他轴的抖动）；
+ *  - ParamBodyAngleX / ParamBodyAngleZ 跟随头部的一个固定比例（与
+ *    Live2DParamMap 的 BODY_FOLLOW_* 一致，保持观感一致）；
+ *  - ParamMouthOpenY 用 0.5Hz 半波（张嘴→闭合），幅值到 1.0。
+ *
+ * 参数名查不到（模型没有该参数）时跳过，因此对任何模型都能安全启用。
+ *
+ * 调用约束：GL 线程、持 g_mutex，且在 applyModelStateLocked 之前。
+ */
+void applySyntheticFaceLocked(double nowSec) {
+    if (!g_syntheticFace.load(std::memory_order_relaxed)) return;
+    if (g_faceValues.empty()) return;
+    if (g_syntheticStartSec <= 0.0) g_syntheticStartSec = nowSec;
+
+    const double t = nowSec - g_syntheticStartSec;
+    constexpr double kTwoPi = 6.283185307179586;
+    // P12 大幅验证模式（flag 文件 /data/local/tmp/arvt_synth_stress 控制，零
+    // Kotlin 改动）：满量程快速正弦 —— X ±30°@1.5Hz 摇头、Y ±30°@1.1Hz 点头、
+    // Z ±30°@0.8Hz 侧倾。用于验证粒子求解器在大幅高频输入下不发散、不 NaN、
+    // 输出连续（多音激励的 ±17° 是为线性区测量设计的，不适合大幅验证）。
+    const bool stress = access("/data/local/tmp/arvt_synth_stress", F_OK) == 0;
+    {
+        static bool s_lastStress = false;
+        static bool s_first = true;
+        if (s_first || stress != s_lastStress) {
+            LOGI("合成面捕波形: %s", stress ? "大幅应力（±30° 满量程快摆）"
+                                            : "多音激励（±17° 线性区）");
+            s_lastStress = stress;
+            s_first = false;
+        }
+    }
+    float angleX;
+    float angleY;
+    float angleZ;
+    if (stress) {
+        angleX = static_cast<float>(30.0 * std::sin(t * kTwoPi * 1.5));
+        angleY = static_cast<float>(30.0 * std::sin(t * kTwoPi * 1.1));
+        angleZ = static_cast<float>(30.0 * std::sin(t * kTwoPi * 0.8));
+    } else {
+        // 多音激励（P9.1）：单一 1Hz 正弦让「滞后」只能确定到一个周期（1000ms）
+        // 的整数倍，无法判断 200ms 与 1200ms 谁对。改用四个互不成整数比的分量
+        // 叠加，波形无周期，互相关峰值唯一 —— 才能把相位滞后测到毫秒级。
+        // 幅值合计控制在 ±17°（ParamAngleX 量程 ±30° 的一半左右）。
+        // 不能更大：标准参考实现在 ±30° 多音激励下 ParamHairFront 有 28% 的帧
+        // 顶到 ±1 钳制（2.51Hz 恰好落在链的自然频率上），饱和会同时破坏摆幅与
+        // 相位的可比性。17° 时两侧都不饱和，测的才是线性响应。
+        const auto tone = [&t](double hz, double phase, double amp) {
+            return amp * std::sin(t * kTwoPi * hz + phase);
+        };
+        angleX = static_cast<float>(
+                tone(0.53, 0.0, 7.0) + tone(1.13, 1.7, 5.0) +
+                tone(1.79, 4.1, 3.0) + tone(2.51, 2.9, 2.0));
+        angleY = static_cast<float>(
+                tone(0.53, 2.1, 7.0) + tone(1.13, 3.8, 5.0) +
+                tone(1.79, 0.6, 3.0) + tone(2.51, 5.1, 2.0));
+        angleZ = static_cast<float>(
+                tone(0.53, 4.2, 7.0) + tone(1.13, 5.9, 5.0) +
+                tone(1.79, 2.7, 3.0) + tone(2.51, 1.1, 2.0));
+    }
+    // 0.5Hz 张嘴：半波（只张不合过头），幅值 1.0
+    const float mouth = static_cast<float>(std::max(0.0, std::sin(t * kTwoPi * 0.5)));
+
+    const auto setParam = [](const char *name, float value) {
+        const int index = resolveParamIndex(name);
+        if (index < 0) return;
+        const size_t idx = static_cast<size_t>(index);
+        if (idx >= g_faceValues.size()) return;
+        g_faceValues[idx] = value;
+    };
+
+    setParam("ParamAngleX", angleX);
+    setParam("ParamAngleY", angleY);
+    setParam("ParamAngleZ", angleZ);
+    setParam("ParamBodyAngleX", angleX * 0.30f);
+    setParam("ParamBodyAngleZ", angleZ * 0.20f);
+    setParam("ParamMouthOpenY", mouth);
+    setParam("ParamMouthForm", 0.0f);
+    // 眼睛保持睁开：合成面捕只关心物理输入，避免眨眼干扰对抖动的判断
+    setParam("ParamEyeLOpen", 1.0f);
+    setParam("ParamEyeROpen", 1.0f);
+
+    g_faceDirty = true;
+}
+
+/**
+ * 求值链路出口的统一消毒（P7）。
+ *
+ * 参数值可能来自三个不完全可信的来源：动作曲线的 JSON（自定义模型可写任意
+ * 数字）、物理求解器（极端参数下的数值放大）、面捕（VTS 对端异常）。
+ * csmUpdateModel 会把非有限值/越界值通过插值扩散到顶点，最终表现为
+ * 「面捕一开模型就炸」。这里在 update 之前统一钳一遍：
+ *  - 非有限值 → 该参数的模型默认值（比归零更安全：0 可能不在量程内）；
+ *  - 越界值 → 钳到 [min, max]（模型自带的量程，标准渲染器也这么做）；
+ *  - 部件不透明度 → 钳到 [0, 1] 且拒绝非有限值。
+ */
+void sanitizeModelStateLocked() {
+    if (!g_model) return;
+
+    float *values = csmGetParameterValues(g_model);
+    if (values) {
+        for (int i = 0; i < g_paramCount; ++i) {
+            const size_t idx = static_cast<size_t>(i);
+            float v = values[i];
+            if (!std::isfinite(v)) {
+                v = idx < g_paramDefaults.size() ? g_paramDefaults[idx] : 0.0f;
+            }
+            const float minV = idx < g_paramMin.size() ? g_paramMin[idx] : v;
+            const float maxV = idx < g_paramMax.size() ? g_paramMax[idx] : v;
+            if (minV <= maxV) v = std::max(minV, std::min(maxV, v));
+            values[i] = v;
+        }
+    }
+
+    float *partOpacities = csmGetPartOpacities(g_model);
+    if (partOpacities) {
+        for (size_t i = 0; i < g_partDefaults.size(); ++i) {
+            float o = partOpacities[i];
+            if (!std::isfinite(o)) o = g_partDefaults[i];
+            partOpacities[i] = std::max(0.0f, std::min(1.0f, o));
+        }
     }
 }
 
@@ -2354,7 +3660,8 @@ void applyFaceValuesLocked() {
  *  3) 表情叠加在动作结果之上（标准也是 Expression 在 Motion 之后）；
  *  4) 面捕覆盖面部参数 —— 保证「说话/眨眼」始终跟人，不被 idle 动作压掉；
  *  5) 物理读本帧最终的头/身体角度，把链尾偏角写回头发/裙摆参数；
- *  6) pose 在最后判定互斥，避免动作写进来的 1 又被覆盖回去。
+ *  6) pose 在最后判定互斥，避免动作写进来的 1 又被覆盖回去；
+ *  7) 出口消毒（P7）：非有限/越界值在 update 之前统一收敛。
  *
  * 调用约束：**必须持 g_mutex** 且 g_model 非空。
  */
@@ -2365,9 +3672,15 @@ void applyModelStateLocked() {
     float modelOpacity = 1.0f;
     applyMotionLocked(&modelOpacity);
     applyExpressionLocked();
+    // 合成面捕（诊断开关）先写 g_faceValues，再由 applyFaceValuesLocked 落到参数上
+    applySyntheticFaceLocked(g_frameNowSec);
     applyFaceValuesLocked();
+    // P14：自动眨眼必须在物理之前 —— Big_fat_fish 的眼皮由 EyeLOpen 经
+    // physics3 驱动，晚于物理写就等于让物理本帧读到上一帧的眼睛状态。
+    applyAutoBlinkLocked(g_frameNowSec);
     applyPhysicsLocked();
     applyPoseLocked();
+    sanitizeModelStateLocked();
 
     g_modelOpacity = modelOpacity;
     g_modelDirty = false;
@@ -2395,6 +3708,15 @@ void refreshVertexPositionsLocked() {
     const csmVector2 **positions = csmGetDrawableVertexPositions(g_model);
     if (!positions) return;
 
+    // P14：只记录**真正变了**的顶点区间。判据是坐标是否逐位相等：
+    //  - 静止部件（占绝大多数）、UV/alpha 都不动 → 一个字节都不用重传；
+    //  - 参数驱动的几块网格（头发/眼/口）→ 只传它们所在的连续区间。
+    // 区间取 min..max 的保守并集：即使变化的 drawable 分散，也只是多传中间
+    // 那几段，仍比整块（big_fat_fish 上万个顶点）小一个量级。
+    int dirtyFirst = -1;
+    int dirtyLast = -1;
+    bool anyChange = false;
+
     const int vertexTotal = static_cast<int>(g_vertices.size());
     for (const VertexSpan &span : g_vertexSpans) {
         const int di = span.drawableIndex;
@@ -2406,14 +3728,42 @@ void refreshVertexPositionsLocked() {
         // 绝不越过本 drawable 的区间写到邻居上
         const int n = std::min(span.vertexCount, std::max(0, vertexTotal - span.firstVertex));
         Vertex *dst = g_vertices.data() + span.firstVertex;
+        bool spanChanged = false;
         for (int v = 0; v < n; ++v) {
-            dst[v].x = pos[v].X;
-            dst[v].y = pos[v].Y;
+            // P7：非有限顶点会污染整块 VBO（GPU 侧表现为面片炸裂/整屏闪烁）。
+            // 求值链路里任何一环吃到 NaN 都会传导到这里，因此出口处再拦一次：
+            // 保留上一个有效坐标而不是写入 NaN。
+            const float x = pos[v].X;
+            const float y = pos[v].Y;
+            if (std::isfinite(x) && std::isfinite(y)) {
+                if (dst[v].x != x || dst[v].y != y) {
+                    dst[v].x = x;
+                    dst[v].y = y;
+                    spanChanged = true;
+                }
+            }
             // a 恒 1.0：逐 drawable 的 opacity 由 drawFrame 的 uOpacity 提供
             dst[v].a = 1.0f;
         }
+        if (spanChanged) {
+            anyChange = true;
+            const int first = span.firstVertex;
+            const int last = span.firstVertex + n - 1;
+            if (dirtyFirst < 0 || first < dirtyFirst) dirtyFirst = first;
+            if (last > dirtyLast) dirtyLast = last;
+        }
     }
+
+    if (!anyChange) return;   // 全静止：不置脏，VBO 本帧零上传
+
     g_verticesDirty = true;
+    if (g_dirtyVertexFirst < 0 || dirtyFirst < g_dirtyVertexFirst) {
+        g_dirtyVertexFirst = dirtyFirst;
+    }
+    if (dirtyLast > g_dirtyVertexLast) g_dirtyVertexLast = dirtyLast;
+    // 越界防御：区间始终钳在 [0, size-1]
+    if (g_dirtyVertexFirst < 0) g_dirtyVertexFirst = 0;
+    if (g_dirtyVertexLast >= vertexTotal) g_dirtyVertexLast = vertexTotal - 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -2764,6 +4114,152 @@ int uploadTextures() {
     return uploaded;
 }
 
+/**
+ * 配置固定不变的 GL 状态（P7 抽成公共函数）。
+ *
+ * 两处调用：surfaceCreated（首次 / 上下文重建）与 drawFrame 的模型切换路径。
+ * 抽出来是为了保证「切页回来」与「首次进入」「换模型」三条路径的 GL 状态
+ * 完全一致 —— 早期只有 surfaceCreated 里设，换模型时新 context 状态缺一半，
+ * 表现为黑块/不透明背景。
+ */
+void configureGlState() {
+    // 2D 静态画面：关深度、不开背面剔除（部分 artmesh 是 double-sided），
+    // 打开预乘 alpha 混合；背景色与 App 深色主题一致
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_CULL_FACE);
+    glEnable(GL_BLEND);
+    // Live2D 标准预乘混合：着色器已把 RGB 乘过 alpha（见 kFragmentShader）
+    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
+    glColorMask(GL_TRUE, GL_TRUE, GL_TRUE, GL_TRUE);
+    glClearColor(0.043f, 0.043f, 0.063f, 1.0f);
+
+    // ---- P2：模板缓冲 ----
+    // 先读实际位数再决定要不要清：没有模板缓冲时 glClear(GL_STENCIL_BUFFER_BIT)
+    // 只是空操作，但清一次能保证「有缓冲但未定义」的初值为 0。
+    GLint stencilBits = 0;
+    glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
+    g_stencilBits = stencilBits;
+    if (stencilBits > 0) {
+        // 清模板必须先把 stencil 写掩码置满，否则沿用上一帧可能为 0 的掩码
+        glStencilMask(0xFF);
+        glClearStencil(0);
+        glClear(GL_STENCIL_BUFFER_BIT);
+    } else {
+        LOGW("EGL 配置没有模板缓冲（GL_STENCIL_BITS=0）：Clipping Mask 不生效，"
+             "检查 Live2DScreen 的 setEGLConfigChooser");
+    }
+    glDisable(GL_STENCIL_TEST);
+}
+
+/**
+ * 重建全部 GL 资源：program → 纹理 → VBO/IBO → 固定状态。**调用方必须持 g_mutex**，
+ * 且必须在持有目标 EGL context 的 GL 线程上调用。
+ *
+ * 这是「切页面黑块 / 面捕抽风」修复的核心（P7）：
+ *  - 旧代码只在 surfaceCreated 里做一次，模型切换路径抄了一份近似的实现，
+ *    两者漂移后出现「有 program 没状态」的半残 context；
+ *  - 现在两条路径共用这一份实现，任何一处触发都得到完全相同的 GL 状态。
+ *
+ * @return false = program 构建失败或没有几何数据（此时不触碰旧资源记录）
+ */
+bool rebuildGlResourcesLocked() {
+    // 先查几何：没有几何时不必编译 shader（否则 buildProgram 已分配的
+    // program 会因提前 return 而泄漏，下一次重建又覆盖句柄）。
+    if (g_vertices.empty() || g_indices.empty()) {
+        LOGW("rebuildGlResources: 没有顶点数据（nativeInit 是否成功？）");
+        return false;
+    }
+
+    if (!buildProgram()) {
+        LOGE("rebuildGlResources: shader program 构建失败");
+        return false;
+    }
+
+    // 纹理必须在有 GL context 的线程上传（P1 的核心改动）
+    const int uploaded = uploadTextures();
+    if (uploaded == 0) {
+        LOGE("rebuildGlResources: 没有任何纹理上传成功，画面将全黑");
+    }
+
+    glGenBuffers(1, &g_vbo);
+    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
+    glBufferData(GL_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex)),
+                 g_vertices.data(),
+                 GL_STATIC_DRAW);
+    g_vboVertexCount = static_cast<int>(g_vertices.size());
+    // 上传即最新：清掉可能残留的脏标记，避免下一帧重复上传
+    clearVertexDirty();
+
+    glGenBuffers(1, &g_ibo);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
+    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+                 static_cast<GLsizeiptr>(g_indices.size() * sizeof(uint16_t)),
+                 g_indices.data(),
+                 GL_STATIC_DRAW);
+
+    glBindBuffer(GL_ARRAY_BUFFER, 0);
+    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
+
+    configureGlState();
+
+    LOGI("rebuildGlResources: vbo=%u ibo=%u verts=%zu idx=%zu batches=%zu textures=%d/%zu "
+         "maskGeoms=%zu stencilBits=%d",
+         g_vbo, g_ibo, g_vertices.size(), g_indices.size(), g_batches.size(),
+         uploaded, g_textureImages.size(), g_maskBatches.size(), g_stencilBits);
+    return true;
+}
+
+/**
+ * 复位物理链运行时状态（P7：EGL 上下文重建后必须调用）。
+ *
+ * 为什么必须复位：粒子位置/速度是连续量，而顶点坐标在上下文重建后会按
+ * 「默认参数 + 当前动作」重新求值。若保留旧状态，重建那一帧会用「旧位置/
+ * 旧速度」去驱动新姿态，表现为头发/裙摆瞬间炸开（面捕抽风的一半成因就是
+ * 它）。整链回到静息竖直姿态，输出历史同时清零。
+ */
+void resetPhysicsStateLocked() {
+    for (PhysicsChain &chain : g_physicsChains) {
+        initializeChain(chain);
+    }
+    g_physicsRemainTime = 0.0f;
+}
+
+/**
+ * 物理抖动自动上报（P8 真机验证）。
+ *
+ * 真机上不方便点按钮取数据，这里每 5 秒自动把滑动窗口的抖动统计打到 logcat
+ * （TAG=Live2DJNI，关键字 "jitter"）。抓 `adb logcat -s Live2DJNI:V` 即可看到
+ * 关闭物理前后的对比数据，无需任何 UI 操作。
+ *
+ * 调用约束：GL 线程、持 g_mutex（由 nativeDrawFrame 调用）。
+ */
+void reportJitterPeriodicallyLocked(double nowSec) {
+    static double lastSec = 0.0;
+    if (lastSec <= 0.0) { lastSec = nowSec; return; }
+    if (nowSec - lastSec < 5.0) return;
+    lastSec = nowSec;
+
+    if (g_physicsJitter.frames <= 0) return;
+    LOGI("jitter: frames=%ld enabled=%d outDelta=%.5f outMax=%.5f "
+         "flipsPerFrame=%.3f residualSpeed=%.5f rest=%.1f%% chains=%zu",
+         g_physicsJitter.frames,
+         g_physicsEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+         g_physicsJitter.meanOutputDelta(), g_physicsJitter.outputAbsMax,
+         g_physicsJitter.flipsPerFrame(), g_physicsJitter.meanResidualSpeed(),
+         g_physicsJitter.restRatio() * 100.0, g_physicsChains.size());
+    if (g_physicsDtStats.frames > 0) {
+        LOGI("dt: frames=%ld min=%.5f mean=%.5f max=%.5f zero=%ld clamped=%ld "
+             "syntheticFace=%d",
+             g_physicsDtStats.frames, g_physicsDtStats.minDt, g_physicsDtStats.meanDt(),
+             g_physicsDtStats.maxDt, g_physicsDtStats.zeroDtFrames,
+             g_physicsDtStats.clampedFrames,
+             g_syntheticFace.load(std::memory_order_relaxed) ? 1 : 0);
+        g_physicsDtStats.reset();
+    }
+    g_physicsJitter.reset();
+}
+
 }  // namespace
 
 // ===========================================================================
@@ -2796,16 +4292,28 @@ void resetModelStateLocked() {
     g_maskRefs.clear();
     g_vertexSpans.clear();
     g_paramIndexById.clear();
+    g_paramIndexByNorm.clear();
     g_paramCount = 0;
+    g_paramNames.clear();
     g_paramDefaults.clear();
     g_paramMin.clear();
     g_paramMax.clear();
     g_partIndexById.clear();
+    g_partIndexByLower.clear();
     g_partDefaults.clear();
+    g_partAnimDriven.clear();
+    g_partDrawableCounts.clear();
     g_motionGroups.clear();
     g_expressions.clear();
     g_poseGroups.clear();
+    g_poseGroupLinks.clear();
     g_physicsChains.clear();
+    g_eyeBlinkParams.clear();
+    g_blink = BlinkState();
+    g_blinkYield = 0.0f;
+    g_blinkYieldSec = 0.0;
+    g_blinkEyeWritten = -1.0f;
+    g_blinkEyeWrittenSerial = 0;
     g_faceValues.clear();
     g_faceDirty = false;
     g_activeGroup = -1;
@@ -2817,7 +4325,8 @@ void resetModelStateLocked() {
     g_physicsDt = 0.0f;
     g_modelOpacity = 1.0f;
     g_modelDirty = true;
-    g_verticesDirty = false;
+    g_lastAppliedParams.clear();
+    clearVertexDirty();
     g_vboVertexCount = 0;
     g_textureImages.clear();
     g_drawableTotal = 0;
@@ -2992,6 +4501,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeUpdateParameters(
 
     int written = 0;
     int unknown = 0;
+    int sanitized = 0;
     for (jsize i = 0; i + 1 < length; i += 2) {
         const int index = static_cast<int>(raw[i]);
         if (index < 0 || index >= g_paramCount ||
@@ -2999,13 +4509,38 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeUpdateParameters(
             ++unknown;
             continue;
         }
-        g_faceValues[static_cast<size_t>(index)] = raw[i + 1];
+
+        // ★ P7 面捕防抽风：NaN 保留「本帧不覆盖」语义，±Inf 一律降级成 NaN。
+        //
+        // 为什么要分开处理：
+        //  - NaN 在 C++ 侧是**有意义**的哨兵（人脸丢失时 Kotlin 推 NaN，表示
+        //    「本帧该参数交给动作/表情决定」），不能把它当成坏数据丢弃；
+        //  - ±Inf 则是纯粹的坏值：它一旦写进 values[]，csmUpdateModel 的插值与
+        //    变形计算会把它扩散到相邻顶点，整张脸/整只手瞬间炸成碎片 ——
+        //    这正是「开启面捕后模型抽风、顶点炸裂」的直接成因。
+        //    降级成 NaN 等价于「本帧没有这个参数的输入」，模型退回动作驱动。
+        float value = raw[i + 1];
+        if (!std::isfinite(value)) {
+            if (std::isnan(value)) {
+                g_faceValues[static_cast<size_t>(index)] = value; // 哨兵，保持原样
+                ++written;
+            } else {
+                g_faceValues[static_cast<size_t>(index)] =
+                        std::numeric_limits<float>::quiet_NaN();
+                ++sanitized;
+                ++written;
+            }
+            continue;
+        }
+
+        g_faceValues[static_cast<size_t>(index)] = value;
         ++written;
     }
     env->ReleaseFloatArrayElements(params, raw, JNI_ABORT);
 
     g_paramWritesTotal += written;
     g_paramUnknownTotal += unknown;
+    g_paramSanitizedTotal += sanitized;
 
     if (written > 0) g_faceDirty = true;
     return written;
@@ -3117,8 +4652,8 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeResolveParameterIds(
         if (!name) continue;
         const char *chars = env->GetStringUTFChars(name, nullptr);
         if (chars) {
-            const auto it = g_paramIndexById.find(chars);
-            if (it != g_paramIndexById.end()) out[static_cast<size_t>(i)] = it->second;
+            const int paramIndex = resolveParamIndex(chars);
+            if (paramIndex >= 0) out[static_cast<size_t>(i)] = paramIndex;
             env->ReleaseStringUTFChars(name, chars);
         }
         env->DeleteLocalRef(name);
@@ -3138,38 +4673,35 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceCreated(
     std::lock_guard<std::mutex> lock(g_mutex);
     g_glThreadId = std::this_thread::get_id();
 
+    // ★ P7：**无条件**置脏（v1.3.0 切页黑块/面捕抽风的根因）。
+    //
+    // surfaceCreated 意味着「当前的 GL 句柄全部作废」：EGL context 可能被销毁
+    // 重建过，program/VBO/IBO/纹理的编号在新 context 里要么无效、要么指向别的
+    // 对象。旧代码在这里把脏标记清成 false，等于告诉 drawFrame「GL 资源是好的」，
+    // 而实际可能只重建了一半 —— 画出来就是硬边黑块。
+    // 现在：先置 true（保证任何失败路径下下一帧都会再试），重建成功后才清。
+    g_glModelDirty = true;
+
     // releaseGl 必须看到「旧」context 才能判断句柄是否可删，因此先释放再更新记录。
     releaseGl();
     g_glContext = currentEglContext();
-    // surfaceCreated 本身就是一次完整重建，脏标记到此已满足（避免首帧再重建一遍）
-    g_glModelDirty = false;
     LOGI("nativeSurfaceCreated: eglContext=%p（%s）",
          reinterpret_cast<void *>(g_glContext),
          g_glContext == EGL_NO_CONTEXT ? "无 context，GL 调用不可用" : "ok");
 
-    if (!buildProgram()) {
-        LOGE("nativeSurfaceCreated: shader program 构建失败");
-        return;
-    }
-
-    if (g_vertices.empty() || g_indices.empty()) {
-        LOGW("nativeSurfaceCreated: 没有顶点数据（nativeInit 是否成功？）");
-        return;
-    }
-
-    // ---- P5：GL 上下文重建后的状态恢复 ----
-    // 切后台再回前台时 EGL context 被销毁，surfaceCreated 会重来一遍，但 csm
-    // 模型状态仍停在「停渲染前的那一帧」。若直接把当时的 g_vertices 传上去，
-    // 会把一个可能处于中间态（例如 pose 把手臂压成 0、动作淡入到一半）的快照
-    // 固化下来，表现为「只剩衣服，脸和手臂不见了」。
-    //
+    // ---- P5/P7：GL 上下文重建后的状态恢复 ----
+    // 切后台/切页再回来时 csm 模型状态仍停在「停渲染前的那一帧」。若直接把
+    // 当时的 g_vertices 传上去，会把一个可能处于中间态（pose 把手臂压成 0、
+    // 动作淡入到一半）的快照固化下来。
     // 这里强制走一次完整状态重建：复位默认值 → 动作 → 表情 → 面捕 → 物理 → pose
-    // → csmUpdateModel → 抄顶点。等价于「重新进入页面」的同一条路径，
-    // 保证所有可见部件都被重新计算。
+    // → csmUpdateModel → 抄顶点，与「重新进入页面」完全同一条路径。
     if (g_model) {
         // 时间基准清零：停渲染期间积累的 dt 不能一次灌进动作/物理积分
         g_lastTickSec = 0.0;
         g_physicsDt = 0.0f;
+        // 物理链的绝对位置/速度属于旧 context 的旧姿态，必须整体复位，
+        // 否则重建首帧会把旧速度灌进新姿态（头发/裙摆炸开）。
+        resetPhysicsStateLocked();
         g_modelDirty = true;
         applyModelStateLocked();
         csmUpdateModel(g_model);
@@ -3179,62 +4711,12 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSurfaceCreated(
              g_vertices.size());
     }
 
-    // 纹理必须在有 GL context 的线程上传（P1 的核心改动）
-    const int uploaded = uploadTextures();
-    if (uploaded == 0) {
-        LOGE("nativeSurfaceCreated: 没有任何纹理上传成功，画面将全黑");
-    }
-
-    glGenBuffers(1, &g_vbo);
-    glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-    glBufferData(GL_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex)),
-                 g_vertices.data(),
-                 GL_STATIC_DRAW);
-    g_vboVertexCount = static_cast<int>(g_vertices.size());
-    // 上传即最新：清掉可能残留的脏标记，避免下一帧重复上传
-    g_verticesDirty = false;
-
-    glGenBuffers(1, &g_ibo);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
-    glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                 static_cast<GLsizeiptr>(g_indices.size() * sizeof(uint16_t)),
-                 g_indices.data(),
-                 GL_STATIC_DRAW);
-
-    glBindBuffer(GL_ARRAY_BUFFER, 0);
-    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-
-    // 2D 静态画面：关深度、不开背面剔除（部分 artmesh 是 double-sided），
-    // 打开预乘 alpha 混合；背景色与 App 深色主题一致
-    glDisable(GL_DEPTH_TEST);
-    glDisable(GL_CULL_FACE);
-    glEnable(GL_BLEND);
-    // Live2D 标准预乘混合：着色器已把 RGB 乘过 alpha（见 kFragmentShader）
-    glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA);
-    glClearColor(0.043f, 0.043f, 0.063f, 1.0f);
-
-    // ---- P2：模板缓冲 ----
-    // 先读实际位数再决定要不要清：没有模板缓冲时 glClear(GL_STENCIL_BUFFER_BIT)
-    // 只是空操作，但清一次能保证「有缓冲但未定义」的初值为 0。
-    GLint stencilBits = 0;
-    glGetIntegerv(GL_STENCIL_BITS, &stencilBits);
-    g_stencilBits = stencilBits;
-    if (stencilBits > 0) {
-        // 清模板必须先把 stencil 写掩码置满，否则沿用上一帧可能为 0 的掩码
-        glStencilMask(0xFF);
-        glClearStencil(0);
-        glClear(GL_STENCIL_BUFFER_BIT);
+    if (rebuildGlResourcesLocked()) {
+        // 重建成功：脏标记到此已满足，避免下一帧再白跑一遍完整重建
+        g_glModelDirty = false;
     } else {
-        LOGW("EGL 配置没有模板缓冲（GL_STENCIL_BITS=0）：Clipping Mask 不生效，"
-             "检查 Live2DScreen 的 setEGLConfigChooser");
+        LOGE("nativeSurfaceCreated: GL 资源重建失败，保持脏标记等下一帧重试");
     }
-    glDisable(GL_STENCIL_TEST);
-
-    LOGI("nativeSurfaceCreated: vbo=%u ibo=%u verts=%zu idx=%zu batches=%zu textures=%d/%zu "
-         "maskGeoms=%zu stencilBits=%d",
-         g_vbo, g_ibo, g_vertices.size(), g_indices.size(), g_batches.size(),
-         uploaded, g_textureImages.size(), g_maskBatches.size(), stencilBits);
 }
 
 /** 视口与投影矩阵。GL 线程调用。 */
@@ -3364,7 +4846,19 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativePanLimits(
 JNIEXPORT void JNICALL
 Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         JNIEnv * /*env*/, jobject /*thiz*/) {
-    glClear(GL_COLOR_BUFFER_BIT);
+    // ★ P7：入口就把 stencil 一起清掉（v1.3.0 切页黑块的一半成因）。
+    //
+    // 旧代码只清颜色，stencil 位残留着上一次绘制（甚至上一个 EGL context）
+    // 写进去的 1。GL_EQUAL 1 的批次于是按一块「幽灵遮罩」裁剪，画出来就是
+    // 硬边黑方块。这里在**任何绘制之前**把两者一起清掉，代价可忽略。
+    //
+    // glStencilMask 必须先置满：掩码为 0 时 glClear 清不动模板缓冲。
+    // P15：同时确保 GL_SCISSOR_TEST 是关的 —— 上一次绘制若在 glScissor 之后
+    // 异常离开（或换模型路径提前 return），残留的裁剪框会把这一次全屏清除
+    // 限制在一个小矩形里，模板旧 1 清不掉 → 幽灵遮罩（P7 那种硬边黑块）。
+    glDisable(GL_SCISSOR_TEST);
+    glStencilMask(0xFF);
+    glClear(GL_COLOR_BUFFER_BIT | GL_STENCIL_BUFFER_BIT);
 
     // 绘制计划缓冲：函数级 static 复用，避免每帧分配（大小恒定，几十项）
     static std::vector<Batch> s_batches;
@@ -3373,6 +4867,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
     static std::vector<GLuint> s_textures;
     static std::vector<int> s_order;
     static std::vector<float> s_opacity;
+    static std::vector<uint8_t> s_maskActive;
 
     GLuint program;
     GLuint maskProgram;
@@ -3393,60 +4888,45 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
     {
         std::lock_guard<std::mutex> lock(g_mutex);
 
-        // ---- 0) 模型已换：整体重建 GL 资源（P6 自定义模型导入）----
+        // ---- 0) 模型已换 / GL 资源失效：整体重建（P6 自定义模型导入，P7 统一路径）----
         // 导入新模型时 EGL context 仍然活着，surfaceCreated 不会再触发，因此
         // 旧 VBO/IBO（上一个模型的拓扑）与旧纹理句柄必须在这里换掉。
-        // 顺序：先释放旧 GL 资源 → 上传新纹理 → 重建 VBO/IBO。
+        // 顺序：先释放旧 GL 资源 → 重建 program/纹理/VBO/IBO/固定状态。
         if (g_glModelDirty) {
-            g_glModelDirty = false;
-
             // 同一 context 下才真正 glDelete；跨 context 由 releaseGl 内部判定
             releaseGl();
             g_glContext = currentEglContext();
-            const bool programOk = buildProgram();
 
-            if (programOk && !g_vertices.empty() && !g_indices.empty()) {
-                // 新模型的参数/动作/pose 全部就绪，重建一次完整状态再上传顶点
-                g_lastTickSec = 0.0;
-                g_physicsDt = 0.0f;
-                g_modelDirty = true;
-                if (g_model) {
-                    applyModelStateLocked();
-                    csmUpdateModel(g_model);
-                    refreshVertexPositionsLocked();
-                }
+            if (g_vertices.empty() || g_indices.empty()) {
+                // 还没有模型（或模型加载失败）：没有几何可重建。
+                // 必须清脏标记，否则会在 60Hz 下每帧重编 shader 又立刻删掉。
+                // 之后模型加载成功时 resetModelStateLocked() 会重新置脏。
+                g_glModelDirty = false;
+                return;
+            }
 
-                const int uploaded = uploadTextures();
-                if (uploaded == 0) {
-                    LOGE("模型切换: 没有任何纹理上传成功，画面将全黑");
-                }
+            // 新模型的参数/动作/pose 全部就绪，重建一次完整状态再上传顶点
+            g_lastTickSec = 0.0;
+            g_physicsDt = 0.0f;
+            resetPhysicsStateLocked();
+            g_modelDirty = true;
+            if (g_model) {
+                applyModelStateLocked();
+                csmUpdateModel(g_model);
+                refreshVertexPositionsLocked();
+            }
 
-                glGenBuffers(1, &g_vbo);
-                glBindBuffer(GL_ARRAY_BUFFER, g_vbo);
-                glBufferData(GL_ARRAY_BUFFER,
-                             static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex)),
-                             g_vertices.data(), GL_STATIC_DRAW);
-                g_vboVertexCount = static_cast<int>(g_vertices.size());
-                g_verticesDirty = false;
-
-                glGenBuffers(1, &g_ibo);
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, g_ibo);
-                glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-                             static_cast<GLsizeiptr>(g_indices.size() * sizeof(uint16_t)),
-                             g_indices.data(), GL_STATIC_DRAW);
-
-                glBindBuffer(GL_ARRAY_BUFFER, 0);
-                glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, 0);
-
-                // 新模型可能有不同尺寸的包围盒：重算投影（并回到 1x 居中）
+            if (rebuildGlResourcesLocked()) {
+                // 新模型可能有不同尺寸的包围盒：重算投影
                 updateProjection();
-
-                LOGI("模型切换完成: verts=%zu idx=%zu batches=%zu textures=%d/%zu",
+                // 重建成功才清脏标记；失败则保留，下一帧继续重试（避免永久黑屏）
+                g_glModelDirty = false;
+                LOGI("模型切换/GL 重建完成: verts=%zu idx=%zu batches=%zu textures=%zu",
                      g_vertices.size(), g_indices.size(), g_batches.size(),
-                     uploaded, g_textureImages.size());
+                     g_textures.size());
             } else {
-                LOGE("模型切换失败: program=%d verts=%zu idx=%zu（保持空白画面）",
-                     programOk ? 1 : 0, g_vertices.size(), g_indices.size());
+                LOGE("模型切换/GL 重建失败: verts=%zu idx=%zu（保持脏标记，下一帧重试）",
+                     g_vertices.size(), g_indices.size());
             }
         }
 
@@ -3469,32 +4949,88 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         buildGestureMvp(mvp);
 
         // ---- 1) 推进动作时钟 ----
+        //
+        // P9：动作与物理共用**同一个已钳制的 dt**（单一时间轴）。
+        //
+        // 旧实现两条时钟各钳各的：动作钳到 0.25s，物理在 applyPhysicsLocked 里
+        // 钳到 0.05s。掉帧到 ~50ms 以上时物理被限速、动作照常推进，二者按不同
+        // 速率走 —— 头发（物理输出）与骨架（动作曲线）就脱钩了，表现为「头已经
+        // 转过去了、头发还慢半拍」。这里是唯一的时间源：先钳一次，再喂给两边。
         const double nowSec = std::chrono::duration<double>(
                 std::chrono::steady_clock::now().time_since_epoch()).count();
         if (g_lastTickSec <= 0.0) g_lastTickSec = nowSec;
-        const double dt = std::min(0.25, std::max(0.0, nowSec - g_lastTickSec));
+        const double dt = std::min(static_cast<double>(kPhysicsMaxDt),
+                                   std::max(0.0, nowSec - g_lastTickSec));
         g_lastTickSec = nowSec;
+        // 帧时间戳：合成面捕（1Hz 正弦）与诊断统计都以它为准，
+        // 保证「输入相位」与「物理步长」来自同一条时间轴。
+        g_frameNowSec = nowSec;
 
-        if (g_motionActive) {
+        if (g_motionActive && dt > 0.0) {
             g_motionTime += dt;
             g_modelDirty = true; // 动作每帧都在变，需要重新求值
         }
 
         // 物理是连续系统：即使动作停了、面捕没新数据，头发也在继续回弹，
-        // 因此只要存在物理链就必须逐帧重建（否则松手瞬间会僵在半空）。
+        // 因此只要存在物理链就必须逐帧推进累加时钟（否则松手瞬间会僵在半空）。
+        // dt=0 时这里传 0，物理累加时钟不走（标准语义：无时间流逝就无演化）。
         g_physicsDt = static_cast<float>(dt);
+        g_traceFrame = (g_physicsTrace.load(std::memory_order_relaxed) ? g_traceFrame + 1 : 0);
         const bool physicsRunning = !g_physicsChains.empty();
 
-        // ---- 2) 状态重建（动作 / 表情 / 面捕 / 物理 / pose 全部应用后重算顶点）----
+        // ---- 2) 状态重建（动作 / 表情 / 面捕 / 眨眼 / 物理 / pose）----
+        //
+        // P14 两级门控：状态应用必须每帧跑（物理累加时钟要推进），但
+        // csmUpdateModel（整模型求值 + 插值）与顶点抄写只在**参数真的变了**时才做。
+        // 判据来自各阶段的写回结果：
+        //   - 动作在播 / 面捕有新数据 / 动作表情被切换 → 必然变；
+        //   - 物理链全部收敛且输入没变 → g_physicsChangedThisFrame = false；
+        //   - 眨眼处于睁眼间歇 → g_blinkChangedThisFrame = false。
+        // 静止时（用户不动、无摄像头）这一条能省掉整帧的求值与顶点遍历。
         if (g_model && (g_modelDirty || g_faceDirty || physicsRunning)) {
+            const bool externalDriven = g_modelDirty || g_faceDirty;
             applyModelStateLocked();
-            csmUpdateModel(g_model);
-            refreshVertexPositionsLocked();
+
+            // P14 渲染门控：比较「本帧最终参数」与「上一帧真正求值的那一份」。
+            // 相等 → 模型输入零变化，csmUpdateModel（整模型插值）与顶点遍历
+            // 都可以整帧跳过。静止的模型（无动作/无面捕/物理已收敛）占大多数
+            // 时间，这一步是本轮性能优化的主要来源之一。
+            bool paramsChanged = externalDriven;
+            if (!paramsChanged) {
+                const float *values = csmGetParameterValues(g_model);
+                const size_t count = static_cast<size_t>(std::max(0, g_paramCount));
+                if (values && g_lastAppliedParams.size() == count) {
+                    for (size_t i = 0; i < count; ++i) {
+                        if (g_lastAppliedParams[i] != values[i]) {
+                            paramsChanged = true;
+                            break;
+                        }
+                    }
+                } else {
+                    paramsChanged = true;   // 首次 / 换模型：必须求值一次
+                }
+            }
+
+            if (paramsChanged) {
+                csmUpdateModel(g_model);
+                refreshVertexPositionsLocked();
+                const float *values = csmGetParameterValues(g_model);
+                if (values && g_paramCount > 0) {
+                    g_lastAppliedParams.assign(values,
+                                               values + static_cast<size_t>(g_paramCount));
+                }
+            }
             g_faceDirty = false;
         }
 
-        // ---- 3) 顶点重传 ----
-        // 常规路径：拓扑（索引、批次数、顶点总数）不变，整块 glBufferSubData。
+        // ---- 2b) 物理抖动自动上报（每 5s 一行 logcat，见 reportJitterPeriodicallyLocked）----
+        reportJitterPeriodicallyLocked(nowSec);
+
+        // ---- 3) 顶点重传（P14：只传本帧真正变化了的区间）----
+        // 旧实现每帧整块 glBufferSubData：big_fat_fish 上万个顶点 × 20 字节
+        // 每帧都要 DMA 一遍，是 44fps 的主要来源之一。
+        // 现在 refreshVertexPositionsLocked 已经把「变化的连续区间」记下来，
+        // 静止帧完全不传，动起来的帧只传头发/眼睛/口那几段。
         // 兜底路径：VBO 容量与 CPU 顶点数不一致（nativeInit 在 surfaceCreated
         // 之后重跑过），改走 glBufferData 重新分配，避免越界写显存。
         if (g_verticesDirty && !g_vertices.empty()) {
@@ -3502,13 +5038,24 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
             const GLsizeiptr bytes =
                     static_cast<GLsizeiptr>(g_vertices.size() * sizeof(Vertex));
             if (g_vboVertexCount == static_cast<int>(g_vertices.size())) {
-                glBufferSubData(GL_ARRAY_BUFFER, 0, bytes, g_vertices.data());
+                const int first = std::max(0, g_dirtyVertexFirst);
+                const int last = std::min(static_cast<int>(g_vertices.size()) - 1,
+                                          g_dirtyVertexLast);
+                if (first <= last) {
+                    // 区间上传：偏移与长度都按顶点计
+                    glBufferSubData(GL_ARRAY_BUFFER,
+                                    static_cast<GLintptr>(first * sizeof(Vertex)),
+                                    static_cast<GLsizeiptr>((last - first + 1) * sizeof(Vertex)),
+                                    g_vertices.data() + first);
+                }
             } else {
                 LOGW("顶点数变化 (%d -> %zu)，重建 VBO", g_vboVertexCount, g_vertices.size());
                 glBufferData(GL_ARRAY_BUFFER, bytes, g_vertices.data(), GL_STATIC_DRAW);
                 g_vboVertexCount = static_cast<int>(g_vertices.size());
             }
             g_verticesDirty = false;
+            g_dirtyVertexFirst = -1;
+            g_dirtyVertexLast = -1;
         }
 
         // ---- 4) 生成绘制计划：逐帧可见性 + 逐帧 opacity + render order 排序 ----
@@ -3523,6 +5070,35 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         s_maskBatches = g_maskBatches;
         s_maskRefs = g_maskRefs;
         s_textures = g_textures;
+
+        // ---- P7：逐帧判定每个遮罩几何此刻是否仍然生效 ----
+        //
+        // 判据是**遮罩所属部件**的不透明度（不是遮罩 drawable 自己的可见性，
+        // 理由见 MaskBatch::partIndex 的注释）。
+        //
+        // 关键细节：只在「默认可见、本帧被压成 0」时判定失效，而不是
+        // 「本帧 opacity == 0」就失效。因为眼睛那类「只当遮罩、自身永不显示」
+        // 的图层在**默认状态下**就是 op=0（见 kMaskFragmentShader 注释），
+        // 若按绝对值为 0 判定，会把它们的遮罩一并关掉，眼睛变成没被裁切的
+        // 大方块。用「相对默认值的变化」作为判据，两种情形都能正确区分：
+        //   - 眼睛遮罩：默认 0 → 本帧 0，无变化，继续生效；
+        //   - 袖子遮罩：默认 1 → pose 压成 0，判定失效，手不再被切。
+        s_maskActive.assign(s_maskBatches.size(), 1);
+        {
+            const float *partOpacities = g_model ? csmGetPartOpacities(g_model) : nullptr;
+            if (partOpacities) {
+                const int partCount = static_cast<int>(g_partDefaults.size());
+                for (size_t i = 0; i < s_maskBatches.size(); ++i) {
+                    const int pi = s_maskBatches[i].partIndex;
+                    if (pi < 0 || pi >= partCount) continue; // 无部件归属：永远生效
+                    const float o = partOpacities[pi];
+                    if (!std::isfinite(o)) continue;
+                    const float def = g_partDefaults[static_cast<size_t>(pi)];
+                    // 只有「默认可见」的部件被隐藏时才判定遮罩失效
+                    if (def > 0.001f && o <= 0.001f) s_maskActive[i] = 0;
+                }
+            }
+        }
 
         // s_opacity 同时承担「可见性」：0 = 不画（不可见或完全透明），
         // 省掉一个并行的可见性数组。
@@ -3595,8 +5171,102 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
     // 模板缓冲的写入/清除都受 glStencilMask 影响，统一置满
     glStencilMask(0xFF);
 
+    // ---- P15：模板清除改按包围盒 glScissor ----
+    //
+    // 旧实现在**每个**被遮罩批次开头都 glClear(GL_STENCIL_BUFFER_BIT) 一次，
+    // big_fat_fish 有 69 个被遮罩批次 → 每帧最多 69 次全屏模板清除（入口还有
+    // 一次），这是全屏填充量的最大头。
+    //
+    // 正确性约束：模板里上一批写进去的 1 必须在下一批之前清掉，否则
+    // GL_EQUAL 1 会按一块「幽灵遮罩」放行。因此不能只清本批遮罩的包围盒，
+    // 必须清「本批遮罩包围盒 ∪ 上一批残留的 1 的包围盒」（残留只在遮罩几何
+    // 的包围盒内，内容绘制是 GL_KEEP 不写模板）。
+    //
+    // 帧入口已经全屏清过一次，所以 s_stencilDirty 从空集开始。
+    // 真机验证开关：/data/local/tmp/arvt_stencil_full 存在 → 退回全屏清除，
+    // 用于同版本 A/B 对比 FPS。
+    const bool stencilFullClear = access("/data/local/tmp/arvt_stencil_full", F_OK) == 0;
+    {
+        static bool s_lastFull = false;
+        if (stencilFullClear != s_lastFull) {
+            LOGI("模板清除模式: %s", stencilFullClear ? "全屏(AB 对照)" : "scissor 包围盒");
+            s_lastFull = stencilFullClear;
+        }
+    }
+
+    const auto ndcToPixel = [&](float x, float y, int *px, int *py) {
+        const float ndcX = mvp[0] * x + mvp[4] * y + mvp[12];
+        const float ndcY = mvp[1] * x + mvp[5] * y + mvp[13];
+        *px = static_cast<int>(std::floor((ndcX * 0.5f + 0.5f) * static_cast<float>(g_viewW)));
+        *py = static_cast<int>(std::floor((ndcY * 0.5f + 0.5f) * static_cast<float>(g_viewH)));
+    };
+
+    /** 一组顶点在屏幕像素空间的包围盒（已钳到视口并加 2px 余量）。 */
+    struct PixelRect {
+        int x0 = 1, y0 = 1, x1 = -1, y1 = -1;   // 空集 = x1 < x0
+        bool empty() const { return x1 < x0 || y1 < y0; }
+        void add(int x, int y) {
+            if (empty()) {
+                x0 = x1 = x;
+                y0 = y1 = y;
+                return;
+            }
+            x0 = std::min(x0, x); x1 = std::max(x1, x);
+            y0 = std::min(y0, y); y1 = std::max(y1, y);
+        }
+        void unite(const PixelRect &o) {
+            if (o.empty()) return;
+            if (empty()) { *this = o; return; }
+            x0 = std::min(x0, o.x0); y0 = std::min(y0, o.y0);
+            x1 = std::max(x1, o.x1); y1 = std::max(y1, o.y1);
+        }
+    };
+    const auto vertexRect = [&](int firstVertex, int vertexCount) {
+        PixelRect r;
+        const int total = static_cast<int>(g_vertices.size());
+        if (firstVertex < 0 || vertexCount <= 0 || firstVertex >= total) return r;
+        const int last = std::min(total, firstVertex + vertexCount);
+        for (int v = firstVertex; v < last; ++v) {
+            int px, py;
+            ndcToPixel(g_vertices[static_cast<size_t>(v)].x,
+                       g_vertices[static_cast<size_t>(v)].y, &px, &py);
+            r.add(px, py);
+        }
+        if (!r.empty()) {
+            r.x0 = std::max(0, r.x0 - 2);
+            r.y0 = std::max(0, r.y0 - 2);
+            r.x1 = std::min(g_viewW - 1, r.x1 + 2);
+            r.y1 = std::min(g_viewH - 1, r.y1 + 2);
+        }
+        return r;
+    };
+    // 上一批写入模板的 1 所在的包围盒（空 = 模板当前全 0）
+    PixelRect stencilDirty;
+
+    // 每个遮罩几何的屏幕包围盒，每帧只算一次（P15）。
+    // 同一个遮罩常被多个内容批次共用（big_fat_fish：18 个遮罩 / 69 个被遮罩
+    // 批次），逐批次重算是纯浪费。这里一次算完，循环里只做查表 + 并集。
+    static std::vector<PixelRect> s_maskRects;
+    s_maskRects.assign(s_maskBatches.size(), PixelRect());
+    if (stencilUsable && !stencilFullClear) {
+        for (size_t i = 0; i < s_maskBatches.size(); ++i) {
+            if (!s_maskActive[i]) continue;
+            s_maskRects[i] = vertexRect(s_maskBatches[i].firstVertex,
+                                       s_maskBatches[i].vertexCount);
+        }
+    }
+    const auto maskRectOf = [&](int mbi) -> const PixelRect & {
+        static const PixelRect kEmpty;
+        if (mbi < 0 || mbi >= static_cast<int>(s_maskRects.size())) return kEmpty;
+        return s_maskRects[static_cast<size_t>(mbi)];
+    };
+
     int drawnBatches = 0;
     int skippedInvisible = 0;
+    int scissorClears = 0;
+    int fullClears = 0;
+    // 本帧模板清除覆盖的像素总面积（P15：对比 scissor 与全屏的真实带宽差）
+    long long clearedPixels = 0;
     for (int bi : s_order) {
         const size_t index = static_cast<size_t>(bi);
         // 整体不透明度（动作 Target=Model/Opacity）乘在每个批次上
@@ -3617,7 +5287,46 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
 
         // ---- 第一步：清模板 + 写遮罩 ----
         glEnable(GL_STENCIL_TEST);
-        glClear(GL_STENCIL_BUFFER_BIT);
+
+        // P15：只清「本批遮罩包围盒 ∪ 上一批残留」这一块，而不是整屏。
+        // 残留区域必须一起清：上一批写进去的 1 若留在模板里，本批的
+        // GL_EQUAL 1 会在那里错误放行（幽灵遮罩）。
+        PixelRect clearRect;
+        PixelRect maskRect;
+        {
+            for (int k = 0; k < batch.maskCount; ++k) {
+                const int ref = batch.maskFirst + k;
+                if (ref < 0 || ref >= static_cast<int>(s_maskRefs.size())) continue;
+                maskRect.unite(maskRectOf(s_maskRefs[static_cast<size_t>(ref)]));
+            }
+            clearRect.unite(maskRect);
+            clearRect.unite(stencilDirty);
+        }
+
+        if (stencilFullClear) {
+            glClear(GL_STENCIL_BUFFER_BIT);
+            ++fullClears;
+            clearedPixels += static_cast<long long>(g_viewW) * g_viewH;
+        } else if (!clearRect.empty()) {
+            const int w = clearRect.x1 - clearRect.x0 + 1;
+            const int h = clearRect.y1 - clearRect.y0 + 1;
+            // 覆盖大半屏时 scissor 省不了带宽，反而多两次状态切换 → 直接全屏清
+            if (static_cast<long long>(w) * h * 2 > static_cast<long long>(g_viewW) * g_viewH) {
+                glClear(GL_STENCIL_BUFFER_BIT);
+                ++fullClears;
+                clearedPixels += static_cast<long long>(g_viewW) * g_viewH;
+            } else {
+                glEnable(GL_SCISSOR_TEST);
+                glScissor(clearRect.x0, clearRect.y0, w, h);
+                glClear(GL_STENCIL_BUFFER_BIT);
+                glDisable(GL_SCISSOR_TEST);
+                ++scissorClears;
+                clearedPixels += static_cast<long long>(w) * h;
+            }
+        }
+        // 无遮罩可写（全部失效）：模板里该落的 1 落不下去，下面 drawnMasks==0
+        // 分支会退回不裁剪绘制，因此这里不做任何清除也是安全的。
+        stencilDirty = PixelRect();
 
         // 只写模板，不写颜色（否则遮罩网格会被画成一坨黑块）
         glColorMask(GL_FALSE, GL_FALSE, GL_FALSE, GL_FALSE);
@@ -3630,6 +5339,8 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         glUniform1i(maskUniformTex, 0);
 
         int drawnMasks = 0;
+        // P15：记下本批真正写进模板的 1 的包围盒，供下一批清除时并集使用。
+        PixelRect written;
         for (int k = 0; k < batch.maskCount; ++k) {
             const int ref = batch.maskFirst + k;
             if (ref < 0 || ref >= static_cast<int>(s_maskRefs.size())) continue;
@@ -3639,13 +5350,19 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
                 continue;
             }
             const MaskBatch &mb = s_maskBatches[static_cast<size_t>(maskBatchIndex)];
+            // P7：遮罩所属部件本帧已被 pose/动作隐藏 → 该遮罩失效，跳过。
+            // 若因此一个遮罩都没画出来，下面的 drawnMasks == 0 分支会退回
+            // 「不裁剪直接画」，手就不会被一块看不见的袖子切掉。
+            if (!s_maskActive[static_cast<size_t>(maskBatchIndex)]) continue;
             const GLuint maskTex = textureOf(mb.textureIndex);
             if (maskTex == 0) continue;
 
             glBindTexture(GL_TEXTURE_2D, maskTex);
             drawRange(mb.firstIndex, mb.indexCount);
+            written.unite(maskRectOf(maskBatchIndex));
             ++drawnMasks;
         }
+        stencilDirty = written;
 
         // 一个遮罩几何都没能画出来（纹理缺失等）：模板里全是 0，
         // 继续按 GL_EQUAL 1 会把这块内容整片裁没。退回不裁剪直接画，
@@ -3699,6 +5416,38 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
              stencilUsable ? 1 : 0);
     }
 
+    // P15：模板清除方式统计（5s 一行），用来核对 scissor 真的在生效、
+    // 以及有多少批次因为覆盖太大退回全屏清除。
+    {
+        static double s_lastStencilLogSec = 0.0;
+        static long s_scissorTotal = 0;
+        static long s_fullTotal = 0;
+        static long s_framesTotal = 0;
+        static long long s_pixelsTotal = 0;
+        s_scissorTotal += scissorClears;
+        s_fullTotal += fullClears;
+        s_pixelsTotal += clearedPixels;
+        ++s_framesTotal;
+        const double nowStencil = std::chrono::duration<double>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (s_lastStencilLogSec <= 0.0) s_lastStencilLogSec = nowStencil;
+        if (nowStencil - s_lastStencilLogSec >= 5.0) {
+            const double frames = static_cast<double>(s_framesTotal);
+            // 等价全屏清除次数：本帧清掉的像素 / 一屏像素，直接量化填充量
+            const double screenPx = static_cast<double>(g_viewW) * static_cast<double>(g_viewH);
+            LOGI("stencil clears: scissor=%.1f/frame full=%.2f/frame screenEq=%.2f mode=%s",
+                 static_cast<double>(s_scissorTotal) / frames,
+                 static_cast<double>(s_fullTotal) / frames,
+                 screenPx > 0.0 ? static_cast<double>(s_pixelsTotal) / frames / screenPx : 0.0,
+                 stencilFullClear ? "full" : "scissor");
+            s_lastStencilLogSec = nowStencil;
+            s_scissorTotal = 0;
+            s_fullTotal = 0;
+            s_pixelsTotal = 0;
+            s_framesTotal = 0;
+        }
+    }
+
     // ---- FPS 统计（GL 线程独占，Kotlin 侧轮询 nativeFps）----
     // 0.5s 窗口：比 1s 响应快，又足够平掉单帧抖动。
     static double fpsWindowStart = 0.0;
@@ -3728,6 +5477,9 @@ JNIEXPORT void JNICALL
 Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
         JNIEnv * /*env*/, jobject /*thiz*/) {
     std::lock_guard<std::mutex> lock(g_mutex);
+    // P15 诊断：与 Kotlin 侧 teardown 时间戳对照（判断停线程是否先于清模型）。
+    LOGI("nativeRelease: enter onGlThread=%d",
+         (g_glThreadId == std::this_thread::get_id()) ? 1 : 0);
 
     const bool onGlThread = (g_glThreadId == std::this_thread::get_id());
     if (onGlThread) {
@@ -3751,15 +5503,21 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_maskRefs.clear();
     g_vertexSpans.clear();
     g_paramIndexById.clear();
+    g_paramIndexByNorm.clear();
     g_paramCount = 0;
+    g_paramNames.clear();
     g_paramDefaults.clear();
     g_paramMin.clear();
     g_paramMax.clear();
     g_partIndexById.clear();
+    g_partIndexByLower.clear();
     g_partDefaults.clear();
+    g_partAnimDriven.clear();
+    g_partDrawableCounts.clear();
     g_motionGroups.clear();
     g_expressions.clear();
     g_poseGroups.clear();
+    g_poseGroupLinks.clear();
     g_physicsChains.clear();
     g_faceValues.clear();
     g_faceDirty = false;
@@ -3777,8 +5535,10 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_gesture.dy = 0.0f;
     g_gesture.scale = 1.0f;
     g_glModelDirty = false;
-    g_verticesDirty = false;
+    clearVertexDirty();
     g_vboVertexCount = 0;
+    // P14：换模型 / 重置后参数快照失效，下一帧必须强制求值一次
+    g_lastAppliedParams.clear();
     g_textureImages.clear();
     g_vertices.shrink_to_fit();
     g_indices.shrink_to_fit();
@@ -3790,11 +5550,17 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeRelease(
     g_paramMin.shrink_to_fit();
     g_paramMax.shrink_to_fit();
     g_partDefaults.shrink_to_fit();
+    g_partAnimDriven.shrink_to_fit();
+    g_partDrawableCounts.shrink_to_fit();
     g_faceValues.shrink_to_fit();
     g_motionGroups.shrink_to_fit();
     g_expressions.shrink_to_fit();
     g_poseGroups.shrink_to_fit();
     g_physicsChains.shrink_to_fit();
+    g_eyeBlinkParams.clear();
+    g_eyeBlinkParams.shrink_to_fit();
+    g_lastAppliedParams.clear();
+    g_lastAppliedParams.shrink_to_fit();
     g_textureImages.shrink_to_fit();
     g_model = nullptr;
     g_moc = nullptr;
@@ -3823,12 +5589,13 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeStats(
     for (const Batch &batch : g_batches) {
         if (batch.maskCount > 0) ++maskedBatches;
     }
-    char buffer[512];
+    char buffer[640];
     std::snprintf(buffer, sizeof(buffer),
                   "drawables=%d drawn=%d batches=%zu masked=%d maskGeoms=%zu "
                   "textures=%d/%zu verts=%zu idx=%zu stencil=%d "
                   "params=%d writes=%ld unknown=%ld "
                   "motions=%zu exprs=%zu pose=%zu motion=%d/%d exp=%d op=%.2f fps=%.1f "
+                  "physics=%zu %s "
                   "bounds=[%.3f,%.3f]x[%.3f,%.3f]",
                   g_drawableTotal, g_drawableDrawn, g_batches.size(), maskedBatches,
                   g_maskBatches.size(), uploadedTextures, g_textureImages.size(),
@@ -3837,8 +5604,180 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeStats(
                   g_motionGroups.size(), g_expressions.size(), g_poseGroups.size(),
                   g_activeGroup, g_activeMotion, g_activeExpression, g_modelOpacity,
                   g_fps.load(std::memory_order_relaxed),
+                  g_physicsChains.size(),
+                  g_physicsEnabled.load(std::memory_order_relaxed) ? "on" : "off",
                   g_minX, g_maxX, g_minY, g_maxY);
     return env->NewStringUTF(buffer);
+}
+
+/**
+ * 物理抖动度量（P8 真机验证）。
+ *
+ * 返回一行统计并**清零**（滑动窗口语义）：调用方每隔几秒取一次，
+ * 每次拿到的都是「上一个窗口内」的抖动水平，不会越积越钝。
+ *
+ * 字段含义（都在物理链内部、60Hz 逐帧采样，不受截图/录屏采样率限制）：
+ *  - frames       统计到的帧数；
+ *  - outΔ         每帧每个输出参数的平均变化量（0.01 量级 = 看得见的微动）；
+ *  - outMax       单帧最大变化；
+ *  - flips/f      每帧方向反转次数（**抖动最直接的证据**：静止噪声会让它 >0）；
+ *  - resSpeed     质点平均残余速度（P12 起恒 0，指标已退役）;
+ *  - rest%        静止帧占比（P12 起恒 0，指标已退役）。
+ */
+JNIEXPORT jstring JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativePhysicsJitter(
+        JNIEnv *env, jobject /*thiz*/) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const PhysicsJitterStats s = g_physicsJitter;
+    g_physicsJitter.reset();
+    char buffer[320];
+    std::snprintf(buffer, sizeof(buffer),
+                  "frames=%ld enabled=%d outDelta=%.5f outMax=%.5f "
+                  "flipsPerFrame=%.3f residualSpeed=%.5f rest=%.1f%%",
+                  s.frames,
+                  g_physicsEnabled.load(std::memory_order_relaxed) ? 1 : 0,
+                  s.meanOutputDelta(), s.outputAbsMax, s.flipsPerFrame(),
+                  s.meanResidualSpeed(), s.restRatio() * 100.0);
+    return env->NewStringUTF(buffer);
+}
+
+/**
+ * 物理开关（P8 调试闸）。
+ *
+ * 关闭后物理链不再模拟，所有输出参数（ParamHair* / ParamScarf 等）每帧被写回
+ * 模型默认值 —— 参数完全静止。用于真机上二分定位抖动来源：
+ *  - 关闭后仍抖 → 抖动来自动作/面捕参数推流或渲染链路，与物理求解器无关；
+ *  - 关闭后不抖 → 抖动来自物理（输入增益/阻尼/阈值需要继续调）。
+ * 任何时候可切回 true，链从静息姿态重新开始。
+ */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetPhysicsEnabled(
+        JNIEnv * /*env*/, jobject /*thiz*/, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const bool on = enabled == JNI_TRUE;
+    const bool wasOn = g_physicsEnabled.exchange(on, std::memory_order_relaxed);
+    if (wasOn == on) return;
+    if (!on) {
+        // 关闭：粒子姿态与输出历史一并复位，重新打开时从静息姿态开始
+        for (PhysicsChain &chain : g_physicsChains) {
+            initializeChain(chain);
+        }
+        g_physicsRemainTime = 0.0f;
+    }
+    g_modelDirty = true;
+    LOGI("物理开关: %s", on ? "on" : "off");
+}
+
+/** 物理是否启用（诊断用）。 */
+JNIEXPORT jboolean JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeIsPhysicsEnabled(
+        JNIEnv * /*env*/, jobject /*thiz*/) {
+    return g_physicsEnabled.load(std::memory_order_relaxed) ? JNI_TRUE : JNI_FALSE;
+}
+
+/**
+ * 物理参考模式开关 —— **P12 起退役**（见 g_physicsReferenceMode 的注释）。
+ *
+ * 标准粒子模型成为唯一路径，本开关只保留 JNI ABI 兼容，无任何行为差异。
+ */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetPhysicsReferenceMode(
+        JNIEnv * /*env*/, jobject /*thiz*/, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const bool on = enabled == JNI_TRUE;
+    g_physicsReferenceMode.store(on, std::memory_order_relaxed);
+    LOGI("物理参考模式: %s（已退役，无行为差异）", on ? "on" : "off");
+}
+
+/**
+ * 物理逐帧曲线追踪开关（P9 与标准参考实现对照用）。
+ *
+ * 打开后每帧输出一行 `trace: <frame> <time> <dt> <ParamHairFront>`，字段与
+ * host/ref/refphysics 的 CSV 对齐，可逐帧比对 app 自研求解器与标准
+ * CubismNativeFramework 的偏差。默认关闭 —— 每帧一行日志只适合取证。
+ */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetPhysicsTrace(
+        JNIEnv * /*env*/, jobject /*thiz*/, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const bool on = enabled == JNI_TRUE;
+    g_physicsTrace.store(on, std::memory_order_relaxed);
+    g_traceFrame = 0;
+    LOGI("物理曲线追踪: %s", on ? "on" : "off");
+}
+
+/**
+ * A/B 兜底互斥开关（P9 调试闸）。
+ *
+ * 关闭后立刻把兜底推断出的互斥组移除，恢复成「缺 pose3 时两套部件同时可见」
+ * 的原始行为 —— 用于真机上同一段录屏做开/关 A/B 对比，证明画面差异确实来自
+ * 这条兜底规则，而不是别的改动。
+ *
+ * 从 pose3.json 读到的组不受影响（兜底从不覆盖作者意图）。
+ * 打开时若当前模型缺 pose3，会立即重新推断并让下一帧重建状态。
+ */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetPoseFallback(
+        JNIEnv * /*env*/, jobject /*thiz*/, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const bool on = enabled == JNI_TRUE;
+    const bool wasOn = g_poseFallbackEnabled.exchange(on, std::memory_order_relaxed);
+    if (wasOn == on) return;
+
+    const size_t fileGroups = std::min(g_poseFileGroupCount, g_poseGroups.size());
+    if (on) {
+        if (!g_poseFromFile) {
+            g_poseGroups.resize(fileGroups);
+            if (g_poseGroupLinks.size() > fileGroups) {
+                g_poseGroupLinks.resize(fileGroups);
+            }
+            buildFallbackPoseGroupsLocked();
+        }
+    } else {
+        g_poseGroups.resize(fileGroups);
+        if (g_poseGroupLinks.size() > fileGroups) {
+            g_poseGroupLinks.resize(fileGroups);
+        }
+        g_poseFallbackPairs = 0;
+    }
+    g_modelDirty = true;
+    LOGI("pose 兜底开关: %s（pose3 组=%zu，兜底组=%d）", on ? "on" : "off",
+         g_poseGroups.size(), g_poseFallbackPairs);
+}
+
+/**
+ * 合成面捕开关（真机无摄像头时的复现工具）。
+ *
+ * 开启后每帧按 1Hz 正弦写 ParamAngleX/Y/Z + 0.5Hz 半波 ParamMouthOpenY，
+ * 物理链因此得到与真实摇头一致的周期输入。用于在没有摄像头的模拟器/真机上
+ * 稳定复现「头发抽风」并量化修复效果。
+ *
+ * 关闭时立刻把注入过的参数复位成 NaN（= 交回动作/表情），不会残留假数据。
+ */
+JNIEXPORT void JNICALL
+Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetSyntheticFace(
+        JNIEnv * /*env*/, jobject /*thiz*/, jboolean enabled) {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    const bool on = enabled == JNI_TRUE;
+    const bool wasOn = g_syntheticFace.exchange(on, std::memory_order_relaxed);
+    if (wasOn == on) return;
+    g_syntheticStartSec = 0.0;
+    if (!on) {
+        // 复位所有被注入的参数：NaN 语义 = 本帧不覆盖
+        const float nan = std::numeric_limits<float>::quiet_NaN();
+        for (const char *name : {"ParamAngleX", "ParamAngleY", "ParamAngleZ",
+                                 "ParamBodyAngleX", "ParamBodyAngleZ",
+                                 "ParamMouthOpenY", "ParamMouthForm",
+                                 "ParamEyeLOpen", "ParamEyeROpen"}) {
+            const int index = resolveParamIndex(name);
+            if (index < 0) continue;
+            const size_t idx = static_cast<size_t>(index);
+            if (idx < g_faceValues.size()) g_faceValues[idx] = nan;
+        }
+    }
+    g_faceDirty = true;
+    g_modelDirty = true;
+    LOGI("合成面捕: %s", on ? "on" : "off");
 }
 
 }  // extern "C"

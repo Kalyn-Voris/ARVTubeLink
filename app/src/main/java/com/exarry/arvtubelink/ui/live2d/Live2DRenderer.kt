@@ -252,6 +252,20 @@ class Live2DRenderer(
      */
     fun updateParams(params: FloatArray): Int {
         if (!modelReady || params.isEmpty()) return -1
+        // P7 面捕防抽风：先把非有限值挡在 JNI 之前。
+        //
+        // NaN 是**有意义**的哨兵（人脸丢失 = 本帧该参数交给动作/表情），必须
+        // 原样保留；±Infinity 则是坏值，一旦进入 csmUpdateModel 会通过插值扩散
+        // 到相邻顶点，整张脸/整只手瞬间炸成碎片。这里把它降级成 NaN（语义：
+        // 本帧没有该参数的输入），C++ 侧还有第二道同样的防线。
+        //
+        // 注意跳过偶数位（id 位）：下标本身是整数，只有 value 位需要检查。
+        var i = 1
+        while (i < params.size) {
+            val v = params[i]
+            if (!v.isFinite() && !v.isNaN()) params[i] = Float.NaN
+            i += 2
+        }
         return try {
             nativeUpdateParameters(params)
         } catch (t: Throwable) {
@@ -356,6 +370,123 @@ class Live2DRenderer(
         }
     }
 
+    // ---------------- P8：物理调试开关 ----------------
+
+    /**
+     * 开关物理求解器（真机二分定位抖动来源）。
+     *
+     * 关闭后 native 侧不再模拟物理链，所有输出参数（ParamHair* / ParamScarf）
+     * 每帧写回模型默认值 —— 参数完全静止：
+     *  - 关闭后仍抖：抖动来自动作/面捕参数推流或渲染链路，与物理无关；
+     *  - 关闭后不抖：抖动来自物理（输入增益 / 阻尼 / 阈值还需继续调）。
+     *
+     * 状态由 native 侧持有，这里不缓存即可避免两处状态漂移。
+     */
+    fun setPhysicsEnabled(enabled: Boolean) {
+        if (!modelReady) return
+        try {
+            nativeSetPhysicsEnabled(enabled)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetPhysicsEnabled 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /** 物理求解器当前是否启用（-1 视为未就绪时返回 false）。 */
+    fun isPhysicsEnabled(): Boolean {
+        if (!modelReady) return false
+        return try {
+            nativeIsPhysicsEnabled()
+        } catch (t: Throwable) {
+            false
+        }
+    }
+
+    /**
+     * A/B 兜底互斥开关（P9）。
+     *
+     * 缺 pose3.json 的模型（如 hiyori_vts）会把两套互斥的手臂部件都导出成
+     * 默认不透明度 1.0，native 侧按「同名 + A/B 后缀」推断互斥组后只保留一套。
+     * 关闭此开关会立刻移除兜底组、恢复原始行为，用于同一段录屏做开/关对比。
+     *
+     * 从 pose3.json 读到的组不受影响：兜底只在模型完全没有 pose3 时生效。
+     */
+    fun setPoseFallback(enabled: Boolean) {
+        if (!modelReady) return
+        try {
+            nativeSetPoseFallback(enabled)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetPoseFallback 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * 物理参考模式（与CubismPhysics 对照时的因果验证开关）。
+     *
+     * 打开后旁路 P8 加入的全部抑制项（输入增益/低通、输出死区/低通），
+     * 求解器按标准语义运行。用于判断自研物理与标准实现的差异来自抑制项，
+     * 还是来自积分数学本身。默认关闭，发布行为不变。
+     */
+    fun setPhysicsReferenceMode(enabled: Boolean) {
+        if (!modelReady) return
+        try {
+            nativeSetPhysicsReferenceMode(enabled)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetPhysicsReferenceMode 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * 物理逐帧曲线追踪开关（与标准参考实现对照用）。
+     *
+     * 打开后 native 每帧输出一行 `trace: frame time dt ParamHairFront`，
+     * 字段与 host/ref/refphysics 的 CSV 对齐，可逐帧比对自研求解器与标准
+     * CubismNativeFramework 的偏差。默认关闭。
+     */
+    fun setPhysicsTrace(enabled: Boolean) {
+        if (!modelReady) return
+        try {
+            nativeSetPhysicsTrace(enabled)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetPhysicsTrace 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
+    /**
+     * 取一次物理抖动度量（滑动窗口，读完即清零）。
+     *
+     * 数据在物理链内部按渲染帧采样，因此能反映 60Hz 级别的微抖 —— 截图/录屏
+     * 的采样率（本机 screencap 约 5fps）根本看不到这种高频抖动。
+     * 返回 null 表示 native 未就绪。
+     */
+    fun physicsJitter(): String? {
+        if (!modelReady) return null
+        return try {
+            nativePhysicsJitter()
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativePhysicsJitter 失败: ${t.javaClass.simpleName}: ${t.message}")
+            null
+        }
+    }
+
+    /**
+     * 合成面捕开关（真机/模拟器无摄像头时的物理复现工具）。
+     *
+     * 开启后 native 每帧按 1Hz 正弦写 `ParamAngleX/Y/Z`，并有 0.5Hz 半波的
+     * `ParamMouthOpenY`。没有摄像头时 [com.exarry.arvtubelink.ar.FaceRenderer]
+     * 推的是 NaN（语义 = 本帧交给动作/表情），物理链输入恒为 0，抖动根本不会
+     * 发生；打开这个开关才能拿到与真实摇头一致的周期激励。
+     *
+     * 仅用于调试，默认关闭；关闭时被注入的参数会复位成 NaN。
+     */
+    fun setSyntheticFace(enabled: Boolean) {
+        if (!modelReady) return
+        try {
+            nativeSetSyntheticFace(enabled)
+        } catch (t: Throwable) {
+            InAppLog.w(TAG, "nativeSetSyntheticFace 失败: ${t.javaClass.simpleName}: ${t.message}")
+        }
+    }
+
     // ---------------- P5：手势变换 ----------------
 
     /**
@@ -417,6 +548,13 @@ class Live2DRenderer(
     private external fun nativeSetExpression(index: Int): Int
     private external fun nativeListActions(): String?
     private external fun nativeFps(): Float
+    private external fun nativeSetPhysicsEnabled(enabled: Boolean)
+    private external fun nativeSetPoseFallback(enabled: Boolean)
+    private external fun nativeSetPhysicsTrace(enabled: Boolean)
+    private external fun nativeSetPhysicsReferenceMode(enabled: Boolean)
+    private external fun nativeIsPhysicsEnabled(): Boolean
+    private external fun nativePhysicsJitter(): String?
+    private external fun nativeSetSyntheticFace(enabled: Boolean)
     private external fun nativeSetTransform(dx: Float, dy: Float, scale: Float)
     private external fun nativeResetTransform()
     private external fun nativePanLimits(scale: Float): FloatArray?
