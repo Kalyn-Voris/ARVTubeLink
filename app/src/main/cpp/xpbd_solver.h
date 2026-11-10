@@ -174,10 +174,10 @@ struct Tuning {
      * α 越小跟得越紧、越像刚性杆；α 越大越软、拖尾越长、越容易过冲。
      * 逐节柔度 = 基值 × Delay / Acceleration。
      *
-     * 0.003 由宿主回放台标定（local_debug/repro/host/bench_xpbd.py）：与标准
-     * CubismPhysics 在同输入下对比（hiyori 多音激励，±17° 线性区）：
-     *   滞后 +89ms（标准 +100ms）、传递增益 0.227（标准 0.414）、
-     *   换向过冲 82%（标准 91%）—— 滞后与标准重合、保留惯性过冲；
+     * 0.003 由宿主回放台标定（local_debug/repro/host/bench_xpbd.py）：同输入下
+     * 与参考基准（hiyori 多音激励，±17° 线性区）对比：
+     *   滞后 +89ms（基准 +100ms）、传递增益 0.227（基准 0.414）、
+     *   换向过冲 82%（基准 91%）—— 滞后与基准重合、保留惯性过冲；
      * 樱花miku（40 链 / 8 节长链）：滞后 +89ms、过冲 72%，同样不发散。
      * 阶跃响应可见「冲过终点 → 回摆 → 收敛」的二次振荡（周期约 440ms），
      * 这是一阶低通（迟滞）永远做不出来的形状。
@@ -208,8 +208,8 @@ struct Tuning {
     /**
      * 位移型输入（Type=X/Y）的根粒子平移增益（1.0 = 完全忠于 json 语义）。
      *
-     * 标准把根粒子直接钉在 Normalization 数值上（hiyori 为 ±10，而杆长 Radius≈3），
-     * 所以位移输入会带着整条链平移数倍杆长 —— 这是 json 作者的设计，参考实现
+     * 根粒子被直接钉在 Normalization 数值上（hiyori 为 ±10，而杆长 Radius≈3），
+     * 所以位移输入会带着整条链平移数倍杆长 —— 这是 json 作者的设计，基准实现
      * 在满量程应力输入下同样有 46% 的帧输出顶到 ±1。改成 1.0 之外的任何值都
      * 等于凭空削弱模型作者写下的响应强度，故默认不做缩放。
      *
@@ -226,14 +226,14 @@ struct Tuning {
     // -----------------------------------------------------------------------
     //
     //  为什么问题出在「输入端」而不是求解器：XPBD 是纯位置约束求解器，输入
-    //  怎么变它就怎么跟。P13 重写时按标准语义删掉了旧 P8 的输入增益 + 两级
-    //  低通，于是**真实面捕的高频噪声第一次被原样灌进物理链**。数值实验
+    //  怎么变它就怎么跟。P13 重写时删掉了旧 P8 的输入增益 + 两级低通，
+    //  于是**真实面捕的高频噪声第一次被原样灌进物理链**。数值实验
     //  （host/bench，30Hz 零阶保持 + 0.35° 高斯噪声）：
     //    干净输入  >4Hz 能量 2.5%、符号反转 0.64/帧
     //    带噪输入  >4Hz 能量 50.4%、|Δout| 放大 6 倍
     //  即：噪声不是「物理算错了」，而是物理忠实地把 3~15Hz 的采样抖动放大成
-    //  头发微颤。CubismPhysics 同样没有输入低通，但它每步只跟 1/5 的
-    //  一阶跟踪（等于极重的隐式平滑），所以天然不显；我们是二阶惯性系统，
+    //  头发微颤。一阶跟踪式求解器同样没有输入低通，但它每步只跟 1/5 的
+    //  位移（等于极重的隐式平滑），所以天然不显；我们是二阶惯性系统，
     //  必须显式补上过滤。
 
     /**
@@ -267,7 +267,7 @@ struct Tuning {
      *   对 30Hz 台阶与 >10Hz 噪声衰减到 ~1/5，是**唯一能降低真实误差**的项 ——
      *   带 0.35° 噪声时与 240Hz 连续真值的 RMSE 0.0496 → 0.0408（-18%），
      *   >10Hz 抖动能量 0.34% → 0.09%；
-     *   代价是运动幅度 -3.5%（spanRatio 0.965，标准级手感差异不可辨）。
+     *   代价是运动幅度 -3.5%（spanRatio 0.965，低于可辨阈值）。
      * 低于 8Hz 会把真实甩头的过冲一起削掉（回到 P8「手感削没了」），
      * 高于 20Hz 对台阶几乎无效（20Hz 档 RMSE 反而回到 0.0442）。
      */
@@ -294,51 +294,57 @@ inline Tuning &tuning() {
 // ---------------------------------------------------------------------------
 
 /**
- * 标准 normalizeParameterValue 的分段线性映射：源参数值 → Normalization 区间。
+ * 源参数值 → Normalization 区间的分段线性映射。
  *
- * 三点约定（与标准一致，勿改）：
- *  - 上下半程分别用 (normMax−normDef)/(max−mid) 与 (normMin−normDef)/(min−mid)；
- *  - middleValue 取**源量程中点**，不是 json Default 字段；
- *  - Reflect=false 时取负（符号约定），配套角度侧的负号整体方向才是对的。
+ * 量程处理约定：
+ *  - 源量程与归一量程都先按上下界排序，不依赖调用方传参顺序；
+ *  - 折算中心取**源量程中点**（不是 json Default 字段），中点两侧各用
+ *    「归一跨度 / 源跨度」作为斜率；
+ *  - Reflect=false 时整体取负，角度侧再配套一次取负，方向才自洽。
  *
  * NaN 输入天然安全：所有比较为假 → 结果保持 0。
  */
 inline float normalizeParameterValue(float value, float paramMin, float paramMax,
-                                    float normMin, float normMax, float normDef,
-                                    bool inverted) {
-    const float maxValue = paramMax > paramMin ? paramMax : paramMin;
-    const float minValue = paramMax > paramMin ? paramMin : paramMax;
-    if (value > maxValue) value = maxValue;
-    if (value < minValue) value = minValue;
+                                     float normMin, float normMax, float normDef,
+                                     bool inverted) {
+    const float srcHigh = paramMax > paramMin ? paramMax : paramMin;
+    const float srcLow = paramMax > paramMin ? paramMin : paramMax;
+    const float normHigh = normMin < normMax ? normMax : normMin;
+    const float normLow = normMin < normMax ? normMin : normMax;
 
-    const float minNorm = normMin < normMax ? normMin : normMax;
-    const float maxNorm = normMin < normMax ? normMax : normMin;
-    const float midNorm = normDef;
+    // 先钳进源量程，后续只处理「相对中点的偏移」。
+    if (value > srcHigh) value = srcHigh;
+    if (value < srcLow) value = srcLow;
 
-    const float middleValue = minValue + (maxValue - minValue) * 0.5f;
-    const float paramValue = value - middleValue;
+    const float srcMid = srcLow + (srcHigh - srcLow) * 0.5f;
+    const float offset = value - srcMid;
+    if (offset == 0.0f) return inverted ? normDef : -normDef;
 
-    float result = 0.0f;
-    if (paramValue > 0.0f) {
-        const float nLength = maxNorm - midNorm;
-        const float pLength = maxValue - middleValue;
-        if (pLength != 0.0f) result = paramValue * (nLength / pLength) + midNorm;
-    } else if (paramValue < 0.0f) {
-        const float nLength = minNorm - midNorm;
-        const float pLength = minValue - middleValue;
-        if (pLength != 0.0f) result = paramValue * (nLength / pLength) + midNorm;
-    } else {
-        result = midNorm;
+    // 正负半程分别取跨度：源跨度为零表示该侧退化，输出保持中点值。
+    const bool upperHalf = offset > 0.0f;
+    const float srcSpan = upperHalf ? (srcHigh - srcMid) : (srcLow - srcMid);
+    const float normSpan = upperHalf ? (normHigh - normDef) : (normLow - normDef);
+
+    float mapped = normDef;
+    if (srcSpan != 0.0f) {
+        const float slope = normSpan / srcSpan;
+        mapped = offset * slope + normDef;
     }
-    return inverted ? result : -result;
+    return inverted ? mapped : -mapped;
 }
 
 /** from→to 的有向角，归一化到 (-π, π]。 */
 inline float directionToRadian(float fromX, float fromY, float toX, float toY) {
-    float ret = std::atan2(toY, toX) - std::atan2(fromY, fromX);
-    while (ret < -3.14159265358979f) ret += 6.28318530717959f;
-    while (ret > 3.14159265358979f) ret -= 6.28318530717959f;
-    return ret;
+    constexpr float kPi = 3.14159265358979f;
+    constexpr float kTwoPi = 6.28318530717959f;
+    // fmod 把差值压进 (-2π, 2π)，再按需平移一个整圈到 (-π, π]。
+    float delta = std::fmod(std::atan2(toY, toX) - std::atan2(fromY, fromX), kTwoPi);
+    if (delta > kPi) {
+        delta -= kTwoPi;
+    } else if (delta < -kPi) {
+        delta += kTwoPi;
+    }
+    return delta;
 }
 
 // ---------------------------------------------------------------------------
@@ -702,8 +708,8 @@ inline bool step(Chain &chain, const ParamTable &params, const float *caches,
 /**
  * 取一条输出的几何量（未乘 Scale / 未混合）。
  *
- * 与标准 updateOutputParameterValue 的取法一致：
- *  - Angle：相邻两杆的夹角；vi==1 时参考方向取 -gravity（默认 (0,1)）；
+ * 几何约定：
+ *  - Angle：相邻两杆的夹角；vi==1 时参考方向取 (0,1)；
  *  - X/Y：本杆向量的对应分量。
  * 越界 vertexIndex 返回 false（调用方整条输出跳过）。
  */

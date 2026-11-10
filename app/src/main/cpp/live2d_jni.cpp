@@ -30,7 +30,7 @@
 //      的下标）在真实渲染器里只用于模板缓冲，绝不直接画——直接画会糊成一坨；
 //   2. 顶点数 == 4 的矩形是 HitArea（命中检测用，model3.json 的 HitAreas），
 //      不是画面内容，画出来会是一个盖住全身的大方块。
-//  ⚠️ P2 实测修正：第 1 条是错的。Sample 的前发 D_PSD_04 既被别人当遮罩、
+//  ⚠️ P2 实测修正：第 1 条是错的。标准模型的前发图层既被别人当遮罩、
 //     自身又是一个正常可见图层（op=1 vis=1）。按第 1 条整片剔除后前发消失，
 //     头顶只剩后发的硬边几何，真机上看起来就是生硬的「平切」。
 //     现在的做法：这类图层按普通内容绘制，同时几何也用于模板写入。
@@ -38,7 +38,7 @@
 //  P1 增补（纹理与 UV）：
 //   - stb_image.h 解 PNG；UV 取 csmGetDrawableVertexUvs，**V 轴要翻转**（见 Vertex）；
 //   - 纹理张数不写死：解析 model3.json 的 FileReferences.Textures，按
-//     csmGetDrawableTextureIndices 分配到对应纹理单元（Sample 有 2 张，51:19）；
+//     csmGetDrawableTextureIndices 分配到对应纹理单元（实测 2 张，51:19）；
 //   - 逐 drawable 一个 draw call（纹理与 uOpacity 都随 drawable 变化）；
 //   - 纹理是 straight alpha，而混合用预乘公式（GL_ONE, GL_ONE_MINUS_SRC_ALPHA），
 //     因此 fragment shader 里先乘 a 再输出（否则边缘会发黑）；
@@ -59,7 +59,7 @@
 //   - 依赖 EGL 配置里至少 8-bit stencil（Kotlin 侧 setEGLConfigChooser 显式指定），
 //     没有时自动退回「不裁剪直接画」并打警告；
 //   - 嵌套遮罩（遮罩自身又被遮罩）P2 按单层处理，只记警告；反转遮罩
-//     （csmIsInvertedMask）已用 GL_NOTEQUAL 实现，但 Sample 未用到，未经真机验证。
+//     （csmIsInvertedMask）已用 GL_NOTEQUAL 实现，但示例模型未用到，未经真机验证。
 //
 //  P3 增补（参数绑定与面捕驱动）：
 //   - 参数写入走 csmGetParameterValues 返回的**可写数组**：本版本 Purism Core
@@ -71,7 +71,7 @@
 //     （g_vertexSpans 记录每个 drawable 在 g_vertices 里的区间）。参数改变
 //     drawable 的顶点数是 Live2D 不支持的情形，改图集也不在本阶段范围内；
 //   - 投影包围盒**不随参数重算**：否则头部摆动会导致画面跟着缩放抖动，
-//     与标准渲染器的固定取景语义一致；
+//     与标准固定取景语义一致；
 //   - 跨线程：nativeUpdateParameters 可能来自任意线程（Kotlin 推流协程），
 //     只改 CPU 侧模型与顶点并置脏标记；VBO 重传在 GL 线程的 nativeDrawFrame
 //     里完成（EREADY GL context 只在 GL 线程有效）。两者都持 g_mutex。
@@ -83,7 +83,7 @@
 //     超出本阶段（pose3 已按下面的 P4 做了最小支持）。
 //
 //  P4 增补（姿势 pose3 / 动作 motion3 / 表情 exp3 / FPS）：
-//   - **「4 只手」的根因是缺 pose3**：Sample 的 pose3.json 把手臂拆成两组互斥
+//   - **「4 只手」的根因是缺 pose3**：标准示例模型的 pose3.json 把手臂拆成两组互斥
 //     部件（ArmRA/ArmRB、ArmLA/ArmLB），moc3 里这 4 个部件的默认不透明度
 //     全是 1，动作文件的 PartOpacity 曲线也没给它们做互斥。标准渲染器靠
 //     PoseManager 每帧后处理「每组只留一个可见」，我们此前完全没做，
@@ -130,9 +130,9 @@
 //     衣物遮挡，掩码一旦隐藏，整只手就跟着消失。现在改为按无掩码绘制。
 //   - **pose3 互斥判定改成「最大不透明度获胜」**：旧实现取「第一个高于阈值」
 //     的部件，默认值全为 1 时永远选中第一个候选，动作把另一只手抬起来也无效。
-//     标准 Pose 后处理 取组内最大值（并列取靠前者）；全组都不亮时**保持隐藏**，
+//     标准 Pose 后处理取组内最大值（并列取靠前者）；全组都不亮时**保持隐藏**，
 //     不再强行点亮第一个（那会把本来不该出现的部件按 0 透明度复活）。
-//   - pose3 的 Link 联动部件现在会跟随所属部件一起归零（Sample 未用到，但
+//   - pose3 的 Link 联动部件现在会跟随所属部件一起归零（示例模型未用到，但
 //     自定义模型常用）。
 //   - **切页黑块 / 面捕抽风**：surfaceCreated 无条件置 g_glModelDirty 并重建
 //     全部 GL 资源（program / 纹理 / VBO / IBO）；drawFrame 入口连 stencil
@@ -145,12 +145,12 @@
 //     不同下标空间，只要组内候选序号与部件下标不相等就会取到错误候选的联动
 //     列表（越界时直接跳过）。现在显式区分 winnerOrdinal / winnerPart。
 //   - **pose3 名字匹配大小写不敏感**：自定义模型的 pose3.json 与 moc3 部件名
-//     常大小写不一致。旧实现严格匹配，解析后组内只剩 1 个成员，而单项组
+//     常大小写不一致。旧实现按字节严格匹配，解析后组内只剩 1 个成员，而单项组
 //     被当作「强制该部件可见」，于是两套手臂同时被点亮 ——「四只手」的另一半
 //     成因。现在回退到小写表匹配，且**解析后不足 2 个成员的组直接丢弃**（宁可
 //     少一条互斥规则，也不凭空点亮一只手臂）。
 //   - **获胜者强制 1.0、全组为 0 时退化为恰好一个可见**：严格对齐标准
-//     PoseManager。旧实现让获胜者保留输入值（可能是 0.3，仍然看不见），并且
+//     Pose 后处理语义。旧实现让获胜者保留输入值（可能是 0.3，仍然看不见），并且
 //     全组为 0 时保持整组隐藏 —— 后者会让「默认 visible=0、只靠 pose 点亮」
 //     的部件永久消失，即真机「模型 A 没手」。互斥组只会切换、不会整组消失。
 //   - **物理防抖（P8）**：①输入增益 0.25（阈值任务要求的 0.1~0.3）；
@@ -161,7 +161,7 @@
 //     ⑦全局开关 g_physicsEnabled（JNI nativeSetPhysicsEnabled），关闭时输出
 //     参数写回默认值，用于真机二分定位「是不是物理在抖」。
 //
-//  Purism Core 的使用约束（API 规范）：
+//  Purism Core 的使用约束（API.md）：
 //   - MOC 缓冲区必须 64 字节对齐（csmAlignofMoc），且必须活得比 model 久；
 //   - model 缓冲区必须 16 字节对齐（csmAlignofModel），大小取 csmGetSizeofModel；
 //   - 库不做任何堆分配，两块缓冲区都由调用方持有（本文件的 Buffer 结构）；
@@ -417,11 +417,11 @@ long g_paramSanitizedTotal = 0;
 // ---------------------------------------------------------------------------
 //
 //  为什么姿势（pose3）是必需而不是可选：
-//   Sample 的 pose3.json 把手臂拆成两组互斥部件：
+//   典型 pose3.json 把手臂拆成两组互斥部件：
 //     [Part01ArmRA001, Part01ArmRB001]   ← 交叉抱臂 / 自然下垂 二选一
 //     [Part01ArmLA001, Part01ArmLB001]
 //   moc3 里这 4 个部件的默认不透明度全是 1，**动作文件里的 PartOpacity 曲线
-//   也全是 1**。标准渲染器靠 PoseManager 在每帧后处理：每组只保留第一个
+//   也全是 1**。标准渲染器靠 Pose 后处理：每组只保留第一个
 //   达到可见阈值的部件，其余归零。我们此前完全没做这一步，于是两套手臂
 //   同时出现 —— 真机上的「4 只手」就是这个原因，不是批次或顶点出了问题。
 //
@@ -476,7 +476,7 @@ std::vector<std::vector<int>> g_poseGroups;
  *
  * 下标与 [g_poseGroups] 对齐：g_poseGroupLinks[组][候选序] = 跟随该候选
  * 一起切换的部件下标列表。pose3.json 里每个候选部件的 "Link" 字段表示
- * 「选中我时，这些部件也一起显示」。Sample 未用到，但自定义模型（尤其是
+ * 「选中我时，这些部件也一起显示」。示例模型未用到，但自定义模型（尤其是
  * 多套服装/手臂换装）常用，漏掉会让联动部件残留成第二只手。
  *
  * ⚠️ P8：候选序（ordinal）与 csm 部件下标是**两个不同的下标空间**。
@@ -511,11 +511,11 @@ std::vector<std::vector<std::vector<int>>> g_poseGroupLinks;
 std::atomic<bool> g_poseFallbackEnabled{true};
 
 /**
- * 物理逐帧曲线追踪（P9 与标准参考实现对照用）。
+ * 物理逐帧曲线追踪（P9 与基准参考实现对照用）。
  *
  * 打开后每帧打一行 `trace:` 到 logcat，内容是该帧的时间、dt 与
- * ParamHairFront 的物理输出值。格式与 host 参考实现（标准
- * CubismPhysics.cpp）的 CSV 一致，因此可以把两边曲线逐帧对齐比数值，
+ * ParamHairFront 的物理输出值。格式与 host 基准实现输出的 CSV 一致，
+ * 因此可以把两边曲线逐帧对齐比数值，
  * 而不是靠肉眼或单一统计量判断「物理是不是抽风」。
  *
  * 由 prefs `physics_trace` 驱动（nativeSetPhysicsTrace），默认关闭 ——
@@ -527,9 +527,9 @@ std::atomic<bool> g_physicsTrace{false};
 long g_traceFrame = 0;
 
 /**
- * 参考模式开关（P9 与标准实现对照用）—— **P12 起退役**。
+ * 参考模式开关（P9 与基准实现对照用）—— **P12 起退役**。
  *
- * 标准粒子模型成为唯一路径后，「旁路抑制项」失去了对象：P8 加入的全部抑制项
+ * 方向跟踪粒子模型成为唯一路径后，「旁路抑制项」失去了对象：P8 加入的全部抑制项
  * （输入增益/低通、输出死区/低通、速度死区、静止吸附）已随旧伺服模型删除。
  * 保留这个 atomic 只为 nativeSetPhysicsReferenceMode 的 JNI ABI 不变
  * （Kotlin 侧仍会按旧 prefs 调用），写入它不再产生任何行为差异。
@@ -552,8 +552,8 @@ std::unordered_map<std::string, int> g_partIndexById;
  * 部件 id（小写）-> csm 部件下标（P8）。
  *
  * 自定义模型的 pose3.json 与 moc3 里的部件名大小写经常不一致（导出工具
- * 版本差异）。标准 Pose 后处理 用**字符串全等**匹配，但标准模型两边必然
- * 一致；导入模型不能指望这一点：严格匹配失败会让组内成员骤减，剩下单项组
+ * 版本差异）。标准 Pose 后处理用**字符串全等**匹配，且内置资源两边必然
+ * 一致；导入模型不能指望这一点：全等匹配失败会让组内成员骤减，剩下单项组
  * 被当作「强制该部件可见」，于是两套手臂同时点亮 —— 另一种「四只手」。
  * 这里加一层小写回退，仍然以精确匹配优先。
  */
@@ -593,8 +593,8 @@ std::vector<float> g_paramMax;
 //  目标：头发 / 裙摆 / 围巾跟随 ParamAngleX/Y/Z 产生**惯性拖尾**摆动。
 //
 //  前两代实现：P5 弹簧伺服（稳态输入产生恒定 DC 响应，动态被低通化，靠一串
-//  抑制项压制发散与残差）→ P12 独立实现 CubismPhysics 方向跟踪粒子模型
-//  （高通、稳定，但一阶方向跟踪没有真正的惯性过冲，且严格对齐带来法律风险）。
+//  抑制项压制发散与残差）→ P12 方向跟踪粒子模型（高通、稳定，但一阶方向
+//  跟踪没有真正的惯性过冲，摆动的幅度只能靠附加项凑出来）。
 //  本代按 Macklin 等「Small Steps in Physics Simulation」（SCR'19）的 XPBD
 //  方案从零实现：
 //
@@ -610,7 +610,7 @@ std::vector<float> g_paramMax;
 //    2) 目标方向约束（等式，柔度 α = 基值 × Delay / Acceleration）：把粒子
 //       拉向「父粒子 + 输入目标方向 × Radius」。Angle 类输入映射目标方向，
 //       X/Y 类输入通过根粒子平移注入动量。稳态时链与目标方向平行、输出 0
-//       —— 与标准模型相同的高通结构，但动态是二阶惯性系统（过冲 + 回摆），
+//       —— 与参考模型相同的高通结构，但动态是二阶惯性系统（过冲 + 回摆），
 //       不是一阶方向跟踪的纯迟滞；
 //    3) 弯曲约束（单边不等式）：|x_{i+1} − x_{i−1}| ≥ ratio × (r_i + r_{i+1})，
 //       防止大幅甩动时链对折。
@@ -651,10 +651,10 @@ float g_physicsRemainTime = 0.0f;
 float g_physicsFps = 0.0f;
 
 /**
- * 标准 _parameterCaches / _parameterInputCaches（尺寸 = 参数总数）。
+ * 参数缓存与输入缓存（尺寸 = 参数总数）。
  *
  * caches 承担两个职责：步进时刻的输入时间对齐载体 + 组间传播通道
- * （前一条链的输出写进 caches，后一条链的输入就能读到，标准如此）。
+ * （前一条链的输出写进 caches，后一条链的输入就能读到，链间传播按声明顺序）。
  */
 std::vector<float> g_paramCaches;
 std::vector<float> g_paramInputCaches;
@@ -813,7 +813,7 @@ constexpr double kBlinkHandoverSec = 0.12;
 float g_blinkEyeWritten = -1.0f;
 long g_blinkEyeWrittenSerial = 0;
 
-/** 闭眼程度 0（睁开）~1（完全闭合）随时间的变化（三次缓动，手感接近标准）。 */
+/** 闭眼程度 0（睁开）~1（完全闭合）随时间的变化（三次缓动，手感自然）。 */
 float blinkClosedness(const BlinkState &b, double nowSec) {
     const double t = nowSec - b.startedAtSec;
     if (t < 0.0) return 0.0f;
@@ -1350,7 +1350,7 @@ std::string dirOf(const std::string &path) {
     return path.substr(0, slash + 1);
 }
 
-/** 把 .moc3 路径换成同目录下的 .model3.json 路径（Sample 的命名恰好一一对应）。 */
+/** 把 .moc3 路径换成同目录下的 .model3.json 路径（两者同名前缀）。 */
 std::string modelJsonPathFor(const std::string &mocPath) {
     const std::string suffix = ".moc3";
     if (mocPath.size() > suffix.size() &&
@@ -1545,7 +1545,7 @@ bool loadTextures(const ResourceSource &src, const std::string &mocPath, std::st
 /**
  * 解析一条 motion3 曲线的 Segments 到 [flat] 尾部，追加一个 MotionCurve。
  *
- * 段值布局（标准 Motion3 格式）：第 0/1 个是起点 t0/v0，之后每个段先是一个
+ * 段值布局（Motion3 格式）：第 0/1 个是起点 t0/v0，之后每个段先是一个
  * type，再按类型带 2 或 6 个值：
  *   type 0（线性）/ 2（阶跃）/ 3（反阶跃）→ t, v
  *   type 1（三次贝塞尔）                 → c1t, c1v, c2t, c2v, t, v
@@ -1628,7 +1628,7 @@ bool parseMotionFile(const ResourceSource &src, const std::string &path, MotionD
             appendCurve(*segments, -1, it->second, false, out);
             continue;
         }
-        // Target=Part（部件可见性）在 Sample 里未出现，忽略
+        // Target=Part（部件可见性）在示例模型里未出现，忽略
     }
 
     return true;
@@ -1689,7 +1689,7 @@ void loadMotions(const ResourceSource &src, const std::string &jsonPath,
  * FileReferences.IdleAnimation 指向 animations/ 下的 motion3.json。VTube
  * Studio 会自动循环播放该动作，所以显示一对手；我们此前不播，PartArmB 停在
  * moc3 默认 op=1.0，于是渲染出两对手。标准 Core 对同一 moc3 的求值与
- * Purism 逐位一致（P12_official_core/DIFF.md），「四只手」不是渲染器或
+ * Purism 逐位一致（基准对照记录），「四只手」不是渲染器或
  * Core 的分歧，缺的是这条 VTS 约定的播放链。
  *
  * 查找顺序：
@@ -1848,7 +1848,7 @@ void loadExpressions(const ResourceSource &src, const std::string &jsonPath,
  * 目录里剩余未被引用的 *.exp3.json 追加在后（用户可能自己往目录里丢表情）。
  *
  * 只在 g_expressions 为空时调用（model3.json 的 Expressions 优先），
- * 保证标准标准模型的行为完全不变。
+ * 保证标准模型的行为完全不变。
  */
 void loadVtsHotkeyExpressions(const ResourceSource &src, const std::string &dir) {
     if (!g_expressions.empty()) return;
@@ -1996,7 +1996,7 @@ void loadEyeBlinkGroup(const ResourceSource &src, const std::string &jsonPath) {
  * P8 三处修正：
  *  1) 部件名匹配失败时回退到小写表（自定义模型大小写不一致）；
  *  2) **解析后不足 2 个成员的组直接丢弃**。单项组不是「强制可见」：标准
- *     PoseManager 对单成员组的行为是「它永远获胜」，等于恒点亮 —— 一旦
+ *     Pose 后处理对单成员组的行为是「它永远获胜」，等于恒点亮 —— 一旦
  *     精确匹配失败把双成员组削成单项，就会凭空多出一只手。丢弃只是少一条
  *     互斥规则，剩余成员回到「跟着动作/默认值走」，比硬点亮安全。
  *  3) 解析失败的组打 WARN 并带上原始成员数，便于真机定位是哪个模型没生效。
@@ -2297,7 +2297,7 @@ void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
         }
 
         // json 消毒（P1 审计保留）：Acceleration/Delay 钳到有限区间；
-        // Radius ≤0 或非有限时退回 json Position 差（标准会直接 NaN，这里兜底）。
+        // Radius ≤0 或非有限时退回 json Position 差（直接算会出 NaN，这里兜底）。
         for (size_t i = 0; i < chain.vertices.size(); ++i) {
             PhysicsVertex &v = chain.vertices[i];
             v.acceleration = std::max(0.0f, std::min(100.0f, v.acceleration));
@@ -2336,7 +2336,7 @@ bool readMoc(const ResourceSource &src, const std::string &path,
         return false;
     }
 
-    // 标准要求 MOC 缓冲区 64 字节对齐：先读进临时缓冲再拷进对齐块
+    // MOC 缓冲区要求 64 字节对齐：先读进临时缓冲再拷进对齐块
     if (!out->alloc(csmAlignofMoc, bytes.size())) {
         *err = "MOC 缓冲区分配失败（内存不足？）";
         return false;
@@ -2353,7 +2353,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
 
     const auto mocSize = static_cast<unsigned int>(g_mocBuffer.size);
 
-    // 不可信输入的先决校验（API 规范 明确要求先 consistency 再 revive）
+    // 不可信输入的先决校验（API.md 要求先 consistency 再 revive）
     const csmMocVersion version = csmGetMocVersion(g_mocBuffer.ptr, mocSize);
     if (version == csmMocVersion_Unknown) {
         *err = "不是合法的 MOC3 文件（版本识别失败）";
@@ -2385,7 +2385,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         return false;
     }
 
-    // 标准说明初始化已跑过一次 update，但这里显式再跑一遍，确保顶点就是
+    // 文档说明初始化已跑过一次 update，但这里显式再跑一遍，确保顶点就是
     // 「全默认参数」下的静态姿态（P0 不需要任何参数驱动）。
     csmResetDrawableDynamicFlags(g_model);
     csmUpdateModel(g_model);
@@ -2414,7 +2414,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         }
     }
     // 注意：isMask 只用于统计与说明，**不再用于过滤绘制**。
-    // 「被别人当遮罩」与「自己也要显示」并不互斥（Sample 的前发 D_PSD_04 两者皆是）；
+    // 「被别人当遮罩」与「自己也要显示」并不互斥（前发图层两者皆是）；
     // P0 曾把所有 isMask 图层整片剔除，结果前发缺失，头顶只剩后发的硬边几何，
     // 真机上表现为生硬的「平切」。P2 起这些图层按普通内容绘制，同时参与模板写入。
 
@@ -2444,7 +2444,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
     g_maskRefs.clear();
     g_vertexSpans.clear();
     clearVertexDirty();
-    // Sample 实测 2794 顶点 / 12174 索引；Mask 会额外带进几百个顶点，一并预留
+    // 实测 2794 顶点 / 12174 索引；Mask 会额外带进几百个顶点，一并预留
     g_vertices.reserve(8192);
     g_indices.reserve(32768);
     g_batches.reserve(128);
@@ -2602,7 +2602,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         const int icount = indexCounts[di];
         if (vcount <= 0 || icount <= 0) return false;
         if (g_vertices.size() + static_cast<size_t>(vcount) > 65535u) {
-            // uint16 索引上限；Sample 实测 2794 顶点，留 65k 足够，真撞上就放弃该 drawable
+            // uint16 索引上限；实测 2794 顶点，留 65k 足够，真撞上就放弃该 drawable
             LOGW("顶点数将超过 65535，跳过 drawable（index=%d）", idx);
             return false;
         }
@@ -2652,7 +2652,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         if (vcount == 4) { ++skippedQuad; continue; }
         // ⚠️ 这里**刻意不再按 dynamicFlags/csmIsVisible 过滤**（P4 修正）：
         // 可见性是逐帧量，动作 / 表情 / pose 都能让一个初始不可见的 drawable
-        // 之后变可见（Sample 的 Part01ArmRB001 就属于这一类）。init 时按当时的
+        // 之后变可见（手臂的 B 组部件就属于这一类）。init 时按当时的
         // 可见性把它们剔出批次表，等于永远补不回来 —— 之前「4 只手」里被
         // 多画出来的两只手，正是这种可见性快照与真实状态脱节的表现。
         // 现在的做法：所有有几何的 drawable 都进批次表，逐帧在 drawFrame 里
@@ -2710,7 +2710,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         }
 
         // P7：这里不再因为 usedMaskCount == 0 就丢弃内容。掩码全部隐藏
-        // （或全是 -1）时按「无遮罩」绘制 —— 标准渲染器的语义是掩码缺失
+        // （或全是 -1）时按「无遮罩」绘制 —— 标准语义是掩码缺失
         // 等于不裁剪，而不是把被裁剪的对象一起删掉。
         const int usedMaskCount = static_cast<int>(g_maskRefs.size()) - maskFirst;
         if (ownMaskCount > 0 && usedMaskCount == 0) {
@@ -2808,7 +2808,7 @@ bool loadModel(const ResourceSource &src, const std::string &mocPath, std::strin
         g_poseFileGroupCount = g_poseGroups.size();
         if (!g_poseFromFile) buildFallbackPoseGroupsLocked();
 
-        // 默认播第一组动作的第 0 个（Sample 是 Idle），并立刻应用一次
+        // 默认播第一组动作的第 0 个（通常是 Idle），并立刻应用一次
         g_activeGroup = g_motionGroups.empty() ? -1 : 0;
         g_activeMotion = (g_activeGroup >= 0 && !g_motionGroups[0].motions.empty()) ? 0 : -1;
         g_motionActive = g_activeMotion >= 0;
@@ -2914,7 +2914,7 @@ float sampleCurve(const float *flat, int count, float t) {
 /**
  * 应用姿势（pose3）互斥语义到部件不透明度。
  *
- * 对齐标准 Pose 后处理（CubismPose::updateParameters）的语义：
+ * Pose 后处理的语义：
  *  1) 每组用**本帧输入不透明度**选出唯一获胜者（最大者，并列取靠前者）；
  *     判据用的是动作/面捕/默认值刚写进去、pose 尚未改动的值，所以本函数必须
  *     在所有写部件不透明度的步骤之后、csmUpdateModel 之前调用。
@@ -2925,7 +2925,7 @@ float sampleCurve(const float *flat, int count, float t) {
  *     默认值是 1 —— 回退能把这只手放回来，同时不会误点亮默认值也是 0 的部件。
  *  4) 默认值也全为 0（整组都是 visible=0、只能靠 pose 点亮的部件）时，退化为
  *     「强制第一个候选按 1.0 显示」。互斥组的语义是**恰好一个可见**：整组消失
- *     就是真机上的「没手」；标准 Pose 后处理 的淡入终点也是同样的强制可见。
+ *     就是真机上的「没手」；标准 Pose 后处理的淡入终点也是同样的强制可见。
  *
  * ⚠️ P8 关键修复：候选序（ordinal）与 csm 部件下标是两个不同的下标空间。
  * 旧实现拿部件下标去索引 g_poseGroupLinks[组]（形如 links[winner]），
@@ -2972,7 +2972,7 @@ void applyPoseLocked() {
         //  - 默认值全为 0（整组都是 visible=0 的部件，只能靠 pose 点亮）时，
         //    强制选第一个候选并按 1.0 显示。互斥组的语义就是「必须恰好有
         //    一个可见」，整组消失就是真机上的「模型没手」；宁可显示一组手臂
-        //    也不能让手凭空不见（这正是标准 Pose 后处理 的淡入终点）。
+        //    也不能让手凭空不见（这正是标准 Pose 后处理的淡入终点）。
         bool forcedVisible = false;
         if (bestPart < 0) {
             float bestDefault = kVisibleThreshold;
@@ -3144,7 +3144,7 @@ void applyExpressionLocked() {
  * 应用当前动作到参数 / 部件不透明度，并返回整体不透明度。
  *
  * 时间由调用方推进（g_motionTime）。Target=Model/Opacity 的曲线决定整体
- * 不透明度（Sample 的 idle 会 0→1→0 淡入淡出）。
+ * 不透明度（idle 常常 0→1→0 淡入淡出）。
  */
 void applyMotionLocked(float *modelOpacity) {
     *modelOpacity = 1.0f;
@@ -3191,9 +3191,9 @@ void applyMotionLocked(float *modelOpacity) {
 //  前两代实现的教训：
 //   - P5 弹簧伺服有 DC 通路（稳态输入产生恒定输出）且动态被低通化，靠抑制项
 //     压制发散与残差，越压越迟滞；
-//   - P12 标准方向跟踪是高通（稳态输出 0）、结构上稳定，但每步只跟 1/5 的
+//   - P12 方向跟踪是高通（稳态输出 0）、结构上稳定，但每步只跟 1/5 的
 //     一阶跟踪没有真正的惯性 —— 大幅甩头时头发「贴着走」，过冲/回摆全靠
-//     velocity×delay 项凑，且独立实现代码有法律风险。
+//     附加项凑，摆动的“惯性”并不来自动量本身。
 //
 //  本代按 XPBD（Extended Position-Based Dynamics）从零实现：
 //
@@ -3231,11 +3231,11 @@ xpbd::ParamTable makeParamTable() {
 }
 
 /**
- * 标准 updateOutputParameterValue：输出写回单个参数槽。
+ * 输出写回单个参数槽。
  *
  * value = outputValue × Scale，钳到目标参数 [min, max]，再按 Weight 与参数
  * 当前值混合（Weight ≥ 100 直接覆盖）。与旧实现的差异：不做 default 居中的
- * 半程量程映射 —— 标准就是「满量程钳制 + 线性混合」。
+ * 半程量程映射 —— 这里采用「满量程钳制 + 线性混合」。
  */
 void physicsWriteOutputLocked(float *paramValue, float paramMin, float paramMax,
                               float outputValue, const PhysicsOutput &output) {
@@ -3256,15 +3256,15 @@ void physicsWriteOutputLocked(float *paramValue, float paramMin, float paramMax,
  * 物理输出写回参数：rig 级调度（累加时钟 + 固定子步 + 帧间插值）。
  *
  * 本帧流程：
- *  1) 累加时钟 += dt（超过 MaxDeltaTime 直接清零 —— 丢时间不补步）；
- *  2) while (remain >= xpbd::tuning().substepDt) 逐子步：current→previous 输出槽轮转、
- *     输入时间对齐（线性外插到子步时刻，不是低通）、逐链 xpbd::step、
- *     输出写 curOut 与参数缓存（后者是组间传播通道：后一条链的输入能读到
- *     前一条链的输出）；
- *  3) 帧末 interpolate：参数 = prevOut×(1-α) + curOut×α，α = remain/h。
- *     一阶保持：90fps 渲染 + 120Hz 子步时靠它保证输出连续，只增加 ≤1 个
- *     子步的延迟，不衰减任何频段。即使本帧一步都没跑（remain < h），
- *     也照常执行 —— 输出仍随 α 平滑推进。
+ *  1) 确认参数缓存容量（模型切换后参数变多时重建一次）；
+ *  2) 累加时钟 += dt（超过 MaxDeltaTime 直接清零 —— 丢时间不补步）；
+ *  3) 子步循环（remain ≥ substepDt）：输出槽前进一格、输入线性对齐到子步
+ *     时刻、逐链 xpbd::step、输出写 curOut 与参数缓存（后者是组间传播通道：
+ *     后一条链的输入能读到前一条链的输出）；
+ *  4) 帧末按 remain/substepDt 的比例在「前一次输出」与「本次输出」之间插值。
+ *     一阶保持：高刷新率渲染下靠它保证输出连续，只增加 ≤1 个子步的延迟，
+ *     不衰减任何频段。即使本帧一步都没跑（remain < h），也照常执行 ——
+ *     输出仍随比例平滑推进。
  *
  * 调用约束：**必须持 g_mutex**，且在动作/表情/面捕之后、pose 之前执行
  * （物理读的是本帧最终的头/身体角度）。
@@ -3330,36 +3330,41 @@ void applyPhysicsLocked() {
 
     if (!(dt > 0.0f)) return;   // 无时间流逝（dt<=0）不做任何演化
 
-    // ---- 1) 累加时钟 ----
-    g_physicsRemainTime += dt;
-    if (g_physicsRemainTime > kPhysicsMaxDeltaTime) g_physicsRemainTime = 0.0f;
-
-    // 参数缓存按需重建（模型切换 / 首帧；参数缓存判据）。
-    if (g_paramCaches.size() < static_cast<size_t>(g_paramCount)) {
-        g_paramCaches.assign(static_cast<size_t>(g_paramCount), 0.0f);
-        g_paramInputCaches.assign(static_cast<size_t>(g_paramCount), 0.0f);
-        for (int i = 0; i < g_paramCount; ++i) {
-            g_paramInputCaches[static_cast<size_t>(i)] = values[i];
+    // ---- 1) 参数缓存容量：按当前参数总数分配一次，并把实时值作为初值。
+    // 只关心「容量够不够」，模型切换后参数变多时自然触发重建。
+    const size_t paramCount = static_cast<size_t>(g_paramCount);
+    const bool cacheNeedsInit = g_paramCaches.size() < paramCount;
+    if (cacheNeedsInit) {
+        g_paramCaches.assign(paramCount, 0.0f);
+        g_paramInputCaches.assign(paramCount, 0.0f);
+        for (size_t i = 0; i < paramCount; ++i) {
+            g_paramInputCaches[i] = values[i];
         }
     }
 
+    // ---- 2) 累加时钟 ----
+    g_physicsRemainTime += dt;
+    if (g_physicsRemainTime > kPhysicsMaxDeltaTime) g_physicsRemainTime = 0.0f;
+
     const float h = xpbd::tuning().substepDt;   // 固定子步长：与渲染帧率、json Meta.Fps 双解耦
 
-    // ---- 2) 固定子步补步（每子步一次 XPBD 约束求解，Macklin small steps）----
+    // ---- 3) 固定子步补步（每子步一次 XPBD 约束求解，Macklin small steps）----
     int steps = 0;
     while (g_physicsRemainTime >= h) {
-        // 本步开始前，把上一轮输出整体挪到「前一次」槽（输出槽位）。
-        for (PhysicsChain &chain : g_physicsChains) {
-            chain.prevOut = chain.curOut;
-        }
-
-        // 输入时间对齐：cache = inputCache×(1-w) + 当前值×w，w = h/remain
-        // （输入时间对齐）。w 可能 >1（外插），标准如此，语义对齐。
-        const float w = h / g_physicsRemainTime;
+        // 输入时间对齐：把实时值线性推进到本子步时刻。
+        // alpha 是「本子步占用累加时钟的比例」，允许 >1（外插），保持原有语义。
+        const float alpha = h / g_physicsRemainTime;
+        const float keep = 1.0f - alpha;
         for (int j = 0; j < g_paramCount; ++j) {
             const size_t uj = static_cast<size_t>(j);
-            g_paramCaches[uj] = g_paramInputCaches[uj] * (1.0f - w) + values[uj] * w;
+            g_paramCaches[uj] = g_paramInputCaches[uj] * keep + values[uj] * alpha;
             g_paramInputCaches[uj] = g_paramCaches[uj];
+        }
+
+        // 输出槽位轮转：把上一轮的输出整体推进「前一次」槽，
+        // 这样帧末插值两端分别是本次与上次求解的结果。
+        for (PhysicsChain &chain : g_physicsChains) {
+            chain.prevOut = chain.curOut;
         }
 
         for (PhysicsChain &chain : g_physicsChains) {
@@ -3375,7 +3380,7 @@ void applyPhysicsLocked() {
 
             for (size_t oi = 0; oi < chain.outputs.size(); ++oi) {
                 const PhysicsOutput &output = chain.outputs[oi];
-                // 越界 vertexIndex / 参数下标：整条输出跳过（与标准一致）；
+                // 越界 vertexIndex / 参数下标：整条输出跳过，不做任何写回；
                 // 几何取法在 xpbd::evaluateOutput 里，与桌面回放台同一份代码。
                 if (output.paramIndex < 0 || output.paramIndex >= g_paramCount) continue;
                 float outputValue = 0.0f;
@@ -3396,8 +3401,8 @@ void applyPhysicsLocked() {
         }
     }
 
-    // ---- 3) 帧间插值：真正写参数的只有这一处（标准 interpolate）----
-    const float alpha = g_physicsRemainTime / h;
+    // ---- 3) 帧间插值：真正写参数的只有这一处 ----
+    const float frameT = g_physicsRemainTime / h;
     for (PhysicsChain &chain : g_physicsChains) {
         ++g_physicsJitter.frames;
         const size_t count = chain.vertices.size();
@@ -3409,8 +3414,7 @@ void applyPhysicsLocked() {
                 continue;
             }
             const size_t pui = static_cast<size_t>(pi);
-            const float blended = chain.prevOut[oi] * (1.0f - alpha) +
-                                  chain.curOut[oi] * alpha;
+            const float blended = chain.prevOut[oi] + (chain.curOut[oi] - chain.prevOut[oi]) * frameT;
             const float before = values[pui];
             physicsWriteOutputLocked(&values[pui], g_paramMin[pui], g_paramMax[pui],
                                      blended, output);
@@ -3449,7 +3453,7 @@ void applyPhysicsLocked() {
     // 用「上一帧最终参数快照」做整份比较（见 g_lastAppliedParams 注释），
     // 在这里与复位后的默认值比会恒为真。
 
-    // ---- 逐帧曲线追踪（与标准参考实现逐帧对照）----
+    // ---- 逐帧曲线追踪（与基准参考实现逐帧对照）----
     // 每帧一行，字段与 host/ref/refphysics 的输入/输出一一对应：
     //   trace: <frame> <timeSec> <dt> <inX> <inZ> <inBodyX> <inBodyZ> <out>
     // 记录**真实输入**而不是让参考实现自己重算正弦：合成面捕的相位起点与
@@ -3571,7 +3575,7 @@ void applySyntheticFaceLocked(double nowSec) {
         // 的整数倍，无法判断 200ms 与 1200ms 谁对。改用四个互不成整数比的分量
         // 叠加，波形无周期，互相关峰值唯一 —— 才能把相位滞后测到毫秒级。
         // 幅值合计控制在 ±17°（ParamAngleX 量程 ±30° 的一半左右）。
-        // 不能更大：标准参考实现在 ±30° 多音激励下 ParamHairFront 有 28% 的帧
+        // 不能更大：基准实现在 ±30° 多音激励下 ParamHairFront 有 28% 的帧
         // 顶到 ±1 钳制（2.51Hz 恰好落在链的自然频率上），饱和会同时破坏摆幅与
         // 相位的可比性。17° 时两侧都不饱和，测的才是线性响应。
         const auto tone = [&t](double hz, double phase, double amp) {
@@ -3620,7 +3624,7 @@ void applySyntheticFaceLocked(double nowSec) {
  * csmUpdateModel 会把非有限值/越界值通过插值扩散到顶点，最终表现为
  * 「面捕一开模型就炸」。这里在 update 之前统一钳一遍：
  *  - 非有限值 → 该参数的模型默认值（比归零更安全：0 可能不在量程内）；
- *  - 越界值 → 钳到 [min, max]（模型自带的量程，标准渲染器也这么做）；
+ *  - 越界值 → 钳到 [min, max]（模型自带的量程）；
  *  - 部件不透明度 → 钳到 [0, 1] 且拒绝非有限值。
  */
 void sanitizeModelStateLocked() {
@@ -3657,7 +3661,7 @@ void sanitizeModelStateLocked() {
  * 顺序是有意的：
  *  1) 复位成模型默认值（动作曲线不是每个参数都覆盖）；
  *  2) 动作写参数与部件不透明度；
- *  3) 表情叠加在动作结果之上（标准也是 Expression 在 Motion 之后）；
+ *  3) 表情叠加在动作结果之上（表达式的求值顺序在动作之后）；
  *  4) 面捕覆盖面部参数 —— 保证「说话/眨眼」始终跟人，不被 idle 动作压掉；
  *  5) 物理读本帧最终的头/身体角度，把链尾偏角写回头发/裙摆参数；
  *  6) pose 在最后判定互斥，避免动作写进来的 1 又被覆盖回去；
@@ -3799,7 +3803,7 @@ GLuint compileShader(GLenum type, const char *source) {
 //  两个方案二选一即可：
 //   a) shader 里预乘 + glBlendFunc(GL_ONE, GL_ONE_MINUS_SRC_ALPHA)  ← 本实现
 //   b) 不预乘 + glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA)
-//  之所以选 a) 是因为 Live2D 标准渲染器与后续加「加法混合」图层时都用预乘管线，
+//  之所以选 a) 是因为标准渲染器与后续加「加法混合」图层时都用预乘管线，
 //  保持同一套约定能省掉 P2 的返工。
 const char *kVertexShader = R"(
 attribute vec2 aPos;
@@ -4840,7 +4844,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativePanLimits(
  *      画目标 drawable，只有模板为 1 的像素通过 → 圆弧切口；
  *   4) glDisable(GL_STENCIL_TEST)，交还后续批次。
  *
- * 多个遮罩取**并集**（连续 REPLACE 到同一个位），这是 Live2D 标准渲染器的语义；
+ * 多个遮罩取**并集**（连续 REPLACE 到同一个位），这是标准渲染语义；
  * 取交集会让「多个遮罩共同裁剪」的图层只剩极小一块。
  */
 JNIEXPORT void JNICALL
@@ -4973,7 +4977,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
 
         // 物理是连续系统：即使动作停了、面捕没新数据，头发也在继续回弹，
         // 因此只要存在物理链就必须逐帧推进累加时钟（否则松手瞬间会僵在半空）。
-        // dt=0 时这里传 0，物理累加时钟不走（标准语义：无时间流逝就无演化）。
+        // dt=0 时这里传 0，物理累加时钟不走（无时间流逝就无演化）。
         g_physicsDt = static_cast<float>(dt);
         g_traceFrame = (g_physicsTrace.load(std::memory_order_relaxed) ? g_traceFrame + 1 : 0);
         const bool physicsRunning = !g_physicsChains.empty();
@@ -5678,7 +5682,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeIsPhysicsEnabled(
 /**
  * 物理参考模式开关 —— **P12 起退役**（见 g_physicsReferenceMode 的注释）。
  *
- * 标准粒子模型成为唯一路径，本开关只保留 JNI ABI 兼容，无任何行为差异。
+ * 方向跟踪粒子模型成为唯一路径，本开关只保留 JNI ABI 兼容，无任何行为差异。
  */
 JNIEXPORT void JNICALL
 Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetPhysicsReferenceMode(
@@ -5690,10 +5694,10 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeSetPhysicsReferenceMo
 }
 
 /**
- * 物理逐帧曲线追踪开关（P9 与标准参考实现对照用）。
+ * 物理逐帧曲线追踪开关（P9 与基准参考实现对照用）。
  *
  * 打开后每帧输出一行 `trace: <frame> <time> <dt> <ParamHairFront>`，字段与
- * host/ref/refphysics 的 CSV 对齐，可逐帧比对 app 自研求解器与标准
+ * host/ref/refphysics 的 CSV 对齐，可逐帧比对 app 自研求解器与基准
  * CubismNativeFramework 的偏差。默认关闭 —— 每帧一行日志只适合取证。
  */
 JNIEXPORT void JNICALL

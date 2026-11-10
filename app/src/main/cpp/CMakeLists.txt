@@ -7,7 +7,7 @@
 # Purism Core 以单文件头 PurismCoreBundle.h 形式内联编译：
 #   - 只有一个翻译单元定义 PURISM_CORE_IMPLEMENTATION（见 live2d_jni.cpp），
 #     否则所有 csm* 符号会重复定义；
-#   - 头文件是 C99 写的，但标准声明支持 C++ 编译（README「Purism Core does build
+#   - 头文件是 C99 写的，但文档声明支持 C++ 编译（README「does build
 #     with a C++ compiler」），故不拆 C/C++ 两个目标，避免跨语言链接开销。
 #
 # 依赖库只有三个，均为 NDK 自带的系统库：
