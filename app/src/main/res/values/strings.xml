@@ -92,6 +92,7 @@
     <string name="settings_oss_desc">ARVTubeLink 离不开这些项目</string>
     <string name="oss_title">许可证</string>
     <string name="oss_section_core_platforms">核心平台</string>
+    <string name="oss_section_proprietary">专有 SDK</string>
     <string name="oss_section_open_source">开源库</string>
     <string name="oss_intro">本应用使用了以下第三方项目。点击任意条目查看完整许可文本</string>
     <string name="oss_footer">以上均为其各自所有者的商标或注册商标。ARVTubeLink 与这些项目没有隶属关系</string>
@@ -125,7 +126,7 @@
 
     <!-- 法律文本须与 res/raw/agreement.txt、license.txt 一致；translatable="false" 豁免 MissingTranslation -->
     <string name="agreement_title" translatable="false">欢迎使用 ARVTubeLink</string>
-    <string name="agreement_summary" translatable="false">应用完全本地运行，不收集您任何个人数据\n相机权限仅用于本地人脸追踪，不上云\n您可以个人非商业使用本应用（含个人 VTuber 直播、视频创作者 所得收益）\n商业用途需授权\n如果您为使用本软件支付了任何费用，说明您遭遇了诈骗，请立即要求退款并维护自身合法权益\n\n使用即同意用户协议与隐私声明全部条款。</string>
+    <string name="agreement_summary" translatable="false">相机权限仅用于本地人脸追踪，画面不上云\n本应用不设账号系统，开发者不运营服务器，不主动收集您的个人数据\n第三方 AR Engine 由华为提供，可能联网校验授权并按其隐私政策处理设备信息\n您可以个人非商业使用本应用（含个人 VTuber 直播、视频创作者 所得收益）\n商业用途需授权\n如果您为使用本软件支付了任何费用，说明您遭遇了诈骗，请立即要求退款并维护自身合法权益\n\n使用即同意用户协议与隐私声明全部条款。</string>
     <string name="agreement_view_full" translatable="false">查看完整条款</string>
     <string name="action_disagree" translatable="false">不同意</string>
     <string name="action_agree" translatable="false">同意</string>
@@ -219,7 +220,7 @@
     <string name="live2d_import_stage_validating">正在校验模型…</string>
     <string name="live2d_import_background_hint">已转到后台导入：可切走或锁屏，导入会继续完成</string>
 
-    <!-- Live2D 空状态（应用不内置模型，首次进入时展示） -->
+    <!-- Live2D 空状态（尚未导入模型，首次进入时展示） -->
     <string name="live2d_empty_title">尚未加载模型</string>
     <string name="live2d_empty_hint">请点击右侧按钮导入 .zip 模型包</string>
 

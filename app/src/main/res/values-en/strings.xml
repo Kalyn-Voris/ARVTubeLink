@@ -104,6 +104,7 @@
     <string name="settings_oss_desc">ARVTubeLink relies on these projects</string>
     <string name="oss_title">Licenses</string>
     <string name="oss_section_core_platforms">Core Platforms</string>
+    <string name="oss_section_proprietary">Proprietary SDKs</string>
     <string name="oss_section_open_source">Open Source Libraries</string>
     <string name="oss_intro">This app uses the following third-party projects. Tap any entry to read the full license text.</string>
     <string name="oss_footer">All names are trademarks or registered trademarks of their respective owners. ARVTubeLink is not affiliated with these projects.</string>

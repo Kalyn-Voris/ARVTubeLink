@@ -1,6 +1,6 @@
 # ARVTubeLink
 
-把华为 AR Engine 的人脸追踪数据实时注入 VTube Studio。Android 端面捕，WebSocket 直连本地 VTS，不上云、无服务端、无账号。
+把华为 AR Engine 的人脸追踪数据实时注入 VTube Studio。Android 端面捕，WebSocket 直连本地 VTS；应用不设账号、作者不运营服务器，除 AR Engine 自身的授权校验外，数据不进任何云端。
 
 ```
 AR Engine (BlendShapes + 头姿)

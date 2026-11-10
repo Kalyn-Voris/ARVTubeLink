@@ -238,6 +238,11 @@ object LicenseTexts {
        HUAWEI AR Engine. This application's AR features therefore depend on
        device support, and are unavailable on devices without it.
 
+    5. The SDK may contact Huawei servers at runtime to validate its licence
+       and may process device information under Huawei's own privacy policy.
+       ARVTubeLink does not control, intercept, or store that traffic. Refer
+       to the HUAWEI privacy statement for details.
+
     For the authoritative and legally binding terms, refer to:
         https://developer.huawei.com/consumer/en/doc/development/HMSCore-Guides/
 

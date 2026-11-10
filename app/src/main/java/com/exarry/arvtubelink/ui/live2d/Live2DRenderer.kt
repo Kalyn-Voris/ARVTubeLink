@@ -1,6 +1,5 @@
 package com.exarry.arvtubelink.ui.live2d
 
-import android.content.res.AssetManager
 import android.opengl.GLSurfaceView
 import com.exarry.arvtubelink.utils.InAppLog
 import javax.microedition.khronos.egl.EGLConfig
@@ -15,7 +14,7 @@ private const val TAG = "Live2D"
  * `GLSurfaceView.Renderer` 的实现，把三个 GL 回调原样转给 `liblive2d_jni.so`：
  * `onSurfaceCreated` → VBO/IBO 上传、`onSurfaceChanged` → 视口与投影、
  * `onDrawFrame` → glDrawElements。真正的模型加载（.moc3 → Purism Core →
- * 顶点/索引数组）也全在 C++ 侧完成，本类只负责把 [AssetManager] 和路径递过去。
+ * 顶点/索引数组）也全在 C++ 侧完成，本类只负责把 `.moc3` 绝对路径递过去。
  *
  * ## 线程模型
  * - [init] 由宿主在**主线程**调用一次（也可重建时再调），内部持锁 + 记标记；
@@ -33,21 +32,16 @@ private const val TAG = "Live2D"
  * 只画纯色几何面，不加载贴图、不读 model3.json、不驱动参数、不播动作。
  */
 class Live2DRenderer(
-    private val assetManager: AssetManager,
-    mocAssetPath: String? = null,
+    mocPath: String? = null,
 ) : GLSurfaceView.Renderer {
 
     /**
-     * 当前模型的 .moc3 路径；null = 还没有加载任何模型（首次进入且用户未导入）。
-     *
-     * 两种形态：
-     *  - **本地绝对路径**（用户导入的模型，如 `/data/.../live2d_models/1730/xxx.moc3`）；
-     *  - **assets 相对路径**（历史内置模型形态，仅保留兼容，当前 APK 不再内置任何模型）。
-     *
-     * 用是否以 `/` 开头区分，见 [loadModel]。
+     * 当前模型的 .moc3 **绝对路径**（用户导入的模型，如
+     * `/data/.../live2d_models/1730/xxx.moc3`）；null = 还没有加载任何模型
+     * （首次进入且用户未导入）。
      */
     @Volatile
-    var mocAssetPath: String? = mocAssetPath
+    var mocPath: String? = mocPath
         private set
 
     /** 模型是否已成功加载（false 时 [onDrawFrame] 只清屏）。 */
@@ -66,14 +60,14 @@ class Live2DRenderer(
     /**
      * 加载模型。幂等：成功后重复调用直接返回 true。
      *
-     * 应用不内置模型，[mocAssetPath] 为 null 表示用户还没有导入——这不是错误，
+     * [mocPath] 为 null 表示用户还没有导入模型——这不是错误，
      * 只返回 false 并保持 `lastError = null`，由 UI 呈现空状态引导导入。
      *
      * @return true = 模型可用
      */
     fun init(): Boolean = synchronized(initLock) {
         if (modelReady) return true
-        val path = mocAssetPath
+        val path = mocPath
         if (path == null) {
             lastError = null
             return false
@@ -95,7 +89,7 @@ class Live2DRenderer(
         if (error == null) {
             modelReady = true
             lastError = null
-            InAppLog.i(TAG, "Purism Core 模型加载成功: $mocAssetPath")
+            InAppLog.i(TAG, "Purism Core 模型加载成功: $mocPath")
             InAppLog.i(TAG, "native 统计: ${runCatching { nativeStats() }.getOrDefault("n/a")}")
         } else {
             modelReady = false
@@ -108,15 +102,10 @@ class Live2DRenderer(
     /**
      * 调用 native 加载模型（不改变任何状态，只返回错误串）。
      *
-     * 路径形态决定入口：以 `/` 开头 = 本地绝对路径 → [nativeLoadModelFromPath]；
-     * 否则按 assets 相对路径 → [nativeInit]。
+     * 只接受设备本地绝对路径：模型一律由用户导入到 filesDir 下。
      */
     private fun loadNative(path: String): String? = try {
-        if (path.startsWith("/")) {
-            nativeLoadModelFromPath(path)
-        } else {
-            nativeInit(assetManager, path)
-        }
+        nativeLoadModelFromPath(path)
     } catch (t: Throwable) {
         "加载模型异常: ${t.javaClass.simpleName}: ${t.message}"
     }
@@ -127,7 +116,7 @@ class Live2DRenderer(
      * 与 [init] 的区别：这里**允许重复调用**，且会清掉参数绑定缓存与 init 重试
      * 标记 —— 新模型的参数表与旧模型不同，必须重新解析。
      *
-     * @param path `.moc3` 路径：以 `/` 开头 = 本地绝对路径，否则按 assets 相对路径处理
+     * @param path `.moc3` 的绝对路径
      * @return true = 新模型已加载（GL 侧由 native 在下一帧重建）
      */
     fun loadModel(path: String): Boolean = synchronized(initLock) {
@@ -144,7 +133,7 @@ class Live2DRenderer(
         initAttempted = true
 
         if (error == null) {
-            mocAssetPath = path
+            mocPath = path
             modelReady = true
             lastError = null
             InAppLog.i(TAG, "模型切换成功: $path")
@@ -535,7 +524,6 @@ class Live2DRenderer(
         }
     }
 
-    private external fun nativeInit(assetManager: AssetManager, mocPath: String): String?
     private external fun nativeLoadModelFromPath(mocPath: String): String?
     private external fun nativeSurfaceCreated()
     private external fun nativeSurfaceChanged(width: Int, height: Int)

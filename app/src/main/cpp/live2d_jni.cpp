@@ -3,14 +3,14 @@
 // ============================================================================
 //
 //  职责边界：
-//   - 只做「从 assets 读 .moc3 → Purism Core 求值 → 贴图绘制」；
+//   - 只做「从本地文件读 .moc3 → Purism Core 求值 → 贴图绘制」；
 //   - 不碰 BlendShapeMapper / FaceRenderer 的任何逻辑（P3 只读取它们产出的
 //     VTS 参数快照，映射与算法全在 Kotlin 侧）；
 //   - 不做模型导入、不做动作播放、不做表情预设。
 //
 //  坐标与数据流：
-//   nativeInit（任意线程，只调一次）
-//     AAssetManager 读整份 .moc3 → 64 字节对齐缓冲区
+//   nativeLoadModelFromPath（任意线程，加载/切换模型时调用）
+//     读整份 .moc3 到 64 字节对齐缓冲区
 //     csmHasMocConsistency 校验 → csmReviveMocInPlace → csmInitializeModelInPlace
 //     csmUpdateModel（跑一遍完整管线，得到 t=0 的顶点）
 //     按 render order 收集所有「直接可画」的 drawable，拼成
@@ -170,8 +170,6 @@
 
 #include <jni.h>
 
-#include <android/asset_manager.h>
-#include <android/asset_manager_jni.h>
 #include <android/log.h>
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
@@ -204,8 +202,8 @@
 #include "xpbd_solver.h"
 
 // stb_image：单文件 PNG/JPEG 解码器。同样只允许一个翻译单元定义实现。
-// STBI_ONLY_PNG / STBI_NO_STDIO：本工程只解 assets 里的 PNG，且走内存接口
-// （AAsset_read 到缓冲区再 stbi_load_from_memory），裁掉 JPEG/文件 IO 能显著减小 .so。
+// STBI_ONLY_PNG / STBI_NO_STDIO：本工程只解 PNG，且统一走内存接口
+// （fread 到缓冲区再 stbi_load_from_memory），裁掉 JPEG/文件 IO 能显著减小 .so。
 #define STB_IMAGE_IMPLEMENTATION
 #define STBI_ONLY_PNG
 #define STBI_NO_STDIO
@@ -224,7 +222,7 @@ namespace {
 //  错误传递
 // ---------------------------------------------------------------------------
 //  JNI 入口不抛 Java 异常（GL 线程抛异常无人能接），统一把失败原因写进
-//  g_lastError 并由 nativeInit 以 jstring 返回（null = 成功）。
+//  g_lastError 并由 nativeLoadModelFromPath 以 jstring 返回（null = 成功）。
 std::string g_lastError;
 
 // ---------------------------------------------------------------------------
@@ -289,7 +287,7 @@ csmModel *g_model = nullptr;
 
 // CPU 几何（init 组装，surfaceCreated 上传）
 //
-// 线程约束：nativeInit 在主线程写、nativeSurfaceCreated/nativeDrawFrame 在 GL 线程读，
+// 线程约束：nativeLoadModelFromPath 在主线程写、nativeSurfaceCreated/nativeDrawFrame 在 GL 线程读，
 // nativeRelease 可能来自主线程（组合销毁）而 GL 线程仍在跑 —— 三处都必须持 g_mutex。
 // 不加锁会出现「GL 线程正读 g_indices.data() 时主线程 clear()」的悬垂指针崩溃。
 std::mutex g_mutex;
@@ -338,7 +336,7 @@ inline void clearVertexDirty() {
 /**
  * VBO 当前分配的顶点数（GL 线程写）。
  *
- * 用于 glBufferSubData 前的尺寸校验：若 nativeInit 在上传之后又跑过（模型换了），
+ * 用于 glBufferSubData 前的尺寸校验：若模型在上传之后又换过（nativeLoadModelFromPath），
  * CPU 顶点数可能与 VBO 容量不一致，此时**跳过**本次局部更新而不是越界写显存。
  */
 int g_vboVertexCount = 0;
@@ -346,7 +344,7 @@ int g_vboVertexCount = 0;
 /**
  * 模型已换、GL 侧资源必须整体重建（P6 自定义模型导入）。
  *
- * 为什么不能像 nativeInit 那样「什么都不做、等 surfaceCreated」：
+ * 为什么不能像首次加载那样「什么都不做、等 surfaceCreated」：
  * 导入新模型时 EGL context 是**活着**的，surfaceCreated 不会再次触发，
  * 旧 VBO/IBO 仍是上一个模型的拓扑，纹理句柄也指向旧图集。
  * drawFrame 看到这个标记就重新上传纹理、重建 VBO/IBO（GL 线程内完成）。
@@ -429,7 +427,7 @@ long g_paramSanitizedTotal = 0;
 //   [t0, v0, type, ...]；type 0=线性、1=三次贝塞尔、2=阶跃、3=反阶跃。
 //  表达式（exp3.json）：{Id, Value, Blend}，Blend ∈ Overwrite/Add/Multiply。
 //
-//  所有权：这些结构在 nativeInit 里一次性构建，之后只读；播放状态在锁内写。
+//  所有权：这些结构在模型加载时一次性构建，之后只读；播放状态在锁内写。
 
 /** 一条动作曲线：目标 + 在 MotionData.segments 里的区间。 */
 struct MotionCurve {
@@ -552,8 +550,8 @@ std::unordered_map<std::string, int> g_partIndexById;
  * 部件 id（小写）-> csm 部件下标（P8）。
  *
  * 自定义模型的 pose3.json 与 moc3 里的部件名大小写经常不一致（导出工具
- * 版本差异）。标准 Pose 后处理用**字符串全等**匹配，且内置资源两边必然
- * 一致；导入模型不能指望这一点：全等匹配失败会让组内成员骤减，剩下单项组
+ * 版本差异）。标准 Pose 后处理用**字符串全等**匹配，而用户导入的模型
+ * 不能指望这一点：全等匹配失败会让组内成员骤减，剩下单项组
  * 被当作「强制该部件可见」，于是两套手臂同时点亮 —— 另一种「四只手」。
  * 这里加一层小写回退，仍然以精确匹配优先。
  */
@@ -1343,7 +1341,7 @@ std::vector<std::string> parseTextureList(const std::string &json) {
     return result;
 }
 
-/** 取 model3.json 所在目录（带结尾 '/'），用于把 Moc/Textures 的相对路径拼成 assets 路径。 */
+/** 取 model3.json 所在目录（带结尾 '/'），用于拼接 Moc/Textures 的相对路径。 */
 std::string dirOf(const std::string &path) {
     const size_t slash = path.find_last_of('/');
     if (slash == std::string::npos) return std::string();
@@ -1363,69 +1361,45 @@ std::string modelJsonPathFor(const std::string &mocPath) {
 }
 
 /**
- * 资源来源：APK assets 或设备本地目录。
+ * 资源来源：设备本地目录。
  *
- * 为什么需要这层抽象：内置模型在 APK 里（只能经 AAssetManager 读），用户导入的
- * 模型在 filesDir 下（普通文件路径）。两者的读取原语完全不同，但上层的
- * model3/motion3/physics3 解析、纹理解码、MOC 校验应当只有一份实现——
- * 否则「内置能跑、导入的跑不起来」这类差异会反复出现。
+ * 为什么需要这层抽象：模型全部由用户从 .zip 导入到 filesDir 下（普通文件路径），
+ * 应用不携带任何随包模型资源。上层 model3/motion3/physics3 解析、纹理解码、MOC 校验
+ * 只有一份实现，共享同一套读取原语。
  *
- * 约定：
- *  - `manager != nullptr` → assets 模式，path 是 assets 相对路径；
- *  - `manager == nullptr` → 文件模式，path 是**绝对路径**。
- *
- * 安全性：文件模式下的 path 全部由 Kotlin 侧的安全解压目录拼出
- * （Zip Slip 已在解压阶段拦掉 `..` / 绝对路径条目），这里不再做路径穿越检查，
- * 但会拒绝空路径与非普通文件，避免把目录/设备节点当模型读。
+ * 安全性：path 全部由 Kotlin 侧的安全解压目录拼出（Zip Slip 已在解压阶段拦掉
+ * `..` / 绝对路径条目），这里不再做路径穿越检查，但会拒绝空路径与非普通文件，
+ * 避免把目录/设备节点当模型读。
  */
 struct ResourceSource {
-    AAssetManager *manager = nullptr;
-    std::string rootDir;  // 文件模式：模型所在绝对目录（带结尾 '/'）；assets 模式留空
-
-    bool fromFile() const { return manager == nullptr; }
+    // 目前只作为「资源来源」的类型标记：读取原语已统一为本地文件，无额外状态。
 };
 
 /** 把整个资源读成字节数组（纹理 / json / moc3 共用，不需要对齐）。 */
-bool readResource(const ResourceSource &src, const std::string &path,
+bool readResource(const ResourceSource & /*src*/, const std::string &path,
                   std::vector<uint8_t> *out) {
     if (path.empty()) return false;
 
-    if (src.fromFile()) {
-        FILE *file = std::fopen(path.c_str(), "rb");
-        if (!file) return false;
+    FILE *file = std::fopen(path.c_str(), "rb");
+    if (!file) return false;
 
-        // 先 seek 到末尾拿长度：导入的模型文件大小不可信，按实际长度读，
-        // 避免「读到一半才发现比预期短」的半截缓冲区。
-        if (std::fseek(file, 0, SEEK_END) != 0) {
-            std::fclose(file);
-            return false;
-        }
-        const long length = std::ftell(file);
-        if (length <= 0) {
-            std::fclose(file);
-            return false;
-        }
-        std::rewind(file);
-
-        out->resize(static_cast<size_t>(length));
-        const size_t read = std::fread(out->data(), 1, static_cast<size_t>(length), file);
+    // 先 seek 到末尾拿长度：导入的模型文件大小不可信，按实际长度读，
+    // 避免「读到一半才发现比预期短」的半截缓冲区。
+    if (std::fseek(file, 0, SEEK_END) != 0) {
         std::fclose(file);
-        return read == static_cast<size_t>(length);
-    }
-
-    AAsset *asset = AAssetManager_open(src.manager, path.c_str(), AASSET_MODE_BUFFER);
-    if (!asset) return false;
-
-    const off64_t length = AAsset_getLength64(asset);
-    if (length <= 0) {
-        AAsset_close(asset);
         return false;
     }
+    const long length = std::ftell(file);
+    if (length <= 0) {
+        std::fclose(file);
+        return false;
+    }
+    std::rewind(file);
 
     out->resize(static_cast<size_t>(length));
-    const int read = AAsset_read(asset, out->data(), static_cast<size_t>(length));
-    AAsset_close(asset);
-    return read == static_cast<int>(length);
+    const size_t read = std::fread(out->data(), 1, static_cast<size_t>(length), file);
+    std::fclose(file);
+    return read == static_cast<size_t>(length);
 }
 
 /** 把资源读成文本（json 用，失败返回 false，不区分原因）。 */
@@ -1440,7 +1414,7 @@ bool readResourceText(const ResourceSource &src, const std::string &path, std::s
  * 解码一张 PNG 到 [TextureImage]。
  *
  * stb_image 的接口选择：用 stbi_load_from_memory 而不是 stbi_load，
- * 因为两种来源（assets 内存块 / 本地文件）都已读成字节数组，统一走内存接口
+ * 因为资源都已读成字节数组，统一走内存接口
  * 可以完全避开 STBI_NO_STDIO（本工程裁掉了 stb 的文件 IO 以减小 .so）。
  *
  * 强制 4 通道：Purism Core 的 UV/取样假设 RGBA，缺 alpha 通道的 PNG 若按 3 通道
@@ -1478,7 +1452,7 @@ bool loadTexture(const ResourceSource &src, const std::string &path, TextureImag
 /**
  * 加载模型引用的全部纹理。
  *
- * @param mocPath  .moc3 的路径（assets 相对路径 或 绝对路径），用来推导同目录的 .model3.json
+ * @param mocPath  .moc3 的绝对路径，用来推导同目录的 .model3.json
  * @param err      失败原因（纹理加载失败不致命，只记日志；完全没纹理时在调用方报错）
  * @return 至少成功加载一张纹理
  */
@@ -1530,7 +1504,7 @@ bool loadTextures(const ResourceSource &src, const std::string &mocPath, std::st
         if (img.width > 0) ++loaded;
     }
     if (loaded == 0) {
-        *err = "没有任何纹理加载成功（检查 assets 下的 textures 目录）";
+        *err = "没有任何纹理加载成功（检查模型目录下的 textures）";
         return false;
     }
     return true;
@@ -1539,7 +1513,7 @@ bool loadTextures(const ResourceSource &src, const std::string &mocPath, std::st
 // ---------------------------------------------------------------------------
 //  动作 / 表情 / 姿势资源加载（P4）
 // ---------------------------------------------------------------------------
-//  全部在 nativeInit 的锁内、GL 侧还没有资源时执行；解析失败的条目单独跳过，
+//  全部在模型加载的锁内、GL 侧还没有资源时执行；解析失败的条目单独跳过，
 //  绝不因为某个 .motion3.json 损坏就让模型整体加载失败。
 
 /**
@@ -2326,7 +2300,7 @@ void loadPhysics(const ResourceSource &src, const std::string &jsonPath) {
 }
 
 // ---------------------------------------------------------------------------
-//  MOC3 读取（assets / 本地文件共用）
+//  MOC3 读取
 // ---------------------------------------------------------------------------
 bool readMoc(const ResourceSource &src, const std::string &path,
              AlignedBuffer *out, std::string *err) {
@@ -4170,7 +4144,7 @@ bool rebuildGlResourcesLocked() {
     // 先查几何：没有几何时不必编译 shader（否则 buildProgram 已分配的
     // program 会因提前 return 而泄漏，下一次重建又覆盖句柄）。
     if (g_vertices.empty() || g_indices.empty()) {
-        LOGW("rebuildGlResources: 没有顶点数据（nativeInit 是否成功？）");
+        LOGW("rebuildGlResources: 没有顶点数据（模型是否加载成功？）");
         return false;
     }
 
@@ -4278,7 +4252,7 @@ extern "C" {
 /**
  * 清空上一份模型的全部 CPU 侧状态（调用方必须持 g_mutex）。
  *
- * 抽出来是因为「内置模型」与「本地导入模型」两条加载路径必须共享同一套复位
+ * 抽出来是因为「首次加载」与「切换模型」两条路径必须共享同一套复位
  * 语义：漏清任何一项（参数表、物理链、动作时钟、手势变换）都会让新模型带着
  * 旧模型的状态启动，表现为「导入后模型扭曲 / 头发炸开 / 位置偏移」。
  *
@@ -4363,60 +4337,14 @@ const char *loadModelLocked(const ResourceSource &src, const std::string &path,
 }
 
 /**
- * 加载 assets 里的 .moc3 并组装 CPU 几何。
- *
- * @param assetManager 由 Kotlin 传入（AssetManager 实例）
- * @param mocPath      assets 内的相对路径，如 "models/sample/sample.moc3"
- *                     （当前 APK 不内置任何模型，该入口仅保留给历史/调试用途）
- * @return null = 成功；非 null = 失败原因（直接可展示的中文串）
- */
-JNIEXPORT jstring JNICALL
-Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeInit(
-        JNIEnv *env, jobject /*thiz*/, jobject assetManager, jstring mocPath) {
-    g_lastError.clear();
-
-    if (!assetManager || !mocPath) {
-        return env->NewStringUTF("nativeInit 参数为空");
-    }
-
-    AAssetManager *manager = AAssetManager_fromJava(env, assetManager);
-    if (!manager) {
-        return env->NewStringUTF("AAssetManager 获取失败");
-    }
-
-    const char *pathChars = env->GetStringUTFChars(mocPath, nullptr);
-    if (!pathChars) return env->NewStringUTF("mocPath 读取失败");
-    const std::string path(pathChars);
-    env->ReleaseStringUTFChars(mocPath, pathChars);
-
-    ResourceSource src;
-    src.manager = manager;
-
-    // 与 GL 线程互斥：GL 线程可能正在绘制上一帧几何
-    std::string err;
-    {
-        std::lock_guard<std::mutex> lock(g_mutex);
-        loadModelLocked(src, path, &err);
-    }
-
-    if (!err.empty()) {
-        g_lastError = err;
-        LOGE("nativeInit 失败: %s", err.c_str());
-        return env->NewStringUTF(err.c_str());
-    }
-    return nullptr;
-}
-
-/**
  * 从设备本地文件加载模型（自定义模型导入）。
  *
  * @param mocPath  .moc3 的**绝对路径**，例如
  *                 `/data/data/com.exarry.arvtubelink/files/live2d_models/1730.../xxx.moc3`
  * @return null = 成功；非 null = 失败原因
  *
- * 与 [nativeInit] 的区别只有资源读取原语（fopen 而非 AAssetManager）：
- * model3.json / motion3 / exp3 / pose3 / physics3 的解析、几何组装、物理复位
- * 全部走同一套代码，避免两条路径的行为漂移。
+ * 这是**唯一**的模型加载入口：model3.json / motion3 / exp3 / pose3 / physics3
+ * 的解析、几何组装、物理复位全部走这一套代码。
  *
  * 安全边界：路径由 Kotlin 侧的安全解压目录拼出（Zip Slip 已在解压阶段拦截）。
  * 这里只额外拒绝空路径与非 .moc3 后缀，防止误把目录当模型读。
@@ -4450,7 +4378,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeLoadModelFromPath(
         return env->NewStringUTF("模型路径必须以 .moc3 结尾");
     }
 
-    ResourceSource src;  // manager == nullptr → 文件模式
+    ResourceSource src;
 
     std::string err;
     {
@@ -4830,7 +4758,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativePanLimits(
  *   把「画不画」和「先画谁」写死在 init，是这类 Live2D 渲染器最常见的错。
  *
  * 锁的边界：
- *   csm* 求值与 nativeUpdateParameters / nativeInit 必须互斥，因此状态重建和
+ *   csm* 求值与 nativeUpdateParameters / 模型加载必须互斥，因此状态重建和
  *   绘制计划（顺序 + 可见性 + opacity）在 g_mutex 内完成；glDraw* 放到锁外，
  *   不让 GPU 调用阻塞 Kotlin 侧 30Hz 的参数推流。
  *   绘制计划用函数级 static 复用缓冲，避免每帧重新分配三个 vector。
@@ -5035,7 +4963,7 @@ Java_com_exarry_arvtubelink_ui_live2d_Live2DRenderer_nativeDrawFrame(
         // 每帧都要 DMA 一遍，是 44fps 的主要来源之一。
         // 现在 refreshVertexPositionsLocked 已经把「变化的连续区间」记下来，
         // 静止帧完全不传，动起来的帧只传头发/眼睛/口那几段。
-        // 兜底路径：VBO 容量与 CPU 顶点数不一致（nativeInit 在 surfaceCreated
+        // 兜底路径：VBO 容量与 CPU 顶点数不一致（模型在 surfaceCreated
         // 之后重跑过），改走 glBufferData 重新分配，避免越界写显存。
         if (g_verticesDirty && !g_vertices.empty()) {
             glBindBuffer(GL_ARRAY_BUFFER, vbo);

@@ -10,6 +10,13 @@ The same list is shown in-app under **设置 → 关于 → 使用项目**.
 - **Version**: 1.1.0 (`PSM_TRUE_VERSION` 0x01010000), bundled as `app/src/main/cpp/PurismCoreBundle.h`
 - **License**: MIT License
 - **Copyright**: © 2025, 2026 Sakura Motion Project — <https://sakura2d.org/>
+- **Provenance (verbatim)**: The bundled file is **byte-for-byte identical** to the
+  upstream v1.1.0 release `PurismCoreBundle.h`; no local modification is applied.
+  The repository stores it with LF endings, and `core.autocrlf` only rewrites the
+  working-tree copy to CRLF on Windows (Git normalizes it back on commit).
+  - Upstream SHA-256 (LF): `56387c85c5978da63e364492bb50ecd4220f9998e27a376691d15c1de51c3913`
+  - Bundled SHA-256 (LF, after `tr -d '\r'`): `56387c85c5978da63e364492bb50ecd4220f9998e27a376691d15c1de51c3913`
+  - Bundled SHA-256 (working-tree CRLF): `6cc8a5e9f2e80a2274908454b6652bbb8ca82a4ff7d77b779b53e76d1ea783e4`
 - **Purpose**: Native rendering core for Live2D models. Upstream declares it to
   be a clean-room reimplementation of the Live2D Cubism Core API in plain C99,
   and further states that it contains no code from Live2D Inc. ARVTubeLink
@@ -95,6 +102,12 @@ full text is available in-app and at <http://www.apache.org/licenses/LICENSE-2.0
 - **HUAWEI AR Engine SDK** (`com.huawei.hms:arenginesdk`) — proprietary, governed
   by the HUAWEI AR Engine Service Agreement. Not covered by any open source
   license listed here; ARVTubeLink is not affiliated with or endorsed by Huawei.
+  **Binary distribution**: the AR Engine runtime libraries and the bundled
+  configuration assets (`arengine_conf_new.jar`, `arengine_conf_old.jar`) are
+  redistributed inside the APK as part of the SDK's normal aggregation flow. The
+  SDK may contact Huawei servers at runtime to validate its licence and to
+  process device information under Huawei's own privacy policy; refer to the
+  HUAWEI privacy statement for details.
 - **VTube Studio** — used only through its publicly documented local WebSocket
   API. No VTube Studio code is included, linked against, or redistributed.
 
@@ -105,6 +118,12 @@ models are imported by the user from `.zip` packages and stored locally on the
 device. Copyright and legality of any imported model, texture, or related asset
 are the user's sole responsibility; the project does not provide, store, or
 distribute model assets.
+
+Every import requires the user to confirm, before extraction, that they hold a
+valid licence for the content. The app records evidence of that confirmation
+locally: the SHA-256 of the selected archive, a UNIX timestamp, and the version
+of the user agreement in force at the time. This record stays on the device in
+`SharedPreferences` (`import_consent`) and is also written to the runtime log.
 
 ## Trademarks
 

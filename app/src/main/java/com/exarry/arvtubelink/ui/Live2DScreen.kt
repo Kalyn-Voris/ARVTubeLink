@@ -77,6 +77,7 @@ import com.exarry.arvtubelink.ui.live2d.Live2DImportScheduler
 import com.exarry.arvtubelink.ui.live2d.Live2DModelStore
 import com.exarry.arvtubelink.ui.live2d.Live2DParamMap
 import com.exarry.arvtubelink.ui.live2d.Live2DRenderer
+import com.exarry.arvtubelink.ui.legal.AgreementConsent
 import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -97,8 +98,7 @@ import java.util.UUID
  * ## 渲染链路
  * `GLSurfaceView`（EGL/GL 线程）→ [Live2DRenderer]（Kotlin 桥）→
  * `liblive2d_jni.so`（Purism Core 求值 + GLES2 绘制）。
- * 模型数据全部在 native 侧：Kotlin 只传 [android.content.res.AssetManager] 与
- * `.moc3` 的 assets 相对路径，顶点/索引/投影都在 C++ 里算。
+ * 模型数据全部在 native 侧：Kotlin 只传 `.moc3` 的绝对路径，顶点/索引/投影都在 C++ 里算。
  *
  * ## 面捕驱动（P3）
  * 数据源是 [FaceRenderer.latestFaceSnapshot] —— 即 BlendShapeMapper + Smoother
@@ -162,7 +162,7 @@ fun Live2DContent(
     val lifecycleOwner = LocalLifecycleOwner.current
 
     // ---- P6：自定义模型管理 ----
-    // 应用不内置任何模型：null = 用户还没有导入过，页面呈现空状态引导。
+    // 模型全部来自用户导入：null = 还没有导入过，页面呈现空状态引导。
     var currentModel by remember { mutableStateOf<Live2DModelStore.Model?>(null) }
     val availableModels = remember { mutableStateListOf<Live2DModelStore.Model>() }
     // 每次「切换模型」自增，作为加载协程的 key。0 = 首次加载（走 init 的幂等路径）。
@@ -176,7 +176,7 @@ fun Live2DContent(
     // 当前观测中的导入任务 id。跨重组保持，避免每次重组重复接流。
     var importWorkId by remember { mutableStateOf<UUID?>(null) }
     var pendingDelete by remember { mutableStateOf<Live2DModelStore.Model?>(null) }
-    // 已选中但尚未确认免责声明的 zip：确认后才入队 WorkManager（null = 无待确认导入）。
+    // 已选中但尚未确认导入声明的 zip：确认后才入队 WorkManager（null = 无待确认导入）。
     var pendingImportUri by remember { mutableStateOf<Uri?>(null) }
     var importMessage by remember { mutableStateOf<String?>(null) }
     val scope = rememberCoroutineScope()
@@ -184,7 +184,7 @@ fun Live2DContent(
     // Renderer 跨重组保持：内部持有 native 模型状态，重新 new 会丢掉已加载的模型。
     // 首次创建时不带模型（null），等 listModels 恢复出当前模型后再 loadModel。
     // 不重建 renderer（重建会让 GLSurfaceView 的 setRenderer 二次调用抛异常）。
-    val renderer = remember { Live2DRenderer(context.assets) }
+    val renderer = remember { Live2DRenderer() }
     val surfaceViewRef = remember { arrayOfNulls<GLSurfaceView>(1) }
 
     var status by remember { mutableStateOf("尚未加载模型") }
@@ -540,7 +540,7 @@ fun Live2DContent(
             },
         )
 
-        // ---- 空状态：应用不内置任何模型，首次进入必须引导用户导入 ----
+        // ---- 空状态：还没有导入过模型，首次进入必须引导用户导入 ----
         // 只盖在 GL 表面之上、按钮层之下：右侧「切换模型」按钮仍然可点。
         if (currentModel == null) {
             Column(
@@ -790,13 +790,23 @@ fun Live2DContent(
     // GetContent 走 SAF，不需要任何存储权限。但它的读授权只在当前 Activity 存活期内有效，
     // 而 Worker 可能在那之后才执行——所以 enqueue 会先把内容暂存到 cacheDir，
     // Worker 读暂存文件，与 Uri 授权生命周期解耦（详见 Live2DImportScheduler 注释）。
-    // 选到文件后先挂起，等用户在免责声明里点「同意并导入」再入队。
+    // 选到文件后先挂起，等用户在「导入前确认」里点「同意并导入」再入队。
     // 把已确认的 Uri 交给 WorkManager。抽成局部函数：确认按钮与「待确认」状态
     // 的一生只走这一条路径，避免两处各写一份入队逻辑。
     val enqueueImport: (Uri) -> Unit = { uri ->
         importInProgress = true
         importMessage = context.getString(R.string.live2d_import_background_hint)
         scope.launch {
+            // 留痕必须先落盘再入队：hash(zip) + 时间戳 + 协议版本。
+            // 哈希要读完整份 zip，SharedPreferences 首次读取也有磁盘 IO，
+            // 两者一起放到 IO 线程，避免主线程卡顿。
+            withContext(Dispatchers.IO) {
+                AgreementConsent.recordImportConsent(
+                    context = context,
+                    zipSha256 = AgreementConsent.sha256OfUri(context, uri),
+                    agreementVersion = AgreementConsent.readAgreementVersion(context),
+                )
+            }
             // 暂存最多 256 MB，必须离开主线程；这一步仍然绑在界面生命周期上，
             // 但它只是「拷贝文件」，耗时远小于解压。真正的解压由 WorkManager 接手。
             val workId = runCatching { Live2DImportScheduler.enqueue(context, uri) }
@@ -816,7 +826,7 @@ fun Live2DContent(
         contract = ActivityResultContracts.GetContent(),
     ) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
-        // 只记录选择结果；免责确认由下面的 AlertDialog 负责，同意后才真正入队。
+        // 只记录选择结果；导入前确认由下面的 AlertDialog 负责，同意后才真正入队。
         // 模型管理弹窗保持打开：确认后进度提示仍显示在它里面。
         pendingImportUri = uri
     }
@@ -881,21 +891,23 @@ fun Live2DContent(
         )
     }
 
-    // 导入免责确认：选中 zip 之后、解压入队之前的一道闸。
+    // 导入前确认：选中 zip 之后、解压入队之前的一道闸。
     // 为什么必须挡在这里：模型资产由用户从外部带入，应用无法核实其版权归属；
-    // 这条确认是「用户自认有授权」的显式记录点（agree 才把 Uri 交给 WorkManager）。
+    // 这条确认是「用户陈述与保证」的显式记录点（agree 才把 Uri 交给 WorkManager）。
+    // 点「同意并导入」时同步落一条证据：hash(zip) + 时间戳 + 协议版本。
     pendingImportUri?.let { uri ->
         AlertDialog(
             onDismissRequest = { pendingImportUri = null },
             title = { Text("导入前确认") },
             text = {
                 Text(
-                    "导入即表示您确认拥有该模型的合法使用授权。" +
-                        "本应用仅提供本地渲染，不承担因导入侵权资产导致的任何法律责任。"
+                    "用户陈述与保证：您保证所导入内容拥有合法版权。" +
+                        "若因导入内容引发纠纷，由您自行承担全部赔偿责任。"
                 )
             },
             confirmButton = {
                 TextButton(onClick = {
+                    // 哈希要读整个 zip，不能放主线程：交给 enqueueImport 的 IO 协程
                     pendingImportUri = null
                     enqueueImport(uri)
                 }) {

@@ -1,8 +1,12 @@
-This file provides additional permissions to the PolyForm Noncommercial License 1.0.0 contained in the LICENSE file.
+This file is a convenience copy pointer. The authoritative license text is the
+`LICENSE` file at the repository root, which contains the full PolyForm
+Noncommercial License 1.0.0, the Required Notice, and the additional
+permissions below. The copy bundled in the app (`app/src/main/res/raw/license.txt`)
+is byte-for-byte identical to `LICENSE`.
 
 # ADDITIONAL PERMISSIONS
 
-This section adds to the PolyForm Noncommercial License 1.0.0 above. It
+This section adds to the PolyForm Noncommercial License 1.0.0 in `LICENSE`. It
 grants permissions only; it does not remove any condition of that license.
 Where this section and the license above differ, this section controls
 for the permissions it grants.
@@ -38,7 +42,7 @@ distribution of the software into revenue.
 
 ## Required Notice
 
-Required Notice: Copyright (c) Kalyn-Voris
+Required Notice: Copyright (c) 2026 Kalyn-Voris
 https://github.com/Kalyn-Voris/ARVTubeLink
 
 ## Disclaimer
@@ -47,5 +51,5 @@ The software is distributed through the URL in the notice above. The
 licensor is not liable for any loss arising from use of the software, or
 from any copy obtained from a third party.
 
-Rights not expressly granted by the PolyForm Noncommercial License 1.0.0
-or by this section are reserved by Kalyn-Voris.
+Copyright (c) 2026 Kalyn-Voris. Rights not expressly granted by the
+PolyForm Noncommercial License 1.0.0 or by this section are reserved.

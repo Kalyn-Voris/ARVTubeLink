@@ -2,8 +2,11 @@
 //  mini_json.h - 极简只读 JSON 解析器（C++11，无分配器定制、无异常）
 // ============================================================================
 //
-//  用途：解析随 APK 打包的 Live2D 配置（model3.json / motion3.json /
-//  exp3.json / pose3.json）。这些文件是可信资源，但格式固定且层级浅，
+//  SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+//  Copyright (c) 2026 Kalyn-Voris
+//
+//  用途：解析 Live2D 模型配置（model3.json / motion3.json / exp3.json /
+//  pose3.json）。这些文件由用户导入，格式固定且层级浅，
 //  引 nlohmann/json 会给 .so 增加几百 KB，因此自带一个几百行的递归下降实现。
 //
 //  能力与边界（够用即止）：

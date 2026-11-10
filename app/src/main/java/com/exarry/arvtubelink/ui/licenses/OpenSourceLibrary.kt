@@ -25,20 +25,25 @@ val licenseSections: List<OpenSourceLibrarySection> = listOf(
         titleRes = R.string.oss_section_core_platforms,
         libraries = listOf(
             OpenSourceLibrary(
-                name = "HUAWEI AR Engine SDK",
-                descriptionRes = R.string.oss_lib_arengine,
-                licenseName = "Huawei Proprietary",
-                licenseText = LicenseTexts.HUAWEI_PROPRIETARY,
-                version = "4.0.0.5",
-                url = "https://developer.huawei.com/consumer/en/hms/huawei-arengine/",
-            ),
-            OpenSourceLibrary(
                 name = "VTube Studio API",
                 descriptionRes = R.string.oss_lib_vtubestudio,
                 licenseName = "Third-party Notice",
                 licenseText = LicenseTexts.VTUBE_STUDIO_INTEROP,
                 version = "API 1.0",
                 url = "https://denchisoft.com/",
+            ),
+        ),
+    ),
+    OpenSourceLibrarySection(
+        titleRes = R.string.oss_section_proprietary,
+        libraries = listOf(
+            OpenSourceLibrary(
+                name = "HUAWEI AR Engine SDK",
+                descriptionRes = R.string.oss_lib_arengine,
+                licenseName = "Huawei Proprietary",
+                licenseText = LicenseTexts.HUAWEI_PROPRIETARY,
+                version = "4.0.0.5",
+                url = "https://developer.huawei.com/consumer/en/hms/huawei-arengine/",
             ),
         ),
     ),

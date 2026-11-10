@@ -11,7 +11,7 @@
 #     with a C++ compiler」），故不拆 C/C++ 两个目标，避免跨语言链接开销。
 #
 # 依赖库只有三个，均为 NDK 自带的系统库：
-#   android  -> AAssetManager（从 APK assets 读 .moc3）
+#   android  -> JNI 桥接层基础符号（模型一律从设备本地文件读取）
 #   log      -> __android_log_print
 #   GLESv2   -> glDrawElements 等 GLES 2.0 入口
 # ============================================================================

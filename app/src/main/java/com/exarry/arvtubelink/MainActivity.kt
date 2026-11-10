@@ -56,6 +56,7 @@ import com.exarry.arvtubelink.ui.SettingsDeps
 import com.exarry.arvtubelink.ui.TAB_HOME
 import com.exarry.arvtubelink.ui.TAB_LIVE2D
 import com.exarry.arvtubelink.ui.TAB_SETTINGS
+import com.exarry.arvtubelink.ui.legal.AgreementConsent
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -188,6 +189,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val agreementAcceptedState = mutableStateOf(false)
+    /** 当前 agreement.txt 声明的协议版本；冷启动时读取，同意时按此版本落盘。 */
+    private var agreementVersion: String = AgreementConsent.FALLBACK_VERSION
     private val showFullLicenseState = mutableStateOf(false)
     private val showPolyFormState = mutableStateOf(false)
 
@@ -248,7 +251,12 @@ class MainActivity : AppCompatActivity() {
         // 华为设备息屏/后台会冻结进程，OkHttp 不收下行
         window.addFlags(android.view.WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        agreementAcceptedState.value = appPrefs.getBoolean(KEY_AGREEMENT_ACCEPTED, false)
+        agreementVersion = AgreementConsent.readAgreementVersion(this)
+        agreementAcceptedState.value =
+            AgreementConsent.hasAcceptedCurrentVersion(this, agreementVersion)
+        if (!agreementAcceptedState.value) {
+            InAppLog.i(TAG, "协议需重新确认: current=$agreementVersion")
+        }
 
         arStatusState.value = getString(R.string.ar_status_not_detected)
         vtsStatusState.value = getString(R.string.vts_status_disconnected)
@@ -346,7 +354,7 @@ class MainActivity : AppCompatActivity() {
                 agreementAccepted = agreementAcceptedState,
                 showFullLicense = showFullLicenseState,
                 onAgree = {
-                    appPrefs.edit().putBoolean(KEY_AGREEMENT_ACCEPTED, true).apply()
+                    AgreementConsent.acceptCurrentVersion(this, agreementVersion)
                     agreementAcceptedState.value = true
                 },
                 onDecline = { finish() },
@@ -841,8 +849,6 @@ class MainActivity : AppCompatActivity() {
         /** 首次使用默认 IP 前缀 */
         private const val DEFAULT_IP = "192.168."
         private const val DEFAULT_PORT = 8001
-
-        private const val KEY_AGREEMENT_ACCEPTED = "agreement_accepted"
 
         private const val KEY_CALIBRATION_GUIDE_DISMISSED = "calibration_guide_dismissed"
 
