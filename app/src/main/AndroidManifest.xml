@@ -7,9 +7,6 @@
     <!-- MulticastLock 需要；部分 OEM 驱动按组播路径过滤 UDP 广播包 -->
     <uses-permission android:name="android.permission.CHANGE_WIFI_MULTICAST_STATE" />
 
-    <!-- work-runtime AAR 已带入 FOREGROUND_SERVICE；API 34+ 起 dataSync 类型须单独申请，否则 startForeground 抛 SecurityException -->
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-
     <!-- arenginesdk 硬编码带入；tools:node="remove" 让合并结果真正删除 -->
     <uses-permission
         android:name="android.permission.WRITE_EXTERNAL_STORAGE"
@@ -20,6 +17,17 @@
     <!-- 防 arenginesdk 升级或换分发源后重新注入；当前依赖未声明该权限 -->
     <uses-permission
         android:name="android.permission.SYSTEM_ALERT_WINDOW"
+        tools:node="remove" />
+    <!-- work-runtime 自动带入；导入任务无需重启后恢复 -->
+    <uses-permission
+        android:name="android.permission.RECEIVE_BOOT_COMPLETED"
+        tools:node="remove" />
+    <!-- 配合去掉 WorkManager 常驻通知：普通 CoroutineWorker 后台调度即可 -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE"
+        tools:node="remove" />
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"
         tools:node="remove" />
     <!-- arenginesdk 带入的 normal 权限；自动发现走 NetworkInterface，不依赖它 -->
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -52,12 +60,6 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
-
-        <!-- WorkManager 的 SystemForegroundService 在 AAR 中无 foregroundServiceType；tools:node="merge" 叠加类型，整体替换会丢 AAR 其他属性 -->
-        <service
-            android:name="androidx.work.impl.foreground.SystemForegroundService"
-            android:foregroundServiceType="dataSync"
-            tools:node="merge" />
     </application>
 
 </manifest>

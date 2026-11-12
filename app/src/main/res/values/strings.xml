@@ -211,12 +211,6 @@
     <string name="onboard_action_discover">自动发现</string>
     <string name="onboard_done_badge">已完成</string>
 
-    <string name="live2d_import_notif_title">正在导入 Live2D 模型</string>
-    <string name="live2d_import_channel_name">模型导入</string>
-    <string name="live2d_import_channel_desc">导入 Live2D 模型时显示进度。可切到后台，导入会继续完成</string>
-    <string name="live2d_import_stage_staging">正在准备文件…</string>
-    <string name="live2d_import_stage_extracting">正在解压模型…</string>
-    <string name="live2d_import_stage_validating">正在校验模型…</string>
     <string name="live2d_import_background_hint">已转到后台导入：可切走或锁屏，导入会继续完成</string>
 
     <string name="live2d_empty_title">尚未加载模型</string>

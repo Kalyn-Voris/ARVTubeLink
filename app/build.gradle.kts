@@ -56,8 +56,8 @@ android {
         applicationId = "com.exarry.arvtubelink"
         minSdk = 26
         targetSdk = 37
-        versionCode = 10
-        versionName = "1.3.0 (20261110)"
+        versionCode = 11
+        versionName = "1.3.1 (20261112)"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
@@ -151,7 +151,7 @@ dependencies {
     implementation("com.google.code.gson:gson:2.11.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
 
-    // 模型导入：CoroutineWorker + dataSync 前台服务
+    // 模型导入：普通 CoroutineWorker 后台调度，不升前台服务
     implementation(libs.androidx.work.runtime.ktx)
 
     testImplementation(libs.junit)

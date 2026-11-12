@@ -1,25 +1,14 @@
 package com.exarry.arvtubelink.ui.live2d
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.PendingIntent
 import android.content.Context
-import android.content.Intent
-import android.content.pm.ServiceInfo
 import android.net.Uri
-import android.os.Build
-import androidx.core.app.NotificationCompat
 import androidx.work.CoroutineWorker
 import androidx.work.Data
-import androidx.work.ForegroundInfo
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import androidx.work.WorkerParameters
 import androidx.work.workDataOf
-import com.exarry.arvtubelink.MainActivity
-import com.exarry.arvtubelink.R
-import com.exarry.arvtubelink.ui.live2d.Live2DModelStore.ImportStage
 import com.exarry.arvtubelink.utils.InAppLog
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
@@ -30,7 +19,7 @@ import java.io.File
 import java.io.IOException
 import java.util.UUID
 
-/** WorkManager 后台任务：JobScheduler 进程级执行并持 wake lock，getForegroundInfo 升前台服务避 10 分钟上限 */
+/** WorkManager 后台任务：JobScheduler 进程级执行，解压通常几秒内完成，无需前台服务与常驻通知 */
 class Live2DImportWorker(
     appContext: Context,
     params: WorkerParameters,
@@ -45,10 +34,6 @@ class Live2DImportWorker(
 
         InAppLog.i(TAG, "后台导入开始: ${uriString ?: stagedPath}")
 
-        // 先升前台再做重 IO：FGS 启动窗口只有几秒
-        runCatching { setForeground(foregroundInfo(ImportStage.STAGING)) }
-            .onFailure { InAppLog.w(TAG, "升前台失败，继续以普通后台任务执行", it) }
-
         val result = try {
             Live2DModelStore.importZip(
                 applicationContext,
@@ -57,9 +42,6 @@ class Live2DImportWorker(
             ) { stage ->
                 // 进度写 setProgress 的 stage 字段，UI 从 WorkInfo.progress 读
                 runCatching { setProgress(workDataOf(KEY_STAGE to stage.name)) }
-                runCatching {
-                    setForeground(foregroundInfo(stage))
-                }.onFailure { InAppLog.w(TAG, "更新前台通知失败: $stage", it) }
             }
         } finally {
             stagedPath?.let { runCatching { File(it).delete() } }
@@ -87,66 +69,6 @@ class Live2DImportWorker(
         }
     }
 
-    /** 系统把任务提升为前台时调用，进程重启恢复也走这里 */
-    override suspend fun getForegroundInfo(): ForegroundInfo = foregroundInfo(ImportStage.STAGING)
-
-    private fun foregroundInfo(stage: ImportStage): ForegroundInfo {
-        val context = applicationContext
-        ensureChannel(context)
-        val text = context.getString(
-            when (stage) {
-                ImportStage.STAGING -> R.string.live2d_import_stage_staging
-                ImportStage.EXTRACTING -> R.string.live2d_import_stage_extracting
-                ImportStage.VALIDATING -> R.string.live2d_import_stage_validating
-            }
-        )
-
-        // 不建新任务栈，避免出现第二个 MainActivity
-        val contentIntent = PendingIntent.getActivity(
-            context,
-            0,
-            Intent(context, MainActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-            },
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-
-        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setSmallIcon(R.drawable.ic_stat_live2d_import)
-            .setContentTitle(context.getString(R.string.live2d_import_notif_title))
-            .setContentText(text)
-            .setContentIntent(contentIntent)
-            .setOngoing(true)
-            .setSilent(true)
-            .setOnlyAlertOnce(true)
-            .setCategory(NotificationCompat.CATEGORY_PROGRESS)
-            .setProgress(0, 0, true)
-            .build()
-
-        // Android 14 起 FGS 必须声明类型，dataSync 对应本地数据处理
-        return ForegroundInfo(
-            NOTIFICATION_ID,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
-        )
-    }
-
-    private fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) return
-        val manager = context.getSystemService(NotificationManager::class.java) ?: return
-        if (manager.getNotificationChannel(CHANNEL_ID) != null) return
-        manager.createNotificationChannel(
-            NotificationChannel(
-                CHANNEL_ID,
-                context.getString(R.string.live2d_import_channel_name),
-                NotificationManager.IMPORTANCE_LOW,
-            ).apply {
-                description = context.getString(R.string.live2d_import_channel_desc)
-                setShowBadge(false)
-            }
-        )
-    }
-
     private fun failureData(reason: String): Data =
         workDataOf(KEY_SUCCESS to false, KEY_REASON to reason)
 
@@ -161,9 +83,6 @@ class Live2DImportWorker(
         const val KEY_MODEL_ID = "modelId"
         const val KEY_DISPLAY_NAME = "displayName"
         const val KEY_MOC_PATH = "mocPath"
-
-        private const val CHANNEL_ID = "live2d_import"
-        private const val NOTIFICATION_ID = 0x10E2D
     }
 }
 

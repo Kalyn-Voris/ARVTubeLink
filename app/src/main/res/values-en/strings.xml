@@ -66,12 +66,6 @@
     <string name="push_chip_vts_on">Connected</string>
     <string name="push_chip_vts_off">Offline</string>
 
-    <string name="live2d_import_notif_title">Importing Live2D model</string>
-    <string name="live2d_import_channel_name">Model import</string>
-    <string name="live2d_import_channel_desc">Shows progress while importing a Live2D model. You can switch away or lock the screen; the import keeps running.</string>
-    <string name="live2d_import_stage_staging">Preparing file…</string>
-    <string name="live2d_import_stage_extracting">Extracting model…</string>
-    <string name="live2d_import_stage_validating">Verifying model…</string>
     <string name="live2d_import_background_hint">Import continues in the background. You can switch away or lock the screen.</string>
 
     <string name="live2d_empty_title">No model loaded yet</string>
